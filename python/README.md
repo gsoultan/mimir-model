@@ -42,5 +42,6 @@ python3 -m unittest discover -s python/tests
 The tests run the primitive conformance corpus, the hostile files of
 spec/container.md section 9.1, the compatibility corpus of every released
 version (including the tiny Llama, whose logits must match the Go
-executor's), and the tiny Llama's greedy continuation against the float64
-oracle of `tools/gen_llama_testdata.py`.
+executor's), the tiny Llama's greedy continuation against the float64
+oracle of `tools/gen_llama_testdata.py`, and the CNN in `testdata/onnx`,
+converted from ONNX by the Go importer, against onnxruntime.

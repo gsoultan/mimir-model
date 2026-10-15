@@ -1,6 +1,7 @@
-// Command mmf-import converts GGUF and safetensors files into mmf.
+// Command mmf-import converts GGUF, safetensors and ONNX files into mmf.
 //
 //	mmf-import [-o out.mmf] [-bench] [-nohash] input.gguf
+//	mmf-import model.onnx
 //	mmf-import -graph [-ctx 2048] [-a8=false] tinyllama.gguf
 //	mmf-import -o model.mmf model-00001-of-00002.safetensors model-00002-of-00002.safetensors
 //
@@ -12,6 +13,9 @@
 // matrix products with quantized weights are dequant_matmul_a8.v1, which
 // lets a runtime round the activations to 8-bit blocks as llama.cpp does;
 // -a8=false writes dequant_matmul.v1, which keeps them in float32.
+// An ONNX model (a file ending in .onnx) of the convolutional subset that
+// package importer documents is converted with its graph, so the output
+// runs as it is.
 // With -bench it reports the input and output sizes and the time to open
 // each and read every tensor byte.
 package main
@@ -48,8 +52,16 @@ func main() {
 	}
 }
 
+// parse reads an input by its extension (.onnx) or its leading bytes.
+func parse(path string, b []byte) (*importer.Source, error) {
+	if strings.HasSuffix(strings.ToLower(path), ".onnx") {
+		return importer.ParseONNX(b)
+	}
+	return importer.Parse(b)
+}
+
 func defaultOutput(in string) string {
-	for _, ext := range []string{".gguf", ".safetensors"} {
+	for _, ext := range []string{".gguf", ".safetensors", ".onnx"} {
 		if strings.HasSuffix(in, ext) {
 			return strings.TrimSuffix(in, ext) + ".mmf"
 		}
@@ -80,7 +92,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 		}
 		defer func() { err = errors.Join(err, release()) }()
 		inBytes += int64(len(b))
-		s, err := importer.Parse(b)
+		s, err := parse(p, b)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -89,6 +101,16 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 	src, err := importer.Merge(srcs...)
 	if err != nil {
 		return err
+	}
+	if src.Format == "onnx" {
+		if len(srcs) > 1 {
+			return fmt.Errorf("an ONNX model is converted on its own")
+		}
+		if bench {
+			// The import computes some tensors (folded normalisations,
+			// transposed weights), so the byte-for-byte check does not apply.
+			return fmt.Errorf("-bench does not support ONNX inputs")
+		}
 	}
 	graphNote := ""
 	if o.graph {
@@ -153,7 +175,7 @@ func timeSource(inputs []string) (time.Duration, byte, error) {
 		if err != nil {
 			return 0, 0, err
 		}
-		s, err := importer.Parse(b)
+		s, err := parse(p, b)
 		if err != nil {
 			release()
 			return 0, 0, err

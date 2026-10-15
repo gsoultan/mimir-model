@@ -1,10 +1,12 @@
-// Package importer converts GGUF and safetensors files into mmf.
+// Package importer converts GGUF, safetensors and ONNX files into mmf.
 //
 // Tensors are copied byte for byte: every GGUF block type that mmf defines
 // has the same canonical layout (ADR 0004), and safetensors stores plain
 // little-endian arrays, so an import never re-quantizes or rounds. Metadata
-// keys are carried over with their types. Neither source format carries a
-// graph mmf can use, so an imported file holds weights and metadata only.
+// keys are carried over with their types. Neither GGUF nor safetensors
+// carries a graph mmf can use, so such an import holds weights and metadata
+// only, unless BuildLlama adds one. ONNX models of a convolutional subset
+// are converted with their graph (see ParseONNX).
 //
 // Both parsers treat their input as untrusted: every length, count and
 // offset is bounds-checked before use, and malformed input returns an error
@@ -26,9 +28,9 @@ type Tensor struct {
 	Data  []byte
 }
 
-// Source is a parsed GGUF or safetensors file.
+// Source is a parsed GGUF, safetensors or ONNX file.
 type Source struct {
-	Format   string // "gguf" or "safetensors"
+	Format   string // "gguf", "safetensors" or "onnx"
 	Tensors  []Tensor
 	Metadata mmf.Metadata
 	// Graph is an optional graph built by the importer (see BuildLlama).
@@ -65,6 +67,14 @@ func Parse(b []byte) (*Source, error) {
 func Merge(srcs ...*Source) (*Source, error) {
 	if len(srcs) == 0 {
 		return nil, fmt.Errorf("no sources")
+	}
+	if len(srcs) == 1 {
+		return srcs[0], nil
+	}
+	for _, s := range srcs {
+		if s.Graph != nil {
+			return nil, fmt.Errorf("a %s source with a graph cannot be merged with others", s.Format)
+		}
 	}
 	out := &Source{Format: srcs[0].Format, Metadata: mmf.Metadata{}}
 	seen := map[string]bool{}
