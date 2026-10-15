@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: gofmt
+        shell: bash
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "files need gofmt:"
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: fuzz
+        if: runner.os == 'Linux'
+        run: go test -run xxx -fuzz FuzzParse -fuzztime 30s .
