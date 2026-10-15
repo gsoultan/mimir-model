@@ -87,7 +87,7 @@ func (b *gb) load(t testing.TB) *Program {
 		pos[i] = uint32(p)
 	}
 	for i := range b.g.Values {
-		if k := b.g.Values[i].Kind; k == mmf.KindWeight || k == mmf.KindConst || k == mmf.KindVariable {
+		if k := b.g.Values[i].Kind; (k == mmf.KindWeight || k == mmf.KindConst || k == mmf.KindVariable) && !b.g.Values[i].Zero {
 			b.g.Values[i].Ref = pos[b.g.Values[i].Ref]
 		}
 	}
@@ -449,5 +449,46 @@ func TestRunErrors(t *testing.T) {
 		if _, err := s.Run(in); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// TestZeroVariable runs a cache that starts as zeros and is not stored in
+// the file: each session gets its own zeroed buffer.
+func TestZeroVariable(t *testing.T) {
+	b := newGB()
+	cache := b.val("k_cache", mmf.F32, mmf.KindVariable, 1, 4, 2)
+	b.g.Values[cache].Zero = true
+	pos := b.input(0, "pos", mmf.I64, 1)
+	kt := b.input(0, "k_t", mmf.F32, 1, 1, 2)
+	knew := b.val("k_new", mmf.F32, mmf.KindIntermediate, 1, 4, 2)
+	b.op(0, mmf.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.g.Updates = []mmf.Update{{Variable: cache, Value: knew}}
+	p := b.load(t)
+	p.FastPaths = true
+
+	s1, s2 := p.NewSession(), p.NewSession()
+	if _, err := s1.Run(map[string]*ref.Tensor{"pos": i64t([]int{1}, 2), "k_t": f32t([]int{1, 1, 2}, 5, 6)}); err != nil {
+		t.Fatal(err)
+	}
+	c1, _ := s1.Variable("k_cache")
+	c2, _ := s2.Variable("k_cache")
+	if got := f32s(c1); got[4] != 5 || got[5] != 6 || got[0] != 0 {
+		t.Errorf("cache = %v", got)
+	}
+	for _, v := range f32s(c2) {
+		if v != 0 {
+			t.Fatalf("another session's cache changed: %v", f32s(c2))
+		}
+	}
+}
+
+func TestZeroVariableTooLarge(t *testing.T) {
+	b := newGB()
+	cache := b.val("k_cache", mmf.F32, mmf.KindVariable, 1<<30, 1<<30)
+	b.g.Values[cache].Zero = true
+	x := b.input(0, "x", mmf.F32, 1<<30, 1<<30)
+	b.g.Updates = []mmf.Update{{Variable: cache, Value: x}}
+	if _, err := New(b.g, nil); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("got %v", err)
 	}
 }

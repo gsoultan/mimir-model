@@ -122,6 +122,14 @@ func TestGraphValidation(t *testing.T) {
 		"bad-opcode":      func(g *Graph) { g.Main().Ops[0].Opcode = 99 },
 		"bad-dtype":       func(g *Graph) { g.Values[0].DType = 1000 },
 		"bad-symdim":      func(g *Graph) { g.Values[0].Shape[0] = -9 },
+		"zero-weight":     func(g *Graph) { g.Values[1].Zero = true; g.Values[1].Ref = 0 },
+		"zero-ref":        func(g *Graph) { g.Values[12].Zero = true; g.Values[12].Ref = 1 },
+		"zero-symbolic": func(g *Graph) {
+			g.Values[12].Zero, g.Values[12].Ref, g.Values[12].Shape[1], g.Values[15].Shape[1] = true, 0, -2, -2
+		},
+		"zero-block": func(g *Graph) {
+			g.Values[12].Zero, g.Values[12].Ref, g.Values[12].DType, g.Values[15].DType = true, 0, Q8_0, Q8_0
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -138,6 +146,31 @@ func TestGraphValidation(t *testing.T) {
 				t.Fatalf("error without code: %v", err)
 			}
 		})
+	}
+}
+
+// TestGraphZeroVariable checks a variable that starts as zeros: it needs no
+// tensor in the file, and its flag survives a round trip.
+func TestGraphZeroVariable(t *testing.T) {
+	g := sampleGraph()
+	g.Values[12].Zero, g.Values[12].Ref = true, 0
+	gb, err := g.Encode()
+	must(t, err)
+	w := NewWriter()
+	must(t, w.AddTensor("w", F32, []uint64{1, 1, 16}, make([]byte, 64)))
+	must(t, w.AddSection(SectionGraph, true, gb))
+	f, err := Parse(encode(t, w))
+	must(t, err)
+	got, err := f.Graph()
+	must(t, err)
+	if !got.Values[12].Zero || got.Values[1].Zero {
+		t.Fatal("zero flag lost")
+	}
+	// Flag bits other than bit 0 are reserved.
+	values := le.Uint64(gb[16+16*tValues:])
+	gb[values+32*12+14] = 3
+	if _, err := DecodeGraph(gb); CodeOf(err) != CodeBadGraph {
+		t.Fatalf("got %v", err)
 	}
 }
 

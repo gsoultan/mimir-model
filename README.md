@@ -71,7 +71,7 @@ primitive conformance corpus run against the reference kernels.
 
 ## Conformance
 
-The corpus in `testdata/conformance/primitives` holds 1,322 cases covering
+The corpus in `testdata/conformance/primitives` holds 1,330 cases covering
 all 33 primitives. Expected results come from an independent oracle that
 evaluates the spec's definitions exactly (rational arithmetic, or mpmath at
 256 bits) and rounds once to the output dtype, so the spec rather than the
@@ -121,8 +121,9 @@ stay quantized in the mapped file and are decoded row by row inside the
 matrix products. By default the matrix products are `dequant_matmul_a8.v1`,
 which lets a runtime round the activations to 8 bits, as llama.cpp does, so
 that it can multiply in integers; `-a8=false` writes `dequant_matmul.v1`,
-computed to float32 accuracy. `-ctx` sets the cache length, which is stored as zeros in
-the file (4 bytes per element), so a smaller value gives a smaller file.
+computed to float32 accuracy. `-ctx` sets the cache length. The cache is
+a variable that starts as zeros, so it takes no space in the file; a
+session allocates it (4 bytes per element) when it starts.
 
 The tests check the whole path on a tiny Llama quantized to Q4_K_M by
 llama.cpp: token ids against llama.cpp's tokenizer, and the logits of a
@@ -150,8 +151,8 @@ attention, SwiGLU and embedding lookup). Each fast path is tested against
 its canonical body. The matrix products and attention use AVX2 kernels on
 amd64 (`internal/kernels`), decoding Q4_K, Q6_K, Q8_0, F16 and BF16 weights
 inside the dot product, with plain Go elsewhere and under the `purego`
-build tag. On a 4-core machine a 1.1B Q4_K_M model generates about 15
-tokens per second, against llama.cpp's 27 (see
+build tag. On a 4-core machine a 1.1B Q4_K_M model generates about 14
+tokens per second, against llama.cpp's 26.5 (see
 [docs/benchmarks.md](docs/benchmarks.md)).
 
 ## Related projects

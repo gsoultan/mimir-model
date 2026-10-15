@@ -35,8 +35,8 @@ func TestBuildLlama(t *testing.T) {
 	if *c != want {
 		t.Fatalf("config %+v, want %+v", *c, want)
 	}
-	// Two cache variables per layer and the key position table.
-	if len(s.Tensors) != n+2*c.Layers+1 {
+	// The key position table; the caches start as zeros and are not stored.
+	if len(s.Tensors) != n+1 {
 		t.Fatalf("%d tensors added", len(s.Tensors)-n)
 	}
 	if _, err := BuildLlama(s, LlamaOptions{Context: 32}); err == nil {
@@ -65,11 +65,11 @@ func TestBuildLlama(t *testing.T) {
 	for _, v := range g.Values {
 		switch v.Kind {
 		case mmf.KindWeight, mmf.KindConst, mmf.KindVariable:
-			if ti := f.TensorAt(int(v.Ref)); ti.Name != v.Name {
+			if ti := f.TensorAt(int(v.Ref)); !v.Zero && ti.Name != v.Name {
 				t.Errorf("value %q refers to tensor %q", v.Name, ti.Name)
 			}
 		}
-		if v.Kind == mmf.KindVariable {
+		if v.Kind == mmf.KindVariable && v.Zero {
 			vars++
 		}
 	}

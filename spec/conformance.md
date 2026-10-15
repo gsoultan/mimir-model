@@ -145,7 +145,5 @@ The corpus covers each primitive across the dtypes it accepts, with special
 values (signed zeros, subnormals, the largest finite values, infinities and
 NaN), random values over the whole exponent range, broadcasting, rank-0 and
 empty tensors, every cast between the 15 non-block dtypes, all 256 values of
-each storage float, and every block dtype. It does not yet cover storage
-floats as operands of `where` or `bitcast`, which spec/primitives.md
-sections 2.2, 5.9 and 5.23 describe inconsistently; that question is open
-for v0.2.
+each storage float, storage floats as operands of `where` and `bitcast`,
+and every block dtype.

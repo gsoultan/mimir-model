@@ -103,6 +103,21 @@ type Value struct {
 	Shape []Dim
 	Kind  ValueKind
 	Ref   uint32 // tensor index for KindWeight, KindVariable, KindConst
+	// Zero marks a variable whose initial value is all zero bytes rather
+	// than a stored tensor. Its shape is literal and Ref is 0.
+	Zero bool
+}
+
+// valueZero is the flag bit of Value.Zero in a value row's flags byte.
+const valueZero = 1
+
+func literal(shape []Dim) bool {
+	for _, d := range shape {
+		if d.Symbolic() {
+			return false
+		}
+	}
+	return true
 }
 
 // AttrType identifies an attribute's payload.
@@ -252,6 +267,9 @@ func (g *Graph) Encode() ([]byte, error) {
 		le.PutUint32(e[8:], dims(sh))
 		e[12] = byte(len(v.Shape))
 		e[13] = byte(v.Kind)
+		if v.Zero {
+			e[14] = valueZero
+		}
 		le.PutUint32(e[16:], v.Ref)
 		tabs[tValues] = append(tabs[tValues], e...)
 	}
@@ -443,9 +461,9 @@ func (d *graphDecoder) decode() (*Graph, error) {
 		if err != nil {
 			return nil, err
 		}
-		v := Value{Name: name, DType: DType(le.Uint32(e[4:])), Kind: ValueKind(e[13]), Ref: le.Uint32(e[16:])}
+		v := Value{Name: name, DType: DType(le.Uint32(e[4:])), Kind: ValueKind(e[13]), Ref: le.Uint32(e[16:]), Zero: e[14] == valueZero}
 		rank := uint64(e[12])
-		if rank > MaxRank || e[14] != 0 || e[15] != 0 || le.Uint64(e[20:]) != 0 || le.Uint32(e[28:]) != 0 {
+		if rank > MaxRank || e[14]&^valueZero != 0 || e[15] != 0 || le.Uint64(e[20:]) != 0 || le.Uint32(e[28:]) != 0 {
 			return nil, errf(CodeBadGraph, "value %d header", i)
 		}
 		if !v.DType.Valid() {
@@ -610,6 +628,11 @@ func (g *Graph) Validate() error {
 		}
 		return nil
 	}
+	for i, v := range g.Values {
+		if v.Zero && (v.Kind != KindVariable || v.Ref != 0 || v.DType.IsBlock() || !literal(v.Shape)) {
+			return errf(CodeBadGraph, "value %d (%q): only a variable with a literal shape and a plain dtype can start as zeros", i, v.Name)
+		}
+	}
 	producer := make([]int32, nv) // -1 none, else 1
 	for i := range producer {
 		producer[i] = -1
@@ -770,7 +793,7 @@ func (f *File) Graph() (*Graph, error) {
 		return nil, err
 	}
 	for i, v := range g.Values {
-		if v.Kind != KindWeight && v.Kind != KindVariable && v.Kind != KindConst {
+		if v.Kind != KindWeight && v.Kind != KindVariable && v.Kind != KindConst || v.Zero {
 			continue
 		}
 		if int(v.Ref) >= f.NumTensors() {
