@@ -183,8 +183,8 @@ The normative reference result of every primitive is the exact mathematical
 result of the operation on the input values, rounded to the output dtype
 with round to nearest, ties to even. For f32, f16 and bf16 outputs the
 reference is computed in float64 and then rounded; for f64 outputs it is
-computed with sufficient extra precision. The conformance corpus (Phase 2) is
-generated from this reference.
+computed with sufficient extra precision. The conformance corpus
+(spec/conformance.md) is generated from this reference.
 
 ULP below means the unit in the last place of the output dtype at the
 reference result. A tolerance of n ULP means the runtime result r and the
@@ -317,7 +317,8 @@ may be any float, storage float, integer or bool dtype.
 | storage float <-> any | through the reference conversion in spec/dtypes.md |
 
 Conversions to and from storage floats, including saturation and NaN
-encodings, follow spec/dtypes.md.
+encodings, follow spec/dtypes.md (decoding in sections 2.1 and 2.2,
+encoding in section 2.3).
 
 ### 5.9 bitcast (9)
 
