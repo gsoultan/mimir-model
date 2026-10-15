@@ -9,7 +9,21 @@ go test -run xxx -fuzz FuzzParse -fuzztime 60s .
 ```
 
 CI runs `gofmt -l .` (must print nothing), `go vet ./...`, staticcheck,
-`go test -race ./...` and 30 seconds of the fuzzer. Run the same before
+`go test -race ./...`, 30 seconds of the fuzzer, and a check that the
+conformance corpus is up to date.
+
+The conformance corpus is generated, never edited by hand:
+
+```
+python3 -m pip install numpy mpmath
+python3 -I tools/gen_conformance.py           # rewrite testdata/conformance
+python3 -I tools/gen_conformance.py --check   # what CI runs
+```
+
+A change to a primitive's semantics or tolerance changes the generator and
+the regenerated corpus in the same commit. If the reference kernels in
+`ref` disagree with the corpus, fix whichever one disagrees with the spec;
+never regenerate the corpus from the Go code. Run the same before
 opening a pull request. A fuzzer crash is saved under `testdata/fuzz`;
 commit the crasher together with the fix.
 
