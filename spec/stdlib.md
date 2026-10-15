@@ -328,49 +328,23 @@ y  = mul(s, sub(k(1), mul(q, exp.v1(neg(sq(ax))))))
 Tolerance: `abs 1.6e-7 + 16 u`. The 1.6e-7 term lets a fast path that
 computes the true error function pass against this approximate reference.
 
-### 4.4 exp.v1
+### 4.4 exp.v1, log.v1, cos.v1, rsqrt.v1, silu.v1
 
-```
-y = exp2(mul(x, k(log2e)))
-```
+Each has signature `x` -> `y`, float, same shape.
 
-Tolerance: `rel (16 + 2|x|) u`. The `|x|` term is the effect of rounding
-`x * log2e` before `exp2`.
+| composite | body | tolerance |
+|---|---|---|
+| exp.v1 | `exp2(mul(x, k(log2e)))` | `rel (16 + 2 abs(x)) u` |
+| log.v1 | `mul(log2(x), k(ln2))` | `rel 16 u` |
+| cos.v1 | `sin(sub(k(pi / 2), x))` | `abs (16 + 2 abs(x)) u` for abs(x) <= 2^16; beyond, as `sin` |
+| rsqrt.v1 | `recip(sqrt(x))` | `rel 6 u` |
+| silu.v1 | `mul(x, sigmoid.v1(x))` | `rel (20 + 2 abs(x)) u` |
 
-### 4.5 log.v1
+The `abs(x)` terms in the exp and cos tolerances are the effect of rounding the
+argument (`x * log2e`, `pi/2 - x`) before the primitive. Special values
+follow the primitives (`log2`, `sin`, `sqrt`, `recip`).
 
-```
-y = mul(log2(x), k(ln2))
-```
-
-Tolerance: `rel 16 u`. Special values follow `log2`.
-
-### 4.6 cos.v1
-
-```
-y = sin(sub(k(pi / 2), x))
-```
-
-Tolerance: for `|x| <= 2^16`, `abs (16 + 2|x|) u`; beyond, as `sin`
-(spec/primitives.md section 3.5).
-
-### 4.7 rsqrt.v1
-
-```
-y = recip(sqrt(x))
-```
-
-Tolerance: `rel 6 u`.
-
-### 4.8 silu.v1
-
-```
-y = mul(x, sigmoid.v1(x))
-```
-
-Tolerance: `rel (20 + 2|x|) u`.
-
-### 4.9 gelu_erf.v1
+### 4.5 gelu_erf.v1
 
 ```
 y = mul(mul(k(0.5), x), add(k(1), erf.v1(mul(x, k(0.7071067811865476)))))
@@ -378,7 +352,7 @@ y = mul(mul(k(0.5), x), add(k(1), erf.v1(mul(x, k(0.7071067811865476)))))
 
 Tolerance: `abs (1.6e-7 + 32 u) max(1, |x|)`.
 
-### 4.10 gelu_tanh.v1
+### 4.6 gelu_tanh.v1
 
 ```
 c = 0.7978845608028654                     # sqrt(2 / pi)
@@ -388,7 +362,7 @@ y = mul(mul(k(0.5), x), add(k(1), tanh.v1(inner)))
 
 Tolerance: `abs 32 u max(1, |x|)`.
 
-### 4.11 swiglu.v1
+### 4.7 swiglu.v1
 
 Signature: inputs `a` (gate), `b` (up), equal dtype and broadcast-compatible
 shapes; output `y`.
@@ -399,7 +373,7 @@ y = mul(silu.v1(a), b)
 
 Tolerance: `rel (20 + 2|a|) u`.
 
-### 4.12 geglu.v1
+### 4.8 geglu.v1
 
 Signature: inputs `a` (gate), `b` (up); attribute `approximate` (string,
 "none" or "tanh", default "none"); output `y`.
