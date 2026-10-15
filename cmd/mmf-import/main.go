@@ -1,10 +1,14 @@
 // Command mmf-import converts GGUF and safetensors files into mmf.
 //
 //	mmf-import [-o out.mmf] [-bench] [-nohash] input.gguf
+//	mmf-import -graph [-ctx 2048] tinyllama.gguf
 //	mmf-import -o model.mmf model-00001-of-00002.safetensors model-00002-of-00002.safetensors
 //
 // Several safetensors shards are merged into one file. Tensors are copied
-// byte for byte; the output holds weights and metadata, with no graph.
+// byte for byte. By default the output holds weights and metadata only;
+// with -graph, a GGUF file of the llama architecture also gets a runnable
+// forward-pass graph with a key-value cache of -ctx positions (default: the
+// model's context length), which mmf-run can generate text with.
 // With -bench it reports the input and output sizes and the time to open
 // each and read every tensor byte.
 package main
@@ -26,12 +30,15 @@ func main() {
 	out := flag.String("o", "", "output file (default: first input with the extension replaced by .mmf)")
 	bench := flag.Bool("bench", false, "report sizes and load times of the input and the output")
 	nohash := flag.Bool("nohash", false, "do not write section hashes")
+	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama architecture)")
+	ctx := flag.Int("ctx", 0, "with -graph, the key-value cache length (default: the model's context length)")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: mmf-import [-o out.mmf] [-bench] [-nohash] input...")
 		os.Exit(2)
 	}
-	if err := run(os.Stdout, flag.Args(), *out, *bench, !*nohash); err != nil {
+	o := options{out: *out, bench: *bench, hash: !*nohash, graph: *graph, ctx: *ctx}
+	if err := run(os.Stdout, flag.Args(), o); err != nil {
 		fmt.Fprintln(os.Stderr, "mmf-import:", err)
 		os.Exit(1)
 	}
@@ -46,7 +53,15 @@ func defaultOutput(in string) string {
 	return in + ".mmf"
 }
 
-func run(w io.Writer, inputs []string, out string, bench, hash bool) (err error) {
+type options struct {
+	out         string
+	bench, hash bool
+	graph       bool
+	ctx         int
+}
+
+func run(w io.Writer, inputs []string, o options) (err error) {
+	out, bench, hash := o.out, o.bench, o.hash
 	if out == "" {
 		out = defaultOutput(inputs[0])
 	}
@@ -70,6 +85,17 @@ func run(w io.Writer, inputs []string, out string, bench, hash bool) (err error)
 	if err != nil {
 		return err
 	}
+	graphNote := ""
+	if o.graph {
+		if src.Format != "gguf" {
+			return fmt.Errorf("-graph needs a GGUF input")
+		}
+		c, err := importer.BuildLlama(src, o.ctx)
+		if err != nil {
+			return err
+		}
+		graphNote = fmt.Sprintf(", llama graph: %d layers, %d heads (%d key-value), context %d", c.Layers, c.Heads, c.KVHeads, c.Context)
+	}
 	mw := mmf.NewWriter()
 	mw.Hash = hash
 	if err := src.AddTo(mw); err != nil {
@@ -82,7 +108,7 @@ func run(w io.Writer, inputs []string, out string, bench, hash bool) (err error)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "wrote %s: %d tensors from %s, %d bytes (%s)\n", out, len(src.Tensors), src.Format, st.Size(), time.Since(start).Round(time.Millisecond))
+	fmt.Fprintf(w, "wrote %s: %d tensors from %s, %d bytes (%s)%s\n", out, len(src.Tensors), src.Format, st.Size(), time.Since(start).Round(time.Millisecond), graphNote)
 	if !bench {
 		return nil
 	}
