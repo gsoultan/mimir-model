@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os/exec"
+	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,12 +23,11 @@ func TestInspectRuns(t *testing.T) {
 	if err := w.WriteFile(path); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(dir, "inspect")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build: %v\n%s", err, out)
+	var out bytes.Buffer
+	if err := inspect(&out, path, true, false, true); err != nil {
+		t.Fatal(err)
 	}
-	out, err := exec.Command(bin, "-verify", "-meta", path).CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "hashes ok") || !strings.Contains(string(out), "general.name = t") {
-		t.Fatalf("err %v\n%s", err, out)
+	if !strings.Contains(out.String(), "hashes ok") || !strings.Contains(out.String(), "general.name = t") {
+		t.Fatalf("unexpected output:\n%s", out.String())
 	}
 }

@@ -6,6 +6,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -22,17 +23,23 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: mmf-inspect [-verify] [-graph] [-meta] file.mmf")
 		os.Exit(2)
 	}
-	f, err := mmf.Open(flag.Arg(0))
-	if err != nil {
+	if err := inspect(os.Stdout, flag.Arg(0), *verify, *graph, *meta); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+func inspect(w io.Writer, path string, verify, graph, meta bool) error {
+	f, err := mmf.Open(path)
+	if err != nil {
+		return err
 	}
 	defer f.Close()
 
 	p := f.Preamble()
-	fmt.Printf("mmf %d.%d  file %d bytes  data alignment %d\n", p.Major, p.Minor, p.FileLength, p.DataAlignment)
-	fmt.Printf("index  @%d +%d\nweights @%d +%d\n", p.IndexOffset, p.IndexLength, p.DataOffset, p.DataLength)
-	fmt.Println("sections:")
+	fmt.Fprintf(w, "mmf %d.%d  file %d bytes  data alignment %d\n", p.Major, p.Minor, p.FileLength, p.DataAlignment)
+	fmt.Fprintf(w, "index  @%d +%d\nweights @%d +%d\n", p.IndexOffset, p.IndexLength, p.DataOffset, p.DataLength)
+	fmt.Fprintln(w, "sections:")
 	for _, s := range f.Sections() {
 		req := ""
 		if s.Flags&mmf.FlagRequired != 0 {
@@ -42,55 +49,53 @@ func main() {
 		if s.HashAlg == mmf.HashSHA256 {
 			h = fmt.Sprintf("sha256 %x…", s.Hash[:4])
 		}
-		fmt.Printf("  %-13s @%d +%d%s  %s\n", s.Kind, s.Offset, s.Length, req, h)
+		fmt.Fprintf(w, "  %-13s @%d +%d%s  %s\n", s.Kind, s.Offset, s.Length, req, h)
 	}
-	if *verify {
+	if verify {
 		if err := f.VerifyHashes(); err != nil {
-			fmt.Fprintln(os.Stderr, "hash check failed:", err)
-			os.Exit(1)
+			return err
 		}
-		fmt.Println("hashes ok")
+		fmt.Fprintln(w, "hashes ok")
 	}
-	fmt.Printf("tensors: %d\n", f.NumTensors())
+	fmt.Fprintf(w, "tensors: %d\n", f.NumTensors())
 	for i := 0; i < f.NumTensors(); i++ {
 		t := f.TensorAt(i)
-		fmt.Printf("  %-40s %-12s %v  @%d +%d\n", t.Name, t.DType, t.Shape, t.Offset, t.Length)
+		fmt.Fprintf(w, "  %-40s %-12s %v  @%d +%d\n", t.Name, t.DType, t.Shape, t.Offset, t.Length)
 	}
-	if *meta {
+	if meta {
 		m, err := f.Metadata()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
 		}
 		keys := make([]string, 0, len(m))
 		for k := range m {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		fmt.Println("metadata:")
+		fmt.Fprintln(w, "metadata:")
 		for _, k := range keys {
 			v := fmt.Sprint(m[k])
 			if len(v) > 100 {
 				v = v[:100] + "…"
 			}
-			fmt.Printf("  %s = %s\n", k, v)
+			fmt.Fprintf(w, "  %s = %s\n", k, v)
 		}
 	}
-	if *graph {
+	if graph {
 		g, err := f.Graph()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			return err
 		}
-		printGraph(g)
+		printGraph(w, g)
 	}
+	return nil
 }
 
-func printGraph(g *mmf.Graph) {
-	fmt.Printf("graph: primitives v%d, stdlib v%d, %d values, %d subgraphs, %d composites\n",
+func printGraph(w io.Writer, g *mmf.Graph) {
+	fmt.Fprintf(w, "graph: primitives v%d, stdlib v%d, %d values, %d subgraphs, %d composites\n",
 		g.PrimitiveVersion, g.StdlibVersion, len(g.Values), len(g.Subgraphs), len(g.Composites))
 	for i, s := range g.SymDims {
-		fmt.Printf("  symdim %d %s bound %d\n", i, s.Name, s.Bound)
+		fmt.Fprintf(w, "  symdim %d %s bound %d\n", i, s.Name, s.Bound)
 	}
 	val := func(id uint32) string {
 		v := g.Values[id]
@@ -116,7 +121,7 @@ func printGraph(g *mmf.Graph) {
 		return strings.Join(s, ", ")
 	}
 	for si, sg := range g.Subgraphs {
-		fmt.Printf("subgraph %d (%s) -> (%s)\n", si, list(sg.Inputs), list(sg.Outputs))
+		fmt.Fprintf(w, "subgraph %d (%s) -> (%s)\n", si, list(sg.Inputs), list(sg.Outputs))
 		for _, op := range sg.Ops {
 			attrs := make([]string, len(op.Attrs))
 			for i, a := range op.Attrs {
@@ -135,13 +140,13 @@ func printGraph(g *mmf.Graph) {
 					attrs[i] = fmt.Sprintf("%s=subgraph %d", a.Key, a.Subgraph)
 				}
 			}
-			fmt.Printf("  %s = %s[%s](%s)\n", list(op.Outputs), op.Opcode, strings.Join(attrs, ", "), list(op.Inputs))
+			fmt.Fprintf(w, "  %s = %s[%s](%s)\n", list(op.Outputs), op.Opcode, strings.Join(attrs, ", "), list(op.Inputs))
 		}
 	}
 	for _, c := range g.Composites {
-		fmt.Printf("composite %s.v%d = subgraph %d\n", c.Name, c.Version, c.Subgraph)
+		fmt.Fprintf(w, "composite %s.v%d = subgraph %d\n", c.Name, c.Version, c.Subgraph)
 	}
 	for _, u := range g.Updates {
-		fmt.Printf("update %s <- %s\n", val(u.Variable), val(u.Value))
+		fmt.Fprintf(w, "update %s <- %s\n", val(u.Variable), val(u.Value))
 	}
 }
