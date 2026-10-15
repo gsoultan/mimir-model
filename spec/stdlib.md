@@ -99,10 +99,10 @@ Unless a composite says otherwise:
   float outputs are cast back to the declared output dtype on exit. These
   casts are part of every canonical body and are not repeated below.
 - f32 and f64 inputs are computed in their own dtype.
-- All float inputs of one call MUST share one dtype.
+- All float inputs of one call MUST share one dtype unless the signature
+  says otherwise.
 
-The computation dtype is therefore f32 for f16, bf16 and f32 inputs, and f64
-for f64 inputs.
+The computation dtype is thus f32 for f16, bf16 and f32 inputs, f64 for f64.
 
 ### 1.5 Model-local composites
 
@@ -217,8 +217,8 @@ Signature: inputs `x: [..., M, K]` (rank r >= 2), `w: [N, K]`, optional
 features first), as in PyTorch.
 
 ```
-wt = reshape(permute[perm=[1, 0]](w), [1]*(r-2) ++ [K, N])
-y  = matmul.v1(x, expand(wt, x_shape[:-2] ++ [K, N]))
+wt = reshape(permute[perm=[1, 0]](w), [1]*(r-2) ++ [K, N])   # batch dims broadcast
+y  = matmul.v1(x, wt)
 if bias: y = add(y, reshape(bias, [1]*(r-1) ++ [N]))
 ```
 
@@ -228,8 +228,8 @@ Tolerance: `abs (K+1) u (sum_k |x_ik w_jk| + |bias_j|)`.
 
 Signature: inputs `x: [..., M, K]` (f32, f16 or bf16), `w: [N, K]` of a
 block dtype, f8_e4m3, f8_e5m2, f16 or bf16, optional `bias: [N]`; output
-`y: [..., M, N]` with the dtype of x. For block dtypes the blocks run along
-K.
+`y: [..., M, N]` with the dtype of x. x and w MAY have different dtypes. For
+block dtypes the blocks run along K.
 
 ```
 wd = dequantize(w)                     # f32 [N, K], reference decode
@@ -362,28 +362,19 @@ y = mul(mul(k(0.5), x), add(k(1), tanh.v1(inner)))
 
 Tolerance: `abs 32 u max(1, |x|)`.
 
-### 4.7 swiglu.v1
+### 4.7 swiglu.v1 and geglu.v1
 
-Signature: inputs `a` (gate), `b` (up), equal dtype and broadcast-compatible
-shapes; output `y`.
-
-```
-y = mul(silu.v1(a), b)
-```
-
-Tolerance: `rel (20 + 2|a|) u`.
-
-### 4.8 geglu.v1
-
-Signature: inputs `a` (gate), `b` (up); attribute `approximate` (string,
-"none" or "tanh", default "none"); output `y`.
+Signature: inputs `a` (gate) and `b` (up), equal dtype, broadcast-compatible
+shapes; output `y`. geglu.v1 has attribute `approximate` (string, "none" or
+"tanh", default "none").
 
 ```
-g = gelu_erf.v1(a) if approximate == "none" else gelu_tanh.v1(a)
-y = mul(g, b)
+swiglu: y = mul(silu.v1(a), b)
+geglu:  y = mul(gelu_erf.v1(a) if approximate == "none" else gelu_tanh.v1(a), b)
 ```
 
-Tolerance: the tolerance of the selected GELU times `|b|`, plus `u |r|`.
+Tolerance: swiglu, `rel (20 + 2|a|) u`; geglu, the selected GELU tolerance
+times `|b|`, plus `u |r|`.
 
 ## 5. Normalisation and reductions
 
@@ -432,7 +423,7 @@ bias.
 
 ```
 axes = [axis, ..., r-1]
-Xf   = cast[f32](X)                                  # identity for f32
+Xf   = cast[f32](X)                   # f64 inputs: no cast, computed in f64
 n    = count(Xf, axes)
 mu   = div(reduce[add, axes](Xf), n)
 D    = sub(Xf, mu)
@@ -676,14 +667,11 @@ selected rows of a quantized table.
 
 ## 7. Selection and sorting
 
-The canonical bodies of top_k and argsort would be selection loops: for
-each of k (or L) steps, find the maximum not yet taken with `reduce`, locate
-its lowest index with `cmpeq`, `iota` and a minimum, and mark it taken with
-`scatter`. That is expressible with the primitives, but costs O(k L) work
-and O(k) loop iterations per row, and its tie and NaN handling would be
-harder to read than the definition it implements. For these two composites
-the reference definitions below are normative in place of a body. A runtime
-without a fast path MUST implement them directly. See Open issues.
+top_k and argsort have no canonical body. A body is possible (a selection
+loop of `reduce`, `cmpeq`, `iota` and `scatter`, one step per selected
+element), but it costs O(k L) work and is harder to read than the
+definition it would implement. The reference definitions below are
+normative instead; a runtime MUST implement them directly. See Open issues.
 
 Ordering used by both: integers in their natural order; floats in the
 order `-inf < ... < -0 = +0 < ... < +inf < NaN`, where -0 and +0 compare
@@ -726,31 +714,23 @@ NaN elements sort last when ascending and first when descending. Exact.
 
 ## 8. Open issues
 
-1. Sort-like operations. top_k.v1 and argsort.v1 have reference definitions
-   instead of canonical bodies. Under the admission rule of
-   spec/primitives.md section 8 a sort is not a primitive, because it is
-   expressible as a selection loop. But a runtime without a fast path then
-   has no practical body to inline, which weakens the claim that the
-   primitives alone run every model. Phase 2 decides between (a) admitting
-   a `sort` primitive (returning values and stable indices) as a second
-   explicit exception, alongside `dequantize`, or (b) publishing the
-   selection-loop bodies as normative and keeping the reference definitions
-   as informative.
+1. Sort-like operations. top_k.v1 and argsort.v1 have reference definitions,
+   not bodies. Under the admission rule (spec/primitives.md section 8) a
+   sort is not a primitive, since a selection loop expresses it; but then a
+   primitives-only runtime has no practical body to inline. Phase 2 decides
+   between admitting a `sort` primitive (values and stable indices) as a
+   second explicit exception next to `dequantize`, and publishing the
+   selection-loop bodies as normative.
 2. Sequential scans. cumsum.v1, and `iota` and `riota` built on it, use an
-   L-iteration `while` loop. They are correct for symbolic lengths but slow
-   without a fast path, and `attention.v1` with `causal` depends on them.
-   Speed is not grounds for a primitive; the alternative is a parallel-scan
-   body for static lengths. To be decided with item 1.
+   L-iteration `while` loop; `attention.v1` with `causal` depends on them.
+   They are correct for symbolic lengths but slow without a fast path. To
+   be decided with item 1.
 3. Activation quantization. Kernels that quantize x in dequant_matmul (as
-   llama.cpp does with 8-bit activation blocks) exceed the tolerance of
-   dequant_matmul.v1. Either a separate composite (for example
-   `dequant_matmul_q8act.v1`) with its own looser tolerance, or a declared
-   per-runtime deviation, is needed.
-4. Tolerances. All numbers in this document are provisional; Phase 2
-   calibrates them by running the canonical bodies in f32 and f16 against
-   the float64 reference on the conformance corpus.
-5. Body macros. `sub`, `div`, `min`, `abs`, `concat` and `take_strided` are
-   notation only. If importers need them as stable named operations, they
-   can become composites without changing the primitive set.
-6. Fully masked attention rows are unspecified. A later version may fix the
-   result to 0, which is what most fused kernels return.
+   llama.cpp does with 8-bit activation blocks) exceed the dequant_matmul.v1
+   tolerance. A separate composite with a looser tolerance is needed.
+4. Tolerances are provisional; Phase 2 calibrates them by running the
+   canonical bodies in f32 and f16 against the float64 reference.
+5. Body macros (`sub`, `div`, `min`, `abs`, `concat`, `take_strided`) are
+   notation only; they can become composites if importers need them named.
+6. Fully masked attention rows are unspecified; a later version may fix the
+   result to 0, as most fused kernels return.
