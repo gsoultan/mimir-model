@@ -210,7 +210,12 @@ func (f *File) parseIndex() error {
 	if !seen[SectionWeights] {
 		return errf(CodeMissingSection, "no weights section")
 	}
-	sort.Slice(regions, func(i, j int) bool { return regions[i].off < regions[j].off })
+	sort.Slice(regions, func(i, j int) bool {
+		if regions[i].off != regions[j].off {
+			return regions[i].off < regions[j].off
+		}
+		return regions[i].n < regions[j].n
+	})
 	for i := 1; i < len(regions); i++ {
 		prev := regions[i-1]
 		if regions[i].off < prev.off+prev.n {
