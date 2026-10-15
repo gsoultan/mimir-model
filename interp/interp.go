@@ -36,6 +36,7 @@ type Program struct {
 	fixed      map[uint32]*ref.Tensor // weights and consts, by value id
 	initVars   map[uint32]*ref.Tensor // initial variable values, by value id
 	composites map[string]uint32      // "name.vN" to subgraph index
+	inplace    map[*mmf.Op]uint32     // scatters that may run in place, to their variable
 }
 
 // Load decodes f's graph and resolves its weight, const and variable values
@@ -98,6 +99,7 @@ func New(g *mmf.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 			p.fixed[uint32(id)] = t
 		}
 	}
+	p.inplace = inplaceScatters(g)
 	for _, c := range g.Composites {
 		key := fmt.Sprintf("%s.v%d", c.Name, c.Version)
 		if _, dup := p.composites[key]; dup {
@@ -116,11 +118,14 @@ func (p *Program) Graph() *mmf.Graph { return p.g }
 type Session struct {
 	p    *Program
 	vars map[uint32]*ref.Tensor
+	// owned marks the variables whose current tensor this session made
+	// and nothing else refers to, which an in-place scatter may modify.
+	owned map[uint32]bool
 }
 
 // NewSession starts a session with every variable at its initial value.
 func (p *Program) NewSession() *Session {
-	s := &Session{p: p, vars: map[uint32]*ref.Tensor{}}
+	s := &Session{p: p, vars: map[uint32]*ref.Tensor{}, owned: map[uint32]bool{}}
 	for id, t := range p.initVars {
 		s.vars[id] = t
 	}
@@ -139,8 +144,10 @@ func (s *Session) Variable(name string) (*ref.Tensor, bool) {
 
 // run is the state of one Run call.
 type run struct {
-	p   *Program
-	sym []int // bound size of each symbolic dimension, -1 when unbound
+	p    *Program
+	s    *Session
+	sym  []int  // bound size of each symbolic dimension, -1 when unbound
+	undo []undo // bytes of owned variables overwritten in place
 }
 
 // scope maps value ids to tensors; a subgraph's scope sees its parent's
@@ -162,9 +169,16 @@ func (s *scope) get(id uint32) (*ref.Tensor, bool) {
 // Run executes the main graph once. inputs maps the names of the main
 // graph's inputs to tensors; the result maps output names to tensors. If
 // the run fails, no variable changes (spec/primitives.md section 7).
-func (s *Session) Run(inputs map[string]*ref.Tensor) (map[string]*ref.Tensor, error) {
+func (s *Session) Run(inputs map[string]*ref.Tensor) (out map[string]*ref.Tensor, err error) {
 	g := s.p.g
-	r := &run{p: s.p, sym: make([]int, len(g.SymDims))}
+	r := &run{p: s.p, s: s, sym: make([]int, len(g.SymDims))}
+	defer func() {
+		if err != nil {
+			for i := len(r.undo) - 1; i >= 0; i-- {
+				copy(r.undo[i].dst, r.undo[i].old)
+			}
+		}
+	}()
 	for i := range r.sym {
 		r.sym[i] = -1
 	}
@@ -202,7 +216,7 @@ func (s *Session) Run(inputs map[string]*ref.Tensor) (map[string]*ref.Tensor, er
 	if err := r.exec(0, top); err != nil {
 		return nil, err
 	}
-	out := map[string]*ref.Tensor{}
+	out = map[string]*ref.Tensor{}
 	for _, id := range main.Outputs {
 		t, _ := top.get(id)
 		out[g.Values[id].Name] = t
@@ -222,6 +236,11 @@ func (s *Session) Run(inputs map[string]*ref.Tensor) (map[string]*ref.Tensor, er
 		next[u.Variable] = t
 	}
 	s.vars = next // the one atomic step
+	// The scatters that may run in place made fresh tensors for their
+	// variables, or wrote into tensors the session already owned.
+	for _, v := range s.p.inplace {
+		s.owned[v] = true
+	}
 	return out, nil
 }
 
@@ -371,6 +390,11 @@ func (r *run) op(op *mmf.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error)
 	shape, err := r.shape(v)
 	if err != nil {
 		return nil, err
+	}
+	if r.p.FastPaths {
+		if t, ok := r.fastPrimitive(op, in, v.DType, shape); ok {
+			return []*ref.Tensor{t}, nil
+		}
 	}
 	t, err := ref.Eval(op.Opcode, op.Attrs, in, v.DType, shape)
 	if err != nil {

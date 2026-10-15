@@ -149,6 +149,7 @@ type llamaBuilder struct {
 	g       *mmf.Graph
 	byName  map[string]int
 	weights map[string]uint32
+	a8      bool
 }
 
 func (b *llamaBuilder) val(name string, dt mmf.DType, shape ...mmf.Dim) uint32 {
@@ -218,11 +219,14 @@ func ints(v ...int64) mmf.Attr            { return mmf.Attr{Type: mmf.AttrInts, 
 func named(k string, a mmf.Attr) mmf.Attr { a.Key = k; return a }
 
 // matmulOp emits x times w^T, with linear.v1 for f32 weights and
-// dequant_matmul.v1 for every other dtype.
+// dequant_matmul.v1 or dequant_matmul_a8.v1 for every other dtype.
 func (b *llamaBuilder) matmulOp(name string, x, w uint32, shape ...mmf.Dim) uint32 {
 	comp := "dequant_matmul"
-	if b.g.Values[w].DType == mmf.F32 {
+	switch {
+	case b.g.Values[w].DType == mmf.F32:
 		comp = "linear"
+	case b.a8:
+		comp = "dequant_matmul_a8"
 	}
 	return b.call(comp, []uint32{x, w}, b.val(name, mmf.F32, shape...))
 }
@@ -238,12 +242,22 @@ func (b *llamaBuilder) f32Of(w uint32) uint32 {
 		mmf.Attr{Key: "to", Type: mmf.AttrDType, DType: mmf.F32})
 }
 
+// LlamaOptions configures BuildLlama.
+type LlamaOptions struct {
+	// Context is the key-value cache length; 0 means the model's own.
+	Context int
+	// A8 writes the matrix products with quantized weights as
+	// dequant_matmul_a8.v1, which lets a runtime round the activations to
+	// 8-bit blocks as llama.cpp does, instead of dequant_matmul.v1.
+	A8 bool
+}
+
 // BuildLlama adds a forward-pass graph for a llama-architecture source,
 // with a key-value cache of the configured context length, and returns
 // the configuration it used. The cache tensors and the key position table
 // are added to s.Tensors; AddTo writes the graph section.
-func BuildLlama(s *Source, context int) (*LlamaConfig, error) {
-	c, err := LlamaConfigOf(s, context)
+func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
+	c, err := LlamaConfigOf(s, o.Context)
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +269,7 @@ func BuildLlama(s *Source, context int) (*LlamaConfig, error) {
 		g:       &mmf.Graph{PrimitiveVersion: mmf.CurrentPrimitive, StdlibVersion: mmf.CurrentStdlib, Subgraphs: []mmf.Subgraph{{}}},
 		byName:  map[string]int{},
 		weights: map[string]uint32{},
+		a8:      o.A8,
 	}
 	for i, t := range s.Tensors {
 		b.byName[t.Name] = i

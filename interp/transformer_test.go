@@ -1,6 +1,7 @@
 package interp
 
 import (
+	"encoding/binary"
 	"math"
 	"math/rand"
 	"testing"
@@ -193,4 +194,74 @@ func TestAttentionDefinition(t *testing.T) {
 			}
 		}
 	}
+}
+
+// kquant returns an [n, k] tensor of dtype dt with random quants and
+// moderate scales, for the K-quant dtypes mmf.Quantize does not encode.
+func kquant(rng *rand.Rand, dt mmf.DType, n, k int) *ref.Tensor {
+	size, _ := ref.ByteSize(dt, []int{n, k})
+	b := make([]byte, size)
+	rng.Read(b)
+	put := func(o int, v float32) { binary.LittleEndian.PutUint16(b[o:], mmf.F32ToF16(v)) }
+	switch dt {
+	case mmf.Q4_K:
+		for o := 0; o < len(b); o += 144 {
+			put(o, rng.Float32()*0.01)
+			put(o+2, rng.Float32()*0.01)
+		}
+	case mmf.Q6_K:
+		for o := 0; o < len(b); o += 210 {
+			put(o+208, rng.Float32()*0.01-0.005)
+		}
+	}
+	return &ref.Tensor{DType: dt, Shape: []int{n, k}, Data: b}
+}
+
+// TestDequantMatmulA8 checks the 8-bit activation fast path against the
+// exact canonical body with the dequant_matmul_a8.v1 tolerance: one
+// quantization step of each activation block per weight, plus rounding.
+func TestDequantMatmulA8(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	const k = 512
+	x := randF32(rng, []int{1, 3, k}, 1)
+	xv := f32Values(x)
+	for _, w := range []*ref.Tensor{
+		quantized(t, mmf.Q8_0, rng, 6, k), kquant(rng, mmf.Q4_K, 6, k), kquant(rng, mmf.Q6_K, 6, k), quantized(t, mmf.Q4_0, rng, 6, k),
+	} {
+		in := []*ref.Tensor{x, w, randF32(rng, []int{6}, 1)}
+		want, err := stdlib["dequant_matmul_a8.v1"](nil, in, []mmf.DType{mmf.F32}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, handled, err := fastPaths["dequant_matmul_a8.v1"](nil, in, []mmf.DType{mmf.F32}, nil)
+		if err != nil || !handled {
+			t.Fatalf("%s: handled %v, %v", w.DType, handled, err)
+		}
+		wd := make([]float32, 6*k)
+		mmf.Dequantize(w.DType, w.Data, wd)
+		g, e := f32Values(got[0]), f32Values(want[0])
+		for i := 0; i < 3; i++ {
+			for j := 0; j < 6; j++ {
+				var bound float64
+				for b := 0; b < k; b += 32 {
+					var amax float64
+					for _, v := range xv[i*k+b : i*k+b+32] {
+						amax = math.Max(amax, math.Abs(float64(v)))
+					}
+					for kk := b; kk < b+32; kk++ {
+						aw := math.Abs(float64(wd[j*k+kk]))
+						bound += amax/127*aw + 1e-4*(math.Abs(float64(xv[i*k+kk]))+amax/127)*aw
+					}
+				}
+				if d := math.Abs(float64(g[i*6+j] - e[i*6+j])); d > bound {
+					t.Errorf("%s [%d,%d]: got %g, exact %g, diff %g > %g", w.DType, i, j, g[i*6+j], e[i*6+j], d, bound)
+				}
+			}
+		}
+	}
+	// Activations that are not finite take the float32 path, so infinities
+	// and NaN come out as the exact product's.
+	bad := randF32(rng, []int{1, 1, k}, 1)
+	bad.SetBits(7, uint64(math.Float32bits(float32(math.Inf(1)))))
+	checkFast(t, "dequant_matmul_a8.v1", nil, []*ref.Tensor{bad, kquant(rng, mmf.Q4_K, 4, k)}, 1e-5)
 }

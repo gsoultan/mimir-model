@@ -21,6 +21,8 @@ so the sizes and times are those of the real model.
 | `tinyllama-rand-q4km.gguf` | llama.cpp's quantizer, Q4_K_M |
 | `tinyllama-rand-bf16.safetensors` | the script, BF16 with Hugging Face tensor names |
 | `q4km.mmf` | `mmf-import tinyllama-rand-q4km.gguf` |
+| `q4km-graph.mmf` | `mmf-import -graph -ctx 2048 -a8=false tinyllama-rand-q4km.gguf` |
+| `q4km-a8.mmf` | `mmf-import -graph -ctx 2048 tinyllama-rand-q4km.gguf` |
 | `bf16.mmf` | `mmf-import tinyllama-rand-bf16.safetensors` |
 
 To reproduce:
@@ -99,3 +101,30 @@ What this shows:
   file.
 - **None of the formats copies the weights.** Resident memory is the mapped
   file plus one to three MiB.
+
+## Generating text
+
+`tools/bench_generate.py` runs a prompt of 21 tokens and generates 64
+tokens greedily, in a fresh process per run, with `mmf-run` for mmf files
+and with llama.cpp (through llama-cpp-python 0.3) for the GGUF file. Both
+use the 4 cores. *load* is the time until the model is ready to run,
+*peak RSS* the process's peak resident memory.
+
+| file | runtime | load | prompt | generation | peak RSS |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `tinyllama-rand-q4km.gguf` | llama.cpp | 804 ms | 110 tok/s | 26.9 tok/s | 1208 MiB |
+| `q4km-graph.mmf` | mmf-run | 10 ms | 16.8 tok/s | 9.3 tok/s | 1161 MiB |
+| `q4km-a8.mmf` | mmf-run | 9 ms | 22.7 tok/s | 14.7 tok/s | 1013 MiB |
+
+`q4km-graph.mmf` is imported with `-a8=false`: its matrix products are
+`dequant_matmul.v1`, computed to float32 accuracy. `q4km-a8.mmf` is the
+default import, whose matrix products are `dequant_matmul_a8.v1`: the
+activations may be rounded to 8 bits, as llama.cpp does, which lets the
+products run in integer arithmetic. Its logits stay within llama.cpp's own
+distance from a float64 forward pass (`cmd/mmf-run`'s `TestGenerateA8`).
+
+Before the kernels in `internal/kernels`, the same model generated 0.88
+tokens per second. llama.cpp is still about 1.8 times faster at generation
+and 5 times faster on the prompt, where it multiplies matrices by matrices
+rather than row by row. mmf-run's load is fast because nothing is read
+until the first step.

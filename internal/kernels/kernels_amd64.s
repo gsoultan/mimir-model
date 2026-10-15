@@ -1,0 +1,693 @@
+//go:build amd64 && !purego
+
+#include "textflag.h"
+
+// AVX2 and FMA kernels. Each weight is decoded with the same float32
+// operations, in the same order, as mmf.Dequantize, and then multiplied
+// into the activations with fused multiply-adds into four accumulators.
+
+// func cpuid(eax, ecx uint32) (a, b, c, d uint32)
+TEXT ·cpuid(SB), NOSPLIT, $0-24
+	MOVL eax+0(FP), AX
+	MOVL ecx+4(FP), CX
+	CPUID
+	MOVL AX, a+8(FP)
+	MOVL BX, b+12(FP)
+	MOVL CX, c+16(FP)
+	MOVL DX, d+20(FP)
+	RET
+
+// func xgetbv() (eax, edx uint32)
+TEXT ·xgetbv(SB), NOSPLIT, $0-8
+	MOVL $0, CX
+	XGETBV
+	MOVL AX, eax+0(FP)
+	MOVL DX, edx+4(FP)
+	RET
+
+// HSUM adds the four accumulators Y0..Y3 and leaves the sum of the eight
+// lanes in X0.
+#define HSUM \
+	VADDPS       Y1, Y0, Y0; \
+	VADDPS       Y3, Y2, Y2; \
+	VADDPS       Y2, Y0, Y0; \
+	VEXTRACTF128 $1, Y0, X1; \
+	VADDPS       X1, X0, X0; \
+	VHADDPS      X0, X0, X0; \
+	VHADDPS      X0, X0, X0; \
+	VZEROUPPER
+
+#define ZERO4 \
+	VXORPS Y0, Y0, Y0; \
+	VXORPS Y1, Y1, Y1; \
+	VXORPS Y2, Y2, Y2; \
+	VXORPS Y3, Y3, Y3
+
+// func dotF32AVX2(a, b *float32, n int) float32
+// n is a positive multiple of 8.
+TEXT ·dotF32AVX2(SB), NOSPLIT, $0-28
+	MOVQ a+0(FP), SI
+	MOVQ b+8(FP), DI
+	MOVQ n+16(FP), CX
+	ZERO4
+
+f32loop32:
+	CMPQ        CX, $32
+	JL          f32loop8
+	VMOVUPS     (SI), Y4
+	VMOVUPS     32(SI), Y5
+	VMOVUPS     64(SI), Y6
+	VMOVUPS     96(SI), Y7
+	VFMADD231PS (DI), Y4, Y0
+	VFMADD231PS 32(DI), Y5, Y1
+	VFMADD231PS 64(DI), Y6, Y2
+	VFMADD231PS 96(DI), Y7, Y3
+	ADDQ        $128, SI
+	ADDQ        $128, DI
+	SUBQ        $32, CX
+	JMP         f32loop32
+
+f32loop8:
+	CMPQ        CX, $8
+	JL          f32done
+	VMOVUPS     (SI), Y4
+	VFMADD231PS (DI), Y4, Y0
+	ADDQ        $32, SI
+	ADDQ        $32, DI
+	SUBQ        $8, CX
+	JMP         f32loop8
+
+f32done:
+	HSUM
+	MOVSS X0, ret+24(FP)
+	RET
+
+// func axpyF32AVX2(alpha float32, x, y *float32, n int)
+// n is a positive multiple of 8.
+TEXT ·axpyF32AVX2(SB), NOSPLIT, $0-32
+	VBROADCASTSS alpha+0(FP), Y15
+	MOVQ         x+8(FP), SI
+	MOVQ         y+16(FP), DI
+	MOVQ         n+24(FP), CX
+
+axpyloop:
+	VMOVUPS     (DI), Y0
+	VFMADD231PS (SI), Y15, Y0
+	VMOVUPS     Y0, (DI)
+	ADDQ        $32, SI
+	ADDQ        $32, DI
+	SUBQ        $8, CX
+	JNZ         axpyloop
+	VZEROUPPER
+	RET
+
+// Q4_K: 144-byte blocks of 256 weights (f16 d, f16 dmin, 12 scale bytes,
+// 128 bytes of nibbles). tab holds 16 floats per block, the eight
+// sub-block scales d*sc and then the eight offsets dmin*m. The 32 bytes
+// of chunk c hold sub-block 2c in their low nibbles and 2c+1 in their high
+// nibbles; w = d*sc*q - dmin*m.
+
+// Q4STEP decodes the 8 low and 8 high nibbles of the bytes at qo and
+// accumulates them against x at byte offsets lo and hi.
+#define Q4STEP(qo, lo, hi, accA, accB) \
+	VPMOVZXBD   qo(R8), Y8; \
+	VPAND       Y15, Y8, Y9; \
+	VPSRLD      $4, Y8, Y10; \
+	VCVTDQ2PS   Y9, Y9; \
+	VCVTDQ2PS   Y10, Y10; \
+	VMULPS      Y4, Y9, Y9; \
+	VSUBPS      Y5, Y9, Y9; \
+	VMULPS      Y6, Y10, Y10; \
+	VSUBPS      Y7, Y10, Y10; \
+	VFMADD231PS lo(R9), Y9, accA; \
+	VFMADD231PS hi(R9), Y10, accB
+
+// func dotQ4KAVX2(q *byte, x, tab *float32, nb int) float32
+// nb is positive.
+TEXT ·dotQ4KAVX2(SB), NOSPLIT, $0-36
+	MOVQ q+0(FP), SI
+	MOVQ x+8(FP), DI
+	MOVQ tab+16(FP), DX
+	MOVQ nb+24(FP), CX
+	ZERO4
+	VPCMPEQD Y15, Y15, Y15
+	VPSRLD   $28, Y15, Y15 // 0x0000000F
+
+q4block:
+	LEAQ 16(SI), R8 // the nibbles of chunk 0
+	MOVQ DI, R9     // x of chunk 0
+	MOVQ DX, R10    // the scales of chunk 0
+	MOVQ $4, BX
+
+q4chunk:
+	VBROADCASTSS (R10), Y4  // d*sc of sub-block 2c
+	VBROADCASTSS 32(R10), Y5 // dmin*m of sub-block 2c
+	VBROADCASTSS 4(R10), Y6  // d*sc of sub-block 2c+1
+	VBROADCASTSS 36(R10), Y7 // dmin*m of sub-block 2c+1
+	Q4STEP(0, 0, 128, Y0, Y1)
+	Q4STEP(8, 32, 160, Y2, Y3)
+	Q4STEP(16, 64, 192, Y0, Y1)
+	Q4STEP(24, 96, 224, Y2, Y3)
+	ADDQ $32, R8
+	ADDQ $256, R9
+	ADDQ $8, R10
+	DECQ BX
+	JNZ  q4chunk
+
+	ADDQ $144, SI
+	ADDQ $1024, DI
+	ADDQ $64, DX
+	DECQ CX
+	JNZ  q4block
+
+	HSUM
+	MOVSS X0, ret+32(FP)
+	RET
+
+// Q6_K: 210-byte blocks of 256 weights (128 bytes ql, 64 bytes qh, 16
+// int8 scales, f16 d). tab holds the 16 products d*scale per block. Each
+// half of a block covers 128 weights from 64 bytes of ql and 32 of qh; for
+// l in 0..31 of a half:
+//
+//	q1 = ql[l]&15    | (qh[l]&3)<<4       weight l      scale l/16
+//	q2 = ql[l+32]&15 | (qh[l]>>2&3)<<4    weight l+32   scale l/16+2
+//	q3 = ql[l]>>4    | (qh[l]>>4&3)<<4    weight l+64   scale l/16+4
+//	q4 = ql[l+32]>>4 | (qh[l]>>6&3)<<4    weight l+96   scale l/16+6
+//
+// and w = (d*scale)*(q-32).
+
+// Q6ONE finishes one of the four quants: OR in the high bits, subtract 32,
+// convert, scale and accumulate.
+#define Q6ONE(lowbits, highbits, scale, xo, acc) \
+	VPOR        highbits, lowbits, lowbits; \
+	VPSUBD      Y13, lowbits, lowbits; \
+	VCVTDQ2PS   lowbits, lowbits; \
+	VMULPS      scale, lowbits, lowbits; \
+	VFMADD231PS xo(R9), lowbits, acc
+
+// Q6STEP decodes weights l..l+7 of each quarter of a half block.
+#define Q6STEP(l, l32, x1, x2, x3, x4) \
+	VPMOVZXBD l(R8), Y8; \
+	VPMOVZXBD l32(R8), Y9; \
+	VPMOVZXBD l(R11), Y10; \
+	VPAND     Y15, Y8, Y11; \
+	VPSLLD    $4, Y10, Y12; \
+	VPAND     Y14, Y12, Y12; \
+	Q6ONE(Y11, Y12, Y4, x1, Y0); \
+	VPAND     Y15, Y9, Y11; \
+	VPSLLD    $2, Y10, Y12; \
+	VPAND     Y14, Y12, Y12; \
+	Q6ONE(Y11, Y12, Y5, x2, Y1); \
+	VPSRLD    $4, Y8, Y11; \
+	VPAND     Y14, Y10, Y12; \
+	Q6ONE(Y11, Y12, Y6, x3, Y2); \
+	VPSRLD    $4, Y9, Y11; \
+	VPSRLD    $2, Y10, Y12; \
+	VPAND     Y14, Y12, Y12; \
+	Q6ONE(Y11, Y12, Y7, x4, Y3)
+
+// Q6SCALES broadcasts the four scales of sub-row s (0 or 1) of a half.
+#define Q6SCALES(s0, s2, s4, s6) \
+	VBROADCASTSS s0(R10), Y4; \
+	VBROADCASTSS s2(R10), Y5; \
+	VBROADCASTSS s4(R10), Y6; \
+	VBROADCASTSS s6(R10), Y7
+
+// func dotQ6KAVX2(q *byte, x, tab *float32, nb int) float32
+// nb is positive.
+TEXT ·dotQ6KAVX2(SB), NOSPLIT, $0-36
+	MOVQ q+0(FP), SI
+	MOVQ x+8(FP), DI
+	MOVQ tab+16(FP), DX
+	MOVQ nb+24(FP), CX
+	ZERO4
+	VPCMPEQD Y15, Y15, Y15
+	VPSRLD   $28, Y15, Y15 // 0x0F
+	VPCMPEQD Y14, Y14, Y14
+	VPSRLD   $30, Y14, Y14
+	VPSLLD   $4, Y14, Y14  // 0x30
+	VPCMPEQD Y13, Y13, Y13
+	VPSRLD   $31, Y13, Y13
+	VPSLLD   $5, Y13, Y13  // 32
+
+q6block:
+	MOVQ SI, R8      // ql of half 0
+	LEAQ 128(SI), R11 // qh of half 0
+	MOVQ DI, R9      // x of half 0
+	MOVQ DX, R10     // scales of half 0
+	MOVQ $2, BX
+
+q6half:
+	Q6SCALES(0, 8, 16, 24)
+	Q6STEP(0, 32, 0, 128, 256, 384)
+	Q6STEP(8, 40, 32, 160, 288, 416)
+	Q6SCALES(4, 12, 20, 28)
+	Q6STEP(16, 48, 64, 192, 320, 448)
+	Q6STEP(24, 56, 96, 224, 352, 480)
+	ADDQ $64, R8
+	ADDQ $32, R11
+	ADDQ $512, R9
+	ADDQ $32, R10
+	DECQ BX
+	JNZ  q6half
+
+	ADDQ $210, SI
+	ADDQ $1024, DI
+	ADDQ $64, DX
+	DECQ CX
+	JNZ  q6block
+
+	HSUM
+	MOVSS X0, ret+32(FP)
+	RET
+
+// Q8_0: 34-byte blocks of 32 weights (f16 d, 32 int8). tab holds d per
+// block; w = d*q.
+#define Q8STEP(qo, xo, acc) \
+	VPMOVSXBD   qo(SI), Y8; \
+	VCVTDQ2PS   Y8, Y8; \
+	VMULPS      Y4, Y8, Y8; \
+	VFMADD231PS xo(DI), Y8, acc
+
+// func dotQ8_0AVX2(q *byte, x, tab *float32, nb int) float32
+// nb is positive.
+TEXT ·dotQ8_0AVX2(SB), NOSPLIT, $0-36
+	MOVQ q+0(FP), SI
+	MOVQ x+8(FP), DI
+	MOVQ tab+16(FP), DX
+	MOVQ nb+24(FP), CX
+	ZERO4
+
+q8block:
+	VBROADCASTSS (DX), Y4
+	Q8STEP(2, 0, Y0)
+	Q8STEP(10, 32, Y1)
+	Q8STEP(18, 64, Y2)
+	Q8STEP(26, 96, Y3)
+	ADDQ $34, SI
+	ADDQ $128, DI
+	ADDQ $4, DX
+	DECQ CX
+	JNZ  q8block
+
+	HSUM
+	MOVSS X0, ret+32(FP)
+	RET
+
+// func dotF16AVX2(w *byte, x *float32, n int) float32
+// n is a positive multiple of 8. Needs F16C.
+TEXT ·dotF16AVX2(SB), NOSPLIT, $0-28
+	MOVQ w+0(FP), SI
+	MOVQ x+8(FP), DI
+	MOVQ n+16(FP), CX
+	ZERO4
+
+f16loop32:
+	CMPQ        CX, $32
+	JL          f16loop8
+	VCVTPH2PS   (SI), Y4
+	VCVTPH2PS   16(SI), Y5
+	VCVTPH2PS   32(SI), Y6
+	VCVTPH2PS   48(SI), Y7
+	VFMADD231PS (DI), Y4, Y0
+	VFMADD231PS 32(DI), Y5, Y1
+	VFMADD231PS 64(DI), Y6, Y2
+	VFMADD231PS 96(DI), Y7, Y3
+	ADDQ        $64, SI
+	ADDQ        $128, DI
+	SUBQ        $32, CX
+	JMP         f16loop32
+
+f16loop8:
+	CMPQ        CX, $8
+	JL          f16done
+	VCVTPH2PS   (SI), Y4
+	VFMADD231PS (DI), Y4, Y0
+	ADDQ        $16, SI
+	ADDQ        $32, DI
+	SUBQ        $8, CX
+	JMP         f16loop8
+
+f16done:
+	HSUM
+	MOVSS X0, ret+24(FP)
+	RET
+
+// func dotBF16AVX2(w *byte, x *float32, n int) float32
+// n is a positive multiple of 8. A bf16 is the high half of a float32.
+TEXT ·dotBF16AVX2(SB), NOSPLIT, $0-28
+	MOVQ w+0(FP), SI
+	MOVQ x+8(FP), DI
+	MOVQ n+16(FP), CX
+	ZERO4
+
+bf16loop32:
+	CMPQ        CX, $32
+	JL          bf16loop8
+	VPMOVZXWD   (SI), Y4
+	VPMOVZXWD   16(SI), Y5
+	VPMOVZXWD   32(SI), Y6
+	VPMOVZXWD   48(SI), Y7
+	VPSLLD      $16, Y4, Y4
+	VPSLLD      $16, Y5, Y5
+	VPSLLD      $16, Y6, Y6
+	VPSLLD      $16, Y7, Y7
+	VFMADD231PS (DI), Y4, Y0
+	VFMADD231PS 32(DI), Y5, Y1
+	VFMADD231PS 64(DI), Y6, Y2
+	VFMADD231PS 96(DI), Y7, Y3
+	ADDQ        $64, SI
+	ADDQ        $128, DI
+	SUBQ        $32, CX
+	JMP         bf16loop32
+
+bf16loop8:
+	CMPQ        CX, $8
+	JL          bf16done
+	VPMOVZXWD   (SI), Y4
+	VPSLLD      $16, Y4, Y4
+	VFMADD231PS (DI), Y4, Y0
+	ADDQ        $16, SI
+	ADDQ        $32, DI
+	SUBQ        $8, CX
+	JMP         bf16loop8
+
+bf16done:
+	HSUM
+	MOVSS X0, ret+24(FP)
+	RET
+
+// 8-bit activation kernels (q8.go). The activations come as int8 quants
+// in blocks of 32 with a float32 scale per block. Each block's integer dot
+// product with the weight quants is exact in int32; it is converted to
+// float32 and scaled.
+
+// BYTES0F sets reg to 0x0F in every byte, and BYTES03 to 0x03.
+#define BYTES0F(reg) \
+	VPCMPEQW  reg, reg, reg; \
+	VPSRLW    $12, reg, reg; \
+	VPACKUSWB reg, reg, reg
+
+#define BYTES03(reg) \
+	VPCMPEQW  reg, reg, reg; \
+	VPSRLW    $14, reg, reg; \
+	VPACKUSWB reg, reg, reg
+
+// HSUM1 leaves the sum of the eight lanes of Y0 in X0.
+#define HSUM1 \
+	VEXTRACTF128 $1, Y0, X1; \
+	VADDPS       X1, X0, X0; \
+	VHADDPS      X0, X0, X0; \
+	VHADDPS      X0, X0, X0; \
+	VZEROUPPER
+
+// F16FINITE jumps to bad if the f16 at mem is infinite or NaN.
+#define F16FINITE(mem, bad) \
+	MOVWLZX mem, AX; \
+	ANDL    $0x7C00, AX; \
+	CMPL    AX, $0x7C00; \
+	JEQ     bad
+
+// F16SCALAR converts the f16 at mem to float32 in the low lane of xreg.
+#define F16SCALAR(mem, xreg) \
+	MOVWLZX   mem, AX; \
+	VMOVD     AX, xreg; \
+	VCVTPH2PS xreg, xreg
+
+// func dotQ4KQ8AVX2(q *byte, xq *int8, xd, xdbs *float32, nb int) (float32, bool)
+//
+// The result is false, and the sum meaningless, if a block scale is not
+// finite.
+//
+// With sub-block scales sc_s and offsets m_s, and activation scales dx_s
+// and quants y:
+//
+//	sum w*x = d * sum_s dx_s * sc_s * sum q*y  -  sum_s dmin*m_s * dx_s * sum y
+//
+// xdbs holds dx_s * sum y per block of 32. The 6-bit scales and offsets are
+// unpacked as in ggml (get_scale_min_k4, on 32-bit words); the scales go to
+// the stack as int16 pairs for VPMADDWD.
+TEXT ·dotQ4KQ8AVX2(SB), NOSPLIT, $32-45
+	MOVQ   q+0(FP), SI
+	MOVQ   xq+8(FP), DI
+	MOVQ   xd+16(FP), R13
+	MOVQ   xdbs+24(FP), R14
+	MOVQ   nb+32(FP), CX
+	VXORPS Y2, Y2, Y2 // d * scaled integer dot products
+	VXORPS Y3, Y3, Y3 // offsets
+	BYTES0F(Y15)
+
+q4q8block:
+	F16FINITE(0(SI), q4q8bad)
+	F16FINITE(2(SI), q4q8bad)
+	F16SCALAR(0(SI), X13)
+	VBROADCASTSS X13, Y13 // d
+	F16SCALAR(2(SI), X12)
+	VBROADCASTSS X12, Y12 // dmin
+
+	MOVL 4(SI), R8  // scale bytes 0..3
+	MOVL 8(SI), R9  // 4..7
+	MOVL 12(SI), R10 // 8..11
+	MOVL R10, AX
+	SHRL $4, AX
+	ANDL $0x0f0f0f0f, AX
+	MOVL R9, BX
+	SHRL $6, BX
+	ANDL $0x03030303, BX
+	SHLL $4, BX
+	ORL  BX, AX          // m 4..7
+	MOVL R9, R11
+	ANDL $0x3f3f3f3f, R11 // m 0..3
+	ANDL $0x0f0f0f0f, R10
+	MOVL R8, BX
+	SHRL $6, BX
+	ANDL $0x03030303, BX
+	SHLL $4, BX
+	ORL  BX, R10         // sc 4..7
+	ANDL $0x3f3f3f3f, R8 // sc 0..3
+
+	SHLQ        $32, AX
+	ORQ         R11, AX
+	VMOVQ       AX, X9
+	VPMOVZXBD   X9, Y9
+	VCVTDQ2PS   Y9, Y9
+	VMULPS      Y12, Y9, Y9 // dmin*m
+	VFMADD231PS (R14), Y9, Y3
+
+	SHLQ       $32, R10
+	ORQ        R8, R10
+	VMOVQ      R10, X10
+	VPMOVZXBW  X10, X10
+	VPUNPCKLWD X10, X10, X11
+	VPUNPCKHWD X10, X10, X10
+	VMOVDQU    X11, 0(SP)
+	VMOVDQU    X10, 16(SP)
+
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	LEAQ   16(SI), R8 // the nibbles of chunk 0
+	LEAQ   0(SP), R10 // the scale pairs of chunk 0
+	MOVQ   $4, BX
+
+q4q8chunk:
+	VMOVDQU      (R8), Y8
+	VPAND        Y15, Y8, Y9   // sub-block 2c
+	VPSRLW       $4, Y8, Y10
+	VPAND        Y15, Y10, Y10 // sub-block 2c+1
+	VPMADDUBSW   (DI), Y9, Y9
+	VPMADDUBSW   32(DI), Y10, Y10
+	VPBROADCASTD (R10), Y11
+	VPBROADCASTD 4(R10), Y12
+	VPMADDWD     Y11, Y9, Y9
+	VPMADDWD     Y12, Y10, Y10
+	VCVTDQ2PS    Y9, Y9
+	VCVTDQ2PS    Y10, Y10
+	VBROADCASTSS (R13), Y11
+	VBROADCASTSS 4(R13), Y12
+	VFMADD231PS  Y11, Y9, Y0
+	VFMADD231PS  Y12, Y10, Y1
+	ADDQ         $32, R8
+	ADDQ         $64, DI
+	ADDQ         $8, R10
+	ADDQ         $8, R13
+	DECQ         BX
+	JNZ          q4q8chunk
+
+	VADDPS      Y1, Y0, Y0
+	VFMADD231PS Y13, Y0, Y2
+	ADDQ        $144, SI
+	ADDQ        $32, R14
+	DECQ        CX
+	JNZ         q4q8block
+
+	VSUBPS Y3, Y2, Y0
+	HSUM1
+	MOVSS  X0, ret+40(FP)
+	MOVB   $1, ret1+44(FP)
+	RET
+
+q4q8bad:
+	VZEROUPPER
+	MOVB $0, ret1+44(FP)
+	RET
+
+// Q6Q8DOT finishes one quarter of a Q6_K half block: qv holds its 32
+// unsigned 6-bit quants. It subtracts the bias of 32 using m32, applies the
+// two scales (one per 16 weights) picked from Y7 by shuffle mask sm,
+// converts, and accumulates with the activation scale at do.
+#define Q6Q8DOT(qv, xo, sm, do, acc) \
+	VPMADDUBSW   xo(DI), qv, qv; \
+	VPSUBW       xo(R14), qv, qv; \
+	VPSHUFB      sm, Y7, Y10; \
+	VPMADDWD     Y10, qv, qv; \
+	VCVTDQ2PS    qv, qv; \
+	VBROADCASTSS do(R13), Y11; \
+	VFMADD231PS  Y11, qv, acc
+
+// q6scales holds, for each quarter j of a half block, the VPSHUFB mask
+// that fills the low 128 bits with int16 scale 2j and the high 128 bits
+// with scale 2j+1.
+DATA q6scales<>+0(SB)/8, $0x0100010001000100
+DATA q6scales<>+8(SB)/8, $0x0100010001000100
+DATA q6scales<>+16(SB)/8, $0x0302030203020302
+DATA q6scales<>+24(SB)/8, $0x0302030203020302
+DATA q6scales<>+32(SB)/8, $0x0504050405040504
+DATA q6scales<>+40(SB)/8, $0x0504050405040504
+DATA q6scales<>+48(SB)/8, $0x0706070607060706
+DATA q6scales<>+56(SB)/8, $0x0706070607060706
+DATA q6scales<>+64(SB)/8, $0x0908090809080908
+DATA q6scales<>+72(SB)/8, $0x0908090809080908
+DATA q6scales<>+80(SB)/8, $0x0b0a0b0a0b0a0b0a
+DATA q6scales<>+88(SB)/8, $0x0b0a0b0a0b0a0b0a
+DATA q6scales<>+96(SB)/8, $0x0d0c0d0c0d0c0d0c
+DATA q6scales<>+104(SB)/8, $0x0d0c0d0c0d0c0d0c
+DATA q6scales<>+112(SB)/8, $0x0f0e0f0e0f0e0f0e
+DATA q6scales<>+120(SB)/8, $0x0f0e0f0e0f0e0f0e
+GLOBL q6scales<>(SB), RODATA|NOPTR, $128
+
+// func dotQ6KQ8AVX2(q *byte, xq *int8, xd *float32, m32 *int16, nb int) (float32, bool)
+//
+// m32 holds 32 times the sum of each pair of activation quants.
+TEXT ·dotQ6KQ8AVX2(SB), NOSPLIT, $0-45
+	MOVQ   q+0(FP), SI
+	MOVQ   xq+8(FP), DI
+	MOVQ   xd+16(FP), R13
+	MOVQ   m32+24(FP), R14
+	MOVQ   nb+32(FP), CX
+	VXORPS Y2, Y2, Y2
+	BYTES0F(Y15)
+	BYTES03(Y14)
+	VPSLLW $4, Y14, Y14 // 0x30
+
+q6q8block:
+	F16FINITE(208(SI), q6q8bad)
+	F16SCALAR(208(SI), X13)
+	VBROADCASTSS X13, Y13 // d
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	MOVQ   SI, R8       // ql of half 0
+	LEAQ   128(SI), R9  // qh of half 0
+	LEAQ   192(SI), R10 // scales of half 0
+	MOVQ   $2, BX
+
+q6q8half:
+	VPMOVSXBW   (R10), X7
+	VINSERTI128 $1, X7, Y7, Y7 // the half's eight scales in both lanes
+	VMOVDQU     (R8), Y4      // ql[0:32]
+	VMOVDQU     32(R8), Y5    // ql[32:64]
+	VMOVDQU     (R9), Y6      // qh[0:32]
+
+	// The 16-bit shifts move bits across bytes, but only into bits the
+	// masks clear.
+	VPAND  Y15, Y4, Y8
+	VPSLLW $4, Y6, Y9
+	VPAND  Y14, Y9, Y9
+	VPOR   Y9, Y8, Y8
+	Q6Q8DOT(Y8, 0, q6scales<>+0(SB), 0, Y0)
+
+	VPAND  Y15, Y5, Y8
+	VPSLLW $2, Y6, Y9
+	VPAND  Y14, Y9, Y9
+	VPOR   Y9, Y8, Y8
+	Q6Q8DOT(Y8, 32, q6scales<>+32(SB), 4, Y1)
+
+	VPSRLW $4, Y4, Y8
+	VPAND  Y15, Y8, Y8
+	VPAND  Y14, Y6, Y9
+	VPOR   Y9, Y8, Y8
+	Q6Q8DOT(Y8, 64, q6scales<>+64(SB), 8, Y0)
+
+	VPSRLW $4, Y5, Y8
+	VPAND  Y15, Y8, Y8
+	VPSRLW $2, Y6, Y9
+	VPAND  Y14, Y9, Y9
+	VPOR   Y9, Y8, Y8
+	Q6Q8DOT(Y8, 96, q6scales<>+96(SB), 12, Y1)
+
+	ADDQ $64, R8
+	ADDQ $32, R9
+	ADDQ $8, R10
+	ADDQ $128, DI
+	ADDQ $128, R14
+	ADDQ $16, R13
+	DECQ BX
+	JNZ  q6q8half
+
+	VADDPS      Y1, Y0, Y0
+	VFMADD231PS Y13, Y0, Y2
+	ADDQ        $210, SI
+	DECQ        CX
+	JNZ         q6q8block
+
+	VMOVAPS Y2, Y0
+	HSUM1
+	MOVSS   X0, ret+40(FP)
+	MOVB    $1, ret1+44(FP)
+	RET
+
+q6q8bad:
+	VZEROUPPER
+	MOVB $0, ret1+44(FP)
+	RET
+
+// func dotQ8_0Q8AVX2(q *byte, xq *int8, xd *float32, nb int) (float32, bool)
+//
+// The signed weights are split into magnitude and sign so that
+// VPMADDUBSW, which takes one unsigned operand, applies.
+TEXT ·dotQ8_0Q8AVX2(SB), NOSPLIT, $0-37
+	MOVQ     q+0(FP), SI
+	MOVQ     xq+8(FP), DI
+	MOVQ     xd+16(FP), R13
+	MOVQ     nb+24(FP), CX
+	VXORPS   Y0, Y0, Y0
+	VPCMPEQW Y14, Y14, Y14
+	VPSRLW   $15, Y14, Y14 // int16 ones
+
+q80q8loop:
+	F16FINITE(0(SI), q80q8bad)
+	VMOVDQU      2(SI), Y8
+	VMOVDQU      (DI), Y9
+	VPSIGNB      Y8, Y9, Y9 // x with the sign of w
+	VPABSB       Y8, Y8     // |w|, at most 128 as unsigned
+	VPMADDUBSW   Y9, Y8, Y8
+	VPMADDWD     Y14, Y8, Y8
+	VCVTDQ2PS    Y8, Y8
+	F16SCALAR(0(SI), X10)
+	VMULSS       (R13), X10, X10
+	VBROADCASTSS X10, Y10
+	VFMADD231PS  Y10, Y8, Y0
+	ADDQ         $34, SI
+	ADDQ         $32, DI
+	ADDQ         $4, R13
+	DECQ         CX
+	JNZ          q80q8loop
+
+	HSUM1
+	MOVSS X0, ret+32(FP)
+	MOVB  $1, ret1+36(FP)
+	RET
+
+q80q8bad:
+	VZEROUPPER
+	MOVB $0, ret1+36(FP)
+	RET
