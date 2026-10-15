@@ -27,6 +27,11 @@ type Program struct {
 	// 0 means DefaultMaxIterations.
 	MaxIterations int
 
+	// FastPaths enables the executor's own float32 kernels for the
+	// standard-library composites that have one (fast.go). When false,
+	// every composite runs its canonical body on the reference kernels.
+	FastPaths bool
+
 	g          *mmf.Graph
 	fixed      map[uint32]*ref.Tensor // weights and consts, by value id
 	initVars   map[uint32]*ref.Tensor // initial variable values, by value id
@@ -468,6 +473,7 @@ func (r *run) call(op *mmf.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 	if !ok {
 		return nil, fmt.Errorf("composite %s is not supported by this executor", key)
 	}
+	fast := r.p.FastPaths && fastPaths[key] != nil
 	shapes := make([][]int, len(op.Outputs))
 	dts := make([]mmf.DType, len(op.Outputs))
 	for k, id := range op.Outputs {
@@ -482,6 +488,12 @@ func (r *run) call(op *mmf.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 	for _, a := range op.Attrs {
 		if a.Key != "name" && a.Key != "version" {
 			cattrs = append(cattrs, a)
+		}
+	}
+	if fast {
+		out, handled, err := fastPaths[key](cattrs, in, dts, shapes)
+		if err != nil || handled {
+			return out, err
 		}
 	}
 	return fn(cattrs, in, dts, shapes)

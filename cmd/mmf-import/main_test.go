@@ -28,7 +28,7 @@ func TestRun(t *testing.T) {
 	for _, name := range []string{"tiny.gguf", "tiny.safetensors"} {
 		in := copyFixture(t, dir, name)
 		var out bytes.Buffer
-		if err := run(&out, []string{in}, "", true, true); err != nil {
+		if err := run(&out, []string{in}, options{bench: true, hash: true}); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(out.String(), "open+read") {
@@ -54,7 +54,7 @@ func TestRunRejects(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "x.bin")
 	os.WriteFile(bad, []byte("not a model"), 0o644)
-	if err := run(&bytes.Buffer{}, []string{bad}, filepath.Join(dir, "o.mmf"), false, true); err == nil {
+	if err := run(&bytes.Buffer{}, []string{bad}, options{out: filepath.Join(dir, "o.mmf"), hash: true}); err == nil {
 		t.Error("accepted a non-model file")
 	}
 }
