@@ -808,7 +808,7 @@ def gen_float_compare(rng, op):
 
 
 def gen_where(rng):
-    for dt in ["f32", "f64", "f16", "bf16", "i8", "u16", "i32", "u64", "bool"]:
+    for dt in ["f32", "f64", "f16", "bf16", "i8", "u16", "i32", "u64", "bool", "f8_e4m3", "f8_e5m2"]:
         n = 24
         if dt in FLOATS:
             nb = width(dt)
@@ -912,7 +912,8 @@ def gen_cast(rng):
 
 BITCAST_PAIRS = [("f32", "i32"), ("f32", "u32"), ("i32", "f32"), ("u32", "f32"), ("i32", "u32"),
                  ("f64", "i64"), ("u64", "f64"), ("i64", "u64"), ("f16", "bf16"), ("bf16", "f16"),
-                 ("f16", "i16"), ("u16", "bf16"), ("i8", "u8"), ("f32", "f32")]
+                 ("f16", "i16"), ("u16", "bf16"), ("i8", "u8"), ("f32", "f32"),
+                 ("u8", "f8_e4m3"), ("f8_e4m3", "i8"), ("f8_e5m2", "f8_e4m3"), ("i8", "f8_e5m2")]
 
 
 def gen_bitcast(rng):

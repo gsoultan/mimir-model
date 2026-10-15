@@ -149,6 +149,7 @@ type llamaBuilder struct {
 	g       *mmf.Graph
 	byName  map[string]int
 	weights map[string]uint32
+	a8      bool
 }
 
 func (b *llamaBuilder) val(name string, dt mmf.DType, shape ...mmf.Dim) uint32 {
@@ -178,6 +179,12 @@ func (b *llamaBuilder) stored(i int, kind mmf.ValueKind) uint32 {
 		dims[k] = mmf.Dim(d)
 	}
 	b.g.Values = append(b.g.Values, mmf.Value{Name: t.Name, DType: t.DType, Shape: dims, Kind: kind, Ref: uint32(i)})
+	return uint32(len(b.g.Values) - 1)
+}
+
+// zeros adds a variable that starts as zeros.
+func (b *llamaBuilder) zeros(name string, dt mmf.DType, shape ...mmf.Dim) uint32 {
+	b.g.Values = append(b.g.Values, mmf.Value{Name: name, DType: dt, Shape: shape, Kind: mmf.KindVariable, Zero: true})
 	return uint32(len(b.g.Values) - 1)
 }
 
@@ -218,11 +225,14 @@ func ints(v ...int64) mmf.Attr            { return mmf.Attr{Type: mmf.AttrInts, 
 func named(k string, a mmf.Attr) mmf.Attr { a.Key = k; return a }
 
 // matmulOp emits x times w^T, with linear.v1 for f32 weights and
-// dequant_matmul.v1 for every other dtype.
+// dequant_matmul.v1 or dequant_matmul_a8.v1 for every other dtype.
 func (b *llamaBuilder) matmulOp(name string, x, w uint32, shape ...mmf.Dim) uint32 {
 	comp := "dequant_matmul"
-	if b.g.Values[w].DType == mmf.F32 {
+	switch {
+	case b.g.Values[w].DType == mmf.F32:
 		comp = "linear"
+	case b.a8:
+		comp = "dequant_matmul_a8"
 	}
 	return b.call(comp, []uint32{x, w}, b.val(name, mmf.F32, shape...))
 }
@@ -238,12 +248,22 @@ func (b *llamaBuilder) f32Of(w uint32) uint32 {
 		mmf.Attr{Key: "to", Type: mmf.AttrDType, DType: mmf.F32})
 }
 
+// LlamaOptions configures BuildLlama.
+type LlamaOptions struct {
+	// Context is the key-value cache length; 0 means the model's own.
+	Context int
+	// A8 writes the matrix products with quantized weights as
+	// dequant_matmul_a8.v1, which lets a runtime round the activations to
+	// 8-bit blocks as llama.cpp does, instead of dequant_matmul.v1.
+	A8 bool
+}
+
 // BuildLlama adds a forward-pass graph for a llama-architecture source,
 // with a key-value cache of the configured context length, and returns
 // the configuration it used. The cache tensors and the key position table
 // are added to s.Tensors; AddTo writes the graph section.
-func BuildLlama(s *Source, context int) (*LlamaConfig, error) {
-	c, err := LlamaConfigOf(s, context)
+func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
+	c, err := LlamaConfigOf(s, o.Context)
 	if err != nil {
 		return nil, err
 	}
@@ -255,6 +275,7 @@ func BuildLlama(s *Source, context int) (*LlamaConfig, error) {
 		g:       &mmf.Graph{PrimitiveVersion: mmf.CurrentPrimitive, StdlibVersion: mmf.CurrentStdlib, Subgraphs: []mmf.Subgraph{{}}},
 		byName:  map[string]int{},
 		weights: map[string]uint32{},
+		a8:      o.A8,
 	}
 	for i, t := range s.Tensors {
 		b.byName[t.Name] = i
@@ -309,8 +330,7 @@ func BuildLlama(s *Source, context int) (*LlamaConfig, error) {
 		{Key: "interleaved", Type: mmf.AttrInt, Int: 1}, // llama.cpp's NORM rope: adjacent pairs
 		{Key: "rotary_dims", Type: mmf.AttrInt, Int: int64(c.RopeDims)},
 	}
-	cacheShape := []uint64{1, uint64(c.KVHeads), uint64(c.Context), uint64(c.HeadDim)}
-	cacheBytes := 4 * c.KVHeads * c.Context * c.HeadDim
+	cacheShape := []mmf.Dim{1, mmf.Dim(c.KVHeads), mmf.Dim(c.Context), mmf.Dim(c.HeadDim)}
 	for l := 0; l < c.Layers; l++ {
 		p := fmt.Sprintf("blk.%d.", l)
 		w := func(name string, shape ...int) (uint32, error) { return b.weight(p+name, shape...) }
@@ -350,14 +370,9 @@ func BuildLlama(s *Source, context int) (*LlamaConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		cacheK, err := b.addTensor(p+"cache_k", mmf.F32, cacheShape, make([]byte, cacheBytes), mmf.KindVariable)
-		if err != nil {
-			return nil, err
-		}
-		cacheV, err := b.addTensor(p+"cache_v", mmf.F32, cacheShape, make([]byte, cacheBytes), mmf.KindVariable)
-		if err != nil {
-			return nil, err
-		}
+		// The caches start as zeros and take no space in the file.
+		cacheK := b.zeros(p+"cache_k", mmf.F32, cacheShape...)
+		cacheV := b.zeros(p+"cache_v", mmf.F32, cacheShape...)
 
 		h := b.call("rms_norm", []uint32{x, b.f32Of(attnNorm)}, b.val(p+"attn_in", mmf.F32, 1, T, E), eps)
 		heads := func(name string, w uint32, n mmf.Dim) uint32 {

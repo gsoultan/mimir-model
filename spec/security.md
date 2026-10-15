@@ -41,6 +41,7 @@ protect.
 | reading past the end of the file | file length equals actual size (`truncated`, `bad-length`); index in bounds, weights in bounds, each section in bounds, each tensor in bounds of the weights section (`out-of-bounds`) |
 | reading past the end of the index | index at least 16 bytes (`truncated`); index length equals `16 + 64 ns + 96 nt + pool` (`bad-length`); tensor name in bounds of the pool (`out-of-bounds`) |
 | unbounded allocation at open | index at most 256 MiB, pool at most 256 MiB (`index-too-large`, `bad-length`) |
+| unbounded allocation at run time | a variable with ZERO_INIT (spec/graph.md) costs memory but no file space; a runtime computes its byte size with overflow checks and SHOULD refuse one larger than it is willing to allocate before creating a session |
 | integer overflow in size arithmetic | bounds evaluated as `off <= size && len <= size - off`; element count and byte size multiplied with overflow detection (`overflow`); tensor length must equal the derived size (`size-mismatch`) |
 | aliasing and hidden payloads | regions do not overlap (`overlap`); tensors packed canonically with no holes and the section ending at the last tensor (`non-canonical-layout`) |
 | misaligned access faults | data alignment, index, section and tensor alignment (`bad-alignment`, `misaligned`) |

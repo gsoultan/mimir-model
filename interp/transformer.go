@@ -9,14 +9,16 @@ import (
 )
 
 // This file holds the canonical bodies of the composites a decoder-only
-// transformer needs beyond the basic ones in stdlib.go: dequant_matmul.v1,
-// swiglu.v1, cos.v1, tanh.v1, rope.v1 and attention.v1 (spec/stdlib.md
+// transformer needs beyond the basic ones in stdlib.go: dequant_matmul.v1
+// and dequant_matmul_a8.v1, swiglu.v1, cos.v1, tanh.v1, rope.v1 and attention.v1 (spec/stdlib.md
 // sections 3.3, 4 and 6). Like the rest of the executor's standard library
 // they evaluate the body on the primitive kernels, so their results are the
 // body's results.
 
 func init() {
 	stdlib["dequant_matmul.v1"] = dequantMatmulV1
+	// dequant_matmul_a8.v1 has the same body; only its tolerance is looser.
+	stdlib["dequant_matmul_a8.v1"] = dequantMatmulV1
 	stdlib["swiglu.v1"] = swigluV1
 	stdlib["cos.v1"] = unaryComposite(cosBody)
 	stdlib["tanh.v1"] = unaryComposite(tanhBody)
@@ -153,7 +155,7 @@ func (b *body) linear(x, w, bias *ref.Tensor) *ref.Tensor {
 
 func dequantMatmulV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
 	if len(list) != 0 || len(in) < 2 || len(in) > 3 || len(dts) != 1 {
-		return nil, fmt.Errorf("dequant_matmul.v1 takes x, w and an optional bias, and no attributes")
+		return nil, fmt.Errorf("dequant_matmul takes x, w and an optional bias, and no attributes")
 	}
 	x, w := in[0], in[1]
 	if err := checkDequantMatmul(in); err != nil {
@@ -173,20 +175,20 @@ func dequantMatmulV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]i
 func checkDequantMatmul(in []*ref.Tensor) error {
 	x, w := in[0], in[1]
 	if len(x.Shape) < 2 || len(w.Shape) != 2 || x.Shape[len(x.Shape)-1] != w.Shape[1] {
-		return fmt.Errorf("dequant_matmul.v1: x %s%v and w %s%v", x.DType, x.Shape, w.DType, w.Shape)
+		return fmt.Errorf("dequant_matmul: x %s%v and w %s%v", x.DType, x.Shape, w.DType, w.Shape)
 	}
 	if x.DType != mmf.F32 && x.DType != mmf.F16 && x.DType != mmf.BF16 {
-		return fmt.Errorf("dequant_matmul.v1: x must be f32, f16 or bf16, got %s", x.DType)
+		return fmt.Errorf("dequant_matmul: x must be f32, f16 or bf16, got %s", x.DType)
 	}
 	switch {
 	case w.DType.IsBlock(), w.DType == mmf.F8E4M3, w.DType == mmf.F8E5M2, w.DType == mmf.F16, w.DType == mmf.BF16:
 	default:
-		return fmt.Errorf("dequant_matmul.v1: w must be a block, f8, f16 or bf16 dtype, got %s", w.DType)
+		return fmt.Errorf("dequant_matmul: w must be a block, f8, f16 or bf16 dtype, got %s", w.DType)
 	}
 	if len(in) == 3 {
 		bias := in[2]
 		if bias.DType != x.DType || len(bias.Shape) != 1 || bias.Shape[0] != w.Shape[0] {
-			return fmt.Errorf("dequant_matmul.v1: bias %s%v", bias.DType, bias.Shape)
+			return fmt.Errorf("dequant_matmul: bias %s%v", bias.DType, bias.Shape)
 		}
 	}
 	return nil

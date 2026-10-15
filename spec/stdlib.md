@@ -25,6 +25,7 @@ in this document; fast paths change speed, never meaning.
 | conv2d.v1 | 2-D convolution, NCHW | abs Q u sum abs(x w) |
 | linear.v1 | x times transposed weight, plus bias | abs (K+1) u (sum abs(x w) + abs(bias)) |
 | dequant_matmul.v1 | linear with a quantized weight | as linear.v1 |
+| dequant_matmul_a8.v1 | dequant_matmul, activations may be rounded to 8 bits | section 3.4 |
 | sigmoid.v1 | logistic function | rel (16 + 2 abs(x)) u |
 | tanh.v1 | hyperbolic tangent | abs 16 u |
 | erf.v1 | error function | abs 1.6e-7 + 16 u |
@@ -240,9 +241,39 @@ This is the canonical fast-path target for quantized weights: a runtime
 SHOULD decode blocks inside the matrix kernel rather than materialise `wd`.
 Tolerance: as linear.v1, with w replaced by its reference decode. A kernel
 that also quantizes the activations x (for example to 8-bit blocks) does not
-meet this tolerance; see Open issues.
+meet this tolerance; dequant_matmul_a8.v1 (section 3.4) allows it.
 
-### 3.4 conv2d.v1
+### 3.4 dequant_matmul_a8.v1
+
+Signature and canonical body: those of dequant_matmul.v1. A runtime
+without a kernel for this composite therefore computes the exact product.
+
+The tolerance is looser: it admits kernels that round the activations x to
+8-bit blocks before the product, as llama.cpp does in its quantized matrix
+products, and then multiply integers. An importer MAY write this composite
+instead of dequant_matmul.v1 for a model that was quantized for, and
+evaluated with, such kernels.
+
+For each row i of x, split K into blocks of 32 consecutive elements
+starting at k = 0 (the last block may be shorter), and let `s_ik` be the
+largest `|x_ik|` of the block holding k, divided by 127. Let `wd_jk` be the
+reference decode of w, and `B_jk` the magnitude of the decode's terms
+before they are summed: `|d sc_j q| + |dmin m_j|` for q4_k (spec/dtypes.md
+section 3.3), `|scale n| + |bias|` for affine4_g64 (section 3.6), and
+`|wd_jk|` for every other dtype.
+
+Tolerance: `abs (K+2) u (sum_k (|x_ik| + s_ik) B_jk + |bias_j|) + sum_k s_ik |wd_jk|`.
+
+The second term is one quantization step of every activation: a kernel
+that stores each block as int8 `q = round(x / d)` with `d = s_ik`, so that
+`|x - q d| <= d / 2`, uses half of it. The first term covers float32
+rounding in such a kernel, including the separate scaling of the quants
+and the offsets of q4_k and affine4_g64. Infinities and NaN in the
+reference MUST still be matched exactly (section 2.3), so a kernel computes
+rows of x, or blocks of w, whose values or scales are not finite without
+rounding the activations.
+
+### 3.5 conv2d.v1
 
 Signature: inputs `X: [Nb, C, H, W]`, `Wt: [F, C/g, KH, KW]`, optional
 `B: [F]`; attributes `strides` (2 ints, default [1, 1]), `dilations`
@@ -671,7 +702,15 @@ top_k and argsort have no canonical body. A body is possible (a selection
 loop of `reduce`, `cmpeq`, `iota` and `scatter`, one step per selected
 element), but it costs O(k L) work and is harder to read than the
 definition it would implement. The reference definitions below are
-normative instead; a runtime MUST implement them directly. See Open issues.
+normative instead; a runtime MUST implement them directly.
+
+Sorting stays reference-only, and there is no `sort` primitive. Under the
+admission rule (spec/primitives.md section 8) a sort is not a primitive,
+since a selection loop expresses it, and the models mmf targets use top_k
+and argsort only at the edges of a graph (sampling, routing in a mixture of
+experts), where a runtime implements them in a few lines. A later version
+may publish selection-loop bodies as new composite versions, which would
+not change the meaning of these.
 
 Ordering used by both: integers in their natural order; floats in the
 order `-inf < ... < -0 = +0 < ... < +inf < NaN`, where -0 and +0 compare
@@ -714,23 +753,12 @@ NaN elements sort last when ascending and first when descending. Exact.
 
 ## 8. Open issues
 
-1. Sort-like operations. top_k.v1 and argsort.v1 have reference definitions,
-   not bodies. Under the admission rule (spec/primitives.md section 8) a
-   sort is not a primitive, since a selection loop expresses it; but then a
-   primitives-only runtime has no practical body to inline. Phase 2 decides
-   between admitting a `sort` primitive (values and stable indices) as a
-   second explicit exception next to `dequantize`, and publishing the
-   selection-loop bodies as normative.
-2. Sequential scans. cumsum.v1, and `iota` and `riota` built on it, use an
+1. Sequential scans. cumsum.v1, and `iota` and `riota` built on it, use an
    L-iteration `while` loop; `attention.v1` with `causal` depends on them.
-   They are correct for symbolic lengths but slow without a fast path. To
-   be decided with item 1.
-3. Activation quantization. Kernels that quantize x in dequant_matmul (as
-   llama.cpp does with 8-bit activation blocks) exceed the dequant_matmul.v1
-   tolerance. A separate composite with a looser tolerance is needed.
-4. Tolerances are provisional; Phase 2 calibrates them by running the
+   They are correct for symbolic lengths but slow without a fast path.
+2. Tolerances are provisional; Phase 2 calibrates them by running the
    canonical bodies in f32 and f16 against the float64 reference.
-5. Body macros (`sub`, `div`, `min`, `abs`, `concat`, `take_strided`) are
+3. Body macros (`sub`, `div`, `min`, `abs`, `concat`, `take_strided`) are
    notation only; they can become composites if importers need them named.
-6. Fully masked attention rows are unspecified; a later version may fix the
+4. Fully masked attention rows are unspecified; a later version may fix the
    result to 0, as most fused kernels return.
