@@ -45,6 +45,8 @@ result MUST equal the functional definition.
   hand-written cache: one row write per layer per step, no copy.
 - A runtime that does not implement it still runs the model correctly, at
   the cost of a full cache copy per step.
+- A cache starts empty, so its variable carries the ZERO_INIT flag
+  (spec/graph.md) instead of a tensor of zeros, and costs no file space.
 - The cache size is fixed at graph load (`T_max`); growing it means
   re-binding the variable. Paged or ring-buffer caches are expressed by
   changing the index tensor fed to `scatter`, not by new primitives.

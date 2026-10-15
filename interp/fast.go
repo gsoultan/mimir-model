@@ -5,8 +5,10 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mmf/internal/kernels"
 	"github.com/gsoultan/mmf/ref"
 )
 
@@ -17,61 +19,55 @@ import (
 // unusual dtype or broadcast) returns handled = false and the executor
 // falls back to the canonical body.
 //
-// These are plain Go loops parallelised over output rows, not tuned
-// kernels. They make a small language model usable on the reference
-// executor; SIMD and quantized dot products are later work.
+// They are parallelised over output rows. The inner loops are in package
+// internal/kernels: AVX2 assembly on amd64, which decodes block weights
+// inside the dot product, and plain Go elsewhere. Weights are always
+// decoded exactly and activations are never quantized, so the
+// dequant_matmul.v1 tolerance holds.
 
 type fastFunc func(attrs []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, shapes [][]int) (out []*ref.Tensor, handled bool, err error)
 
 var fastPaths = map[string]fastFunc{
-	"linear.v1":         fastLinear,
-	"dequant_matmul.v1": fastDequantMatmul,
-	"rms_norm.v1":       fastRMSNorm,
-	"swiglu.v1":         fastSwiglu,
-	"rope.v1":           fastRope,
-	"attention.v1":      fastAttention,
-	"embedding.v1":      fastEmbedding,
+	"linear.v1":            fastLinear,
+	"dequant_matmul.v1":    fastDequantMatmul,
+	"dequant_matmul_a8.v1": fastDequantMatmulA8,
+	"rms_norm.v1":          fastRMSNorm,
+	"swiglu.v1":            fastSwiglu,
+	"rope.v1":              fastRope,
+	"attention.v1":         fastAttention,
+	"embedding.v1":         fastEmbedding,
 }
 
-// f32Values views or decodes an f32 tensor's elements.
-func f32Values(t *ref.Tensor) []float32 {
-	v := make([]float32, t.NumElems())
-	for i := range v {
-		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(t.Data[4*i:]))
-	}
-	return v
-}
-
-func f32Tensor(shape []int, v []float32) *ref.Tensor {
-	b := make([]byte, 4*len(v))
-	for i, x := range v {
-		binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(x))
-	}
-	return &ref.Tensor{DType: mmf.F32, Shape: append([]int{}, shape...), Data: b}
-}
-
-// parallel runs f(lo, hi) over [0, n) split across the available CPUs.
+// parallel runs f(lo, hi) over [0, n) on the available CPUs. The range is
+// cut into many more pieces than there are CPUs and the workers take them
+// in turn, so a slow or busy CPU does not hold the others up.
 func parallel(n int, f func(lo, hi int)) {
-	w := runtime.GOMAXPROCS(0)
-	if w > n {
-		w = n
-	}
+	w := min(runtime.GOMAXPROCS(0), n)
 	if w <= 1 {
 		f(0, n)
 		return
 	}
+	chunk := max(1, n/(w*parallelPieces))
+	var next atomic.Int64
 	var wg sync.WaitGroup
-	chunk := (n + w - 1) / w
-	for lo := 0; lo < n; lo += chunk {
-		hi := min(lo+chunk, n)
+	for range w {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			f(lo, hi)
+			for {
+				lo := int(next.Add(int64(chunk))) - chunk
+				if lo >= n {
+					return
+				}
+				f(lo, min(lo+chunk, n))
+			}
 		}()
 	}
 	wg.Wait()
 }
+
+// parallelPieces is the number of pieces per CPU.
+const parallelPieces = 8
 
 // matrixRows decodes rows of a [N, K] matrix of any decodable dtype.
 type matrixRows struct {
@@ -91,27 +87,14 @@ func newMatrixRows(t *ref.Tensor) (*matrixRows, bool) {
 	return &matrixRows{t: t, k: t.Shape[1], rowBytes: n}, true
 }
 
+func (m *matrixRows) rowBytesOf(i int) []byte {
+	return m.t.Data[i*m.rowBytes : (i+1)*m.rowBytes]
+}
+
 func (m *matrixRows) row(i int, dst []float32) {
 	// The length checks of Dequantize cannot fail: the row size was
 	// computed from the dtype and K.
-	_ = mmf.Dequantize(m.t.DType, m.t.Data[i*m.rowBytes:(i+1)*m.rowBytes], dst)
-}
-
-func dot(a, b []float32) float32 {
-	var s0, s1, s2, s3 float32
-	n := len(a)
-	b = b[:n]
-	i := 0
-	for ; i+4 <= n; i += 4 {
-		s0 += a[i] * b[i]
-		s1 += a[i+1] * b[i+1]
-		s2 += a[i+2] * b[i+2]
-		s3 += a[i+3] * b[i+3]
-	}
-	for ; i < n; i++ {
-		s0 += a[i] * b[i]
-	}
-	return (s0 + s1) + (s2 + s3)
+	_ = mmf.Dequantize(m.t.DType, m.rowBytesOf(i), dst)
 }
 
 // linearF32 computes x [rows, K] times w^T for w [N, K], plus bias.
@@ -119,11 +102,11 @@ func linearF32(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
 	n, k := w.t.Shape[0], w.k
 	y := make([]float32, rows*n)
 	parallel(n, func(lo, hi int) {
-		wr := make([]float32, k)
+		rd := kernels.NewRowDot(w.t.DType, k)
 		for j := lo; j < hi; j++ {
-			w.row(j, wr)
+			rd.Load(w.rowBytesOf(j), rows)
 			for i := 0; i < rows; i++ {
-				s := dot(x[i*k:(i+1)*k], wr)
+				s := rd.Dot(x[i*k : (i+1)*k])
 				if bias != nil {
 					s += bias[j]
 				}
@@ -148,10 +131,10 @@ func linearFast(in []*ref.Tensor) ([]*ref.Tensor, bool) {
 		if in[2].DType != mmf.F32 || len(in[2].Shape) != 1 || in[2].Shape[0] != w.Shape[0] {
 			return nil, false
 		}
-		bias = f32Values(in[2])
+		bias = f32View(in[2])
 	}
 	rows := x.NumElems() / m.k
-	y := linearF32(f32Values(x), rows, m, bias)
+	y := linearF32(f32View(x), rows, m, bias)
 	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), w.Shape[0])
 	return []*ref.Tensor{f32Tensor(shape, y)}, true
 }
@@ -173,6 +156,77 @@ func fastDequantMatmul(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]i
 	}
 	out, ok := linearFast(in)
 	return out, ok, nil
+}
+
+// fastDequantMatmulA8 runs dequant_matmul_a8.v1 with the activations
+// quantized to 8-bit blocks where the kernels allow (spec/stdlib.md section
+// 3.4), and as dequant_matmul.v1 otherwise.
+func fastDequantMatmulA8(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) < 2 || len(in) > 3 {
+		return nil, false, nil
+	}
+	if err := checkDequantMatmul(in); err != nil {
+		return nil, false, err
+	}
+	x, w := in[0], in[1]
+	if !kernels.FusedQ8(w.DType) {
+		out, ok := linearFast(in)
+		return out, ok, nil
+	}
+	m, ok := newMatrixRows(w)
+	if !ok || x.DType != mmf.F32 || x.Shape[len(x.Shape)-1] != m.k {
+		return nil, false, nil
+	}
+	var bias []float32
+	if len(in) == 3 {
+		if in[2].DType != mmf.F32 {
+			return nil, false, nil
+		}
+		bias = f32View(in[2])
+	}
+	rows := x.NumElems() / m.k
+	y := linearA8(f32View(x), rows, m, bias)
+	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), w.Shape[0])
+	return []*ref.Tensor{f32Tensor(shape, y)}, true, nil
+}
+
+// linearA8 is linearF32 with each row of x quantized to 8-bit blocks. Rows
+// of x or w that the 8-bit kernels refuse (values that are not finite or
+// very large) use the float32 kernels.
+func linearA8(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
+	n, k := w.t.Shape[0], w.k
+	acts := make([]kernels.Q8, rows)
+	quantized := make([]bool, rows)
+	for i := range acts {
+		quantized[i] = acts[i].Quantize(x[i*k : (i+1)*k])
+	}
+	y := make([]float32, rows*n)
+	parallel(n, func(lo, hi int) {
+		rd := kernels.NewRowDot(w.t.DType, k)
+		for j := lo; j < hi; j++ {
+			row := w.rowBytesOf(j)
+			rd.LoadQ8(row)
+			q8, loaded := true, false
+			for i := 0; i < rows; i++ {
+				var s float32
+				if q8 && quantized[i] {
+					s, q8 = rd.DotQ8(&acts[i])
+				}
+				if !q8 || !quantized[i] {
+					if !loaded {
+						rd.Load(row, rows)
+						loaded = true
+					}
+					s = rd.Dot(x[i*k : (i+1)*k])
+				}
+				if bias != nil {
+					s += bias[j]
+				}
+				y[i*n+j] = s
+			}
+		}
+	})
+	return y
 }
 
 func fastRMSNorm(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
@@ -202,7 +256,7 @@ func fastRMSNorm(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([
 		if in[1].DType != mmf.F32 || len(in[1].Shape) != 1 || in[1].Shape[0] != n {
 			return nil, false, nil
 		}
-		scale = f32Values(in[1])
+		scale = f32View(in[1])
 	}
 	v := f32Values(x)
 	if n == 0 {
@@ -230,10 +284,13 @@ func fastSwiglu(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]
 		!sameInts(in[0].Shape, in[1].Shape) {
 		return nil, false, nil
 	}
-	a, b := f32Values(in[0]), f32Values(in[1])
-	for i, x := range a {
-		a[i] = float32(float64(x) / (1 + math.Exp(-float64(x))) * float64(b[i]))
-	}
+	a, b := f32Values(in[0]), f32View(in[1])
+	parallel(len(a), func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			x := a[i]
+			a[i] = float32(float64(x) / (1 + math.Exp(-float64(x))) * float64(b[i]))
+		}
+	})
 	return []*ref.Tensor{f32Tensor(in[0].Shape, a)}, true, nil
 }
 
@@ -319,7 +376,7 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 	B, Hq, Tq, D := q.Shape[0], q.Shape[1], q.Shape[2], q.Shape[3]
 	Hkv, Tk, Dv := k.Shape[1], k.Shape[2], v.Shape[3]
 	G := Hq / Hkv
-	qv, kv, vv := f32Values(q), f32Values(k), f32Values(v)
+	qv, kv, vv := f32View(q), f32View(k), f32View(v)
 	out := make([]float32, B*Hq*Tq*Dv)
 	scale := float32(p.scale)
 	parallel(B*Hq, func(lo, hi int) {
@@ -346,7 +403,7 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 						}
 					}
 					if allowed {
-						s = dot(qi, kb[j*D:(j+1)*D])*scale + add
+						s = kernels.DotF32(qi, kb[j*D:(j+1)*D])*scale + add
 					}
 					sc[j] = s
 					if s > mx || s != s {
@@ -355,6 +412,10 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 				}
 				var sum float32
 				for j := range sc {
+					if math.IsInf(float64(sc[j]), -1) && !math.IsInf(float64(mx), -1) {
+						sc[j] = 0 // exp(-inf) without the call; most of a cache is masked
+						continue
+					}
 					e := float32(math.Exp(float64(sc[j] - mx)))
 					sc[j] = e
 					sum += e
@@ -364,10 +425,7 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 					if e == 0 {
 						continue
 					}
-					vj := vb[j*Dv:][:Dv]
-					for d := range acc {
-						acc[d] += e * vj[d]
-					}
+					kernels.AxpyF32(e, vb[j*Dv:][:Dv], acc)
 				}
 				o := out[(bh*Tq+i)*Dv:][:Dv]
 				for d := range o {

@@ -95,10 +95,12 @@ This document groups the dtypes of spec/dtypes.md as follows.
 | bool | bool |
 | block | q8_0, q4_0, q4_k, q6_k, mxfp4, affine4_g64, and any block dtype added to spec/dtypes.md |
 
-Storage floats MAY appear only as the input or output of `cast`, the input of
-`dequantize`, and the data operand of the movement operations, `gather` and
-`scatter`. Block dtypes MAY appear only as the input of `dequantize`. Any
-other use is invalid.
+Storage floats MAY appear only as the input or output of `cast` and
+`bitcast`, the input of `dequantize`, the data operand of the movement
+operations, `gather` and `scatter`, and the selected operands of `where`.
+These operations do no arithmetic on the values: they convert them by the
+rules of spec/dtypes.md or copy them bit-exactly. Block dtypes MAY appear
+only as the input of `dequantize`. Any other use is invalid.
 
 "Arithmetic dtype" below means float or integer.
 
@@ -324,7 +326,8 @@ encoding in section 2.3).
 
 Reinterprets the bits of each element as dtype `to`. Shape: same as x. The
 input dtype and `to` MUST have the same element bit width and MUST NOT be
-bool or block dtypes. The output is bit-identical to the input; it never
+bool or block dtypes; storage floats are allowed, so `bitcast` between `u8`
+and `f8_e4m3` reads or builds FP8 bit patterns. The output is bit-identical to the input; it never
 canonicalises NaN payloads.
 
 ### 5.10 add (10)
@@ -409,7 +412,8 @@ output bool. NaN compares unequal to everything, including itself.
 
 `y = cond ? a : b`, elementwise. Inputs in order: cond, a, b. Shape:
 broadcast over all three. Dtype: cond MUST be bool; a and b MUST share one
-dtype (any non-block dtype); output dtype equals that of a. The selected
+dtype (any non-block dtype, storage floats included); output dtype equals
+that of a. The selected
 element is copied bit-exactly; the unselected operand never affects the
 result, even if it is NaN.
 
@@ -607,7 +611,8 @@ loop-carried value.
 ## 7. Variables and state
 
 A graph MAY declare variables: values of kind VARIABLE with a fixed dtype and
-shape and an initial value (spec/graph.md). A variable persists across runs
+shape and an initial value, stored as a tensor or given as all zeros by the
+ZERO_INIT flag (spec/graph.md). A variable persists across runs
 of the graph within one session. Within a run, every read of a variable sees
 the value it had at the start of the run.
 
@@ -631,7 +636,7 @@ constant tensor holding 0..T_max-1.
 
 ```
 inputs:     x: f16[1, 1, d_model], pos: i64[1]
-variables:  k_cache: f16[1, H, T_max, D]   (initial value: zeros)
+variables:  k_cache: f16[1, H, T_max, D]   (ZERO_INIT, spec/graph.md)
             v_cache: f16[1, H, T_max, D]
 constants:  kpos: i64[1, 1, 1, T_max]
 

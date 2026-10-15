@@ -107,7 +107,7 @@ func (s *Source) AddTo(w *mmf.Writer) error {
 		g := *s.Graph
 		g.Values = append([]mmf.Value(nil), s.Graph.Values...)
 		for i, v := range g.Values {
-			if v.Kind != mmf.KindWeight && v.Kind != mmf.KindConst && v.Kind != mmf.KindVariable {
+			if v.Kind != mmf.KindWeight && v.Kind != mmf.KindConst && v.Kind != mmf.KindVariable || v.Zero {
 				continue
 			}
 			if int(v.Ref) >= len(pos) {

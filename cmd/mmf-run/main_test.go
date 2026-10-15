@@ -62,8 +62,12 @@ func f32b64(t *testing.T, s string) []float32 {
 }
 
 // importFixture converts the GGUF fixture with a graph, as
-// `mmf-import -graph -ctx 64` does, and returns the output path.
+// `mmf-import -graph -ctx 64 -a8=false` does, and returns the output path.
 func importFixture(t *testing.T, e *expected) string {
+	return importFixtureWith(t, e, importer.LlamaOptions{Context: 64})
+}
+
+func importFixtureWith(t *testing.T, e *expected, o importer.LlamaOptions) string {
 	t.Helper()
 	in := filepath.Join("..", "..", "testdata", "llama", e.Model)
 	b, err := os.ReadFile(in)
@@ -74,7 +78,7 @@ func importFixture(t *testing.T, e *expected) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := importer.BuildLlama(src, 64); err != nil {
+	if _, err := importer.BuildLlama(src, o); err != nil {
 		t.Fatal(err)
 	}
 	w := mmf.NewWriter()
@@ -181,6 +185,46 @@ func TestGenerateMatchesOracle(t *testing.T) {
 	if !equalIDs(got, e.Greedy) {
 		t.Fatalf("generate gave %v, want %v", got, e.Greedy)
 	}
+}
+
+// TestGenerateA8 runs the prompt and the oracle's continuation through a
+// graph whose matrix products allow 8-bit activations, as llama.cpp
+// computes them. The logits must stay as close to the float64 oracle as
+// llama.cpp's own.
+func TestGenerateA8(t *testing.T) {
+	e := loadExpected(t)
+	m, err := load(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, A8: true}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.f.Close()
+	s := m.prog.NewSession()
+	all, err := stepAll(s, e.PromptIDs, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worst := maxDiff(all, f32b64(t, e.PromptLogits))
+	logits := all[len(all)-e.Vocab:]
+	pos := len(e.PromptIDs)
+	for i, next := range e.Greedy {
+		worst = math.Max(worst, maxDiff(logits, f32b64(t, e.GreedyLogits[i])))
+		if logits, err = step(s, []int32{next}, pos); err != nil {
+			t.Fatal(err)
+		}
+		pos++
+	}
+	t.Logf("max |logit difference| from the oracle: %.4f (llama.cpp: %.4f)", worst, e.LlamaCppError)
+	if worst > e.LlamaCppError || math.IsNaN(worst) {
+		t.Fatalf("max |logit difference| %g, llama.cpp's is %g", worst, e.LlamaCppError)
+	}
+}
+
+func maxDiff(got, want []float32) float64 {
+	var worst float64
+	for i := range got {
+		worst = math.Max(worst, math.Abs(float64(got[i]-want[i])))
+	}
+	return worst
 }
 
 // TestReferencePath runs the prompt with every composite inlined to its

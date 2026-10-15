@@ -26,7 +26,7 @@ func llamaFixture(t *testing.T) *Source {
 func TestBuildLlama(t *testing.T) {
 	s := llamaFixture(t)
 	n := len(s.Tensors)
-	c, err := BuildLlama(s, 32)
+	c, err := BuildLlama(s, LlamaOptions{Context: 32})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +35,11 @@ func TestBuildLlama(t *testing.T) {
 	if *c != want {
 		t.Fatalf("config %+v, want %+v", *c, want)
 	}
-	// Two cache variables per layer and the key position table.
-	if len(s.Tensors) != n+2*c.Layers+1 {
+	// The key position table; the caches start as zeros and are not stored.
+	if len(s.Tensors) != n+1 {
 		t.Fatalf("%d tensors added", len(s.Tensors)-n)
 	}
-	if _, err := BuildLlama(s, 32); err == nil {
+	if _, err := BuildLlama(s, LlamaOptions{Context: 32}); err == nil {
 		t.Fatal("built a second graph")
 	}
 
@@ -65,11 +65,11 @@ func TestBuildLlama(t *testing.T) {
 	for _, v := range g.Values {
 		switch v.Kind {
 		case mmf.KindWeight, mmf.KindConst, mmf.KindVariable:
-			if ti := f.TensorAt(int(v.Ref)); ti.Name != v.Name {
+			if ti := f.TensorAt(int(v.Ref)); !v.Zero && ti.Name != v.Name {
 				t.Errorf("value %q refers to tensor %q", v.Name, ti.Name)
 			}
 		}
-		if v.Kind == mmf.KindVariable {
+		if v.Kind == mmf.KindVariable && v.Zero {
 			vars++
 		}
 	}
@@ -99,11 +99,11 @@ func TestBuildLlamaRejects(t *testing.T) {
 	} {
 		s := llamaFixture(t)
 		c.edit(s)
-		if _, err := BuildLlama(s, 0); err == nil || !strings.Contains(err.Error(), c.error) {
+		if _, err := BuildLlama(s, LlamaOptions{}); err == nil || !strings.Contains(err.Error(), c.error) {
 			t.Errorf("%s: error %v, want one mentioning %q", c.name, err, c.error)
 		}
 	}
-	if _, err := BuildLlama(llamaFixture(t), maxLlamaContext+1); err == nil {
+	if _, err := BuildLlama(llamaFixture(t), LlamaOptions{Context: maxLlamaContext + 1}); err == nil {
 		t.Error("accepted an enormous context")
 	}
 }

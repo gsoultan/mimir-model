@@ -133,6 +133,10 @@ func storageOK(op mmf.Opcode, i int) bool {
 	switch op {
 	case mmf.OpCast, mmf.OpDequantize, mmf.OpReshape, mmf.OpExpand, mmf.OpPermute, mmf.OpPad, mmf.OpShrink:
 		return true
+	case mmf.OpBitcast:
+		return true
+	case mmf.OpWhere:
+		return i != 0
 	case mmf.OpGather:
 		return i == 0
 	case mmf.OpScatter:

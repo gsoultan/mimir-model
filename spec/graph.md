@@ -79,7 +79,8 @@ d < 0 refers to symbolic dimension `-1 - d`.
 | 8 | 4 | shape offset into dims |
 | 12 | 1 | rank (0..8) |
 | 13 | 1 | kind |
-| 14 | 2 | reserved (0) |
+| 14 | 1 | flags |
+| 15 | 1 | reserved (0) |
 | 16 | 4 | ref |
 | 20 | 12 | reserved (0) |
 
@@ -92,6 +93,16 @@ not a trained parameter, for example rotary tables).
 A value of kind weight, variable or const MUST refer to a tensor with the
 same dtype and rank whose literal dimensions match; a symbolic dimension in
 the value matches any size.
+
+Flags: bit 0 is ZERO_INIT; the other bits are reserved and MUST be 0. A
+variable with ZERO_INIT set starts as all zero bytes (+0 for floats, 0 for
+integers, false for bool) instead of a stored tensor: its `ref` MUST be 0
+and is not a tensor index, its shape MUST be literal, and its dtype MUST
+NOT be a block dtype. ZERO_INIT on a value of any other kind is invalid. A
+key-value cache is the common case: it starts empty, and storing its zeros
+would make the file larger by the size of the cache. A runtime allocates
+the variable when it creates a session and SHOULD check the allocation's
+size first (spec/security.md).
 
 ### 3.5 ops
 
