@@ -100,6 +100,27 @@ follows the IEEE conventions.
 
 The largest finite value is `0x7B = 57344`.
 
+### 2.3 Encoding to storage floats
+
+Converting a value to `f8_e4m3` or `f8_e5m2` (the `cast` primitive,
+spec/primitives.md section 5.8, and the `value` attribute of `pad`) rounds
+the exact value to nearest with ties to even, then:
+
+- a finite value whose rounded magnitude exceeds the largest finite value
+  saturates to the largest finite value of the same sign (448 for
+  `f8_e4m3`, 57344 for `f8_e5m2`);
+- an infinity becomes the infinity of the same sign for `f8_e5m2`, and
+  saturates to the signed largest finite value for `f8_e4m3`, which has no
+  infinity;
+- NaN becomes a NaN (`0x7F` or `0xFF` for `f8_e4m3`; any `S 11111 MM` with
+  `MM != 0` for `f8_e5m2`). The sign of the NaN is unspecified;
+- signed zeros keep their sign, and results in the subnormal range are
+  subnormals; they are never flushed.
+
+This matches ONNX `Cast` with `saturate=1` for finite values and the
+`float8_e4m3fn` and `float8_e5m2` conversions of common frameworks for
+in-range values. See ADR 0005.
+
 ## 3. Block dtypes
 
 | id | name | block elements | block bytes | section |
