@@ -31,6 +31,9 @@ type Source struct {
 	Format   string // "gguf" or "safetensors"
 	Tensors  []Tensor
 	Metadata mmf.Metadata
+	// Graph is an optional graph built by the importer (see BuildLlama).
+	// The Ref of its weight, const and variable values indexes Tensors.
+	Graph *mmf.Graph
 }
 
 // Detect returns "gguf", "safetensors" or "" for the leading bytes of a file.
@@ -83,14 +86,41 @@ func Merge(srcs ...*Source) (*Source, error) {
 	return out, nil
 }
 
-// AddTo adds the source's tensors and a metadata section to w. Tensors are
-// added in name order so the weights region is laid out deterministically.
+// AddTo adds the source's tensors, a metadata section and, when the source
+// has one, its graph to w. Tensors are added in name order so the weights
+// region is laid out deterministically.
 func (s *Source) AddTo(w *mmf.Writer) error {
-	ts := append([]Tensor(nil), s.Tensors...)
-	sort.Slice(ts, func(i, j int) bool { return ts[i].Name < ts[j].Name })
-	for _, t := range ts {
+	order := make([]int, len(s.Tensors))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool { return s.Tensors[order[i]].Name < s.Tensors[order[j]].Name })
+	pos := make([]uint32, len(order)) // source index to file tensor index
+	for p, i := range order {
+		t := s.Tensors[i]
 		if err := w.AddTensor(t.Name, t.DType, t.Shape, t.Data); err != nil {
 			return fmt.Errorf("tensor %q: %w", t.Name, err)
+		}
+		pos[i] = uint32(p)
+	}
+	if s.Graph != nil {
+		g := *s.Graph
+		g.Values = append([]mmf.Value(nil), s.Graph.Values...)
+		for i, v := range g.Values {
+			if v.Kind != mmf.KindWeight && v.Kind != mmf.KindConst && v.Kind != mmf.KindVariable {
+				continue
+			}
+			if int(v.Ref) >= len(pos) {
+				return fmt.Errorf("graph value %q refers to tensor %d of %d", v.Name, v.Ref, len(pos))
+			}
+			g.Values[i].Ref = pos[v.Ref]
+		}
+		enc, err := g.Encode()
+		if err != nil {
+			return err
+		}
+		if err := w.AddSection(mmf.SectionGraph, true, enc); err != nil {
+			return err
 		}
 	}
 	md := mmf.Metadata{}
