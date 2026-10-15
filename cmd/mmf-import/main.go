@@ -1,14 +1,17 @@
 // Command mmf-import converts GGUF and safetensors files into mmf.
 //
 //	mmf-import [-o out.mmf] [-bench] [-nohash] input.gguf
-//	mmf-import -graph [-ctx 2048] tinyllama.gguf
+//	mmf-import -graph [-ctx 2048] [-a8=false] tinyllama.gguf
 //	mmf-import -o model.mmf model-00001-of-00002.safetensors model-00002-of-00002.safetensors
 //
 // Several safetensors shards are merged into one file. Tensors are copied
 // byte for byte. By default the output holds weights and metadata only;
 // with -graph, a GGUF file of the llama architecture also gets a runnable
 // forward-pass graph with a key-value cache of -ctx positions (default: the
-// model's context length), which mmf-run can generate text with.
+// model's context length), which mmf-run can generate text with. Its
+// matrix products with quantized weights are dequant_matmul_a8.v1, which
+// lets a runtime round the activations to 8-bit blocks as llama.cpp does;
+// -a8=false writes dequant_matmul.v1, which keeps them in float32.
 // With -bench it reports the input and output sizes and the time to open
 // each and read every tensor byte.
 package main
@@ -32,12 +35,13 @@ func main() {
 	nohash := flag.Bool("nohash", false, "do not write section hashes")
 	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama architecture)")
 	ctx := flag.Int("ctx", 0, "with -graph, the key-value cache length (default: the model's context length)")
+	a8 := flag.Bool("a8", true, "with -graph, let runtimes round activations to 8 bits in quantized matrix products (dequant_matmul_a8.v1), as llama.cpp does")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: mmf-import [-o out.mmf] [-bench] [-nohash] input...")
 		os.Exit(2)
 	}
-	o := options{out: *out, bench: *bench, hash: !*nohash, graph: *graph, ctx: *ctx}
+	o := options{out: *out, bench: *bench, hash: !*nohash, graph: *graph, ctx: *ctx, a8: *a8}
 	if err := run(os.Stdout, flag.Args(), o); err != nil {
 		fmt.Fprintln(os.Stderr, "mmf-import:", err)
 		os.Exit(1)
@@ -58,6 +62,7 @@ type options struct {
 	bench, hash bool
 	graph       bool
 	ctx         int
+	a8          bool
 }
 
 func run(w io.Writer, inputs []string, o options) (err error) {
@@ -90,7 +95,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 		if src.Format != "gguf" {
 			return fmt.Errorf("-graph needs a GGUF input")
 		}
-		c, err := importer.BuildLlama(src, o.ctx)
+		c, err := importer.BuildLlama(src, importer.LlamaOptions{Context: o.ctx, A8: o.a8})
 		if err != nil {
 			return err
 		}

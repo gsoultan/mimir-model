@@ -25,7 +25,7 @@ func TestBench(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := importer.BuildLlama(s, 16); err != nil {
+	if _, err := importer.BuildLlama(s, importer.LlamaOptions{Context: 16}); err != nil {
 		t.Fatal(err)
 	}
 	w := mmf.NewWriter()

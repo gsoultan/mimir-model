@@ -26,7 +26,7 @@ func llamaFixture(t *testing.T) *Source {
 func TestBuildLlama(t *testing.T) {
 	s := llamaFixture(t)
 	n := len(s.Tensors)
-	c, err := BuildLlama(s, 32)
+	c, err := BuildLlama(s, LlamaOptions{Context: 32})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestBuildLlama(t *testing.T) {
 	if len(s.Tensors) != n+2*c.Layers+1 {
 		t.Fatalf("%d tensors added", len(s.Tensors)-n)
 	}
-	if _, err := BuildLlama(s, 32); err == nil {
+	if _, err := BuildLlama(s, LlamaOptions{Context: 32}); err == nil {
 		t.Fatal("built a second graph")
 	}
 
@@ -99,11 +99,11 @@ func TestBuildLlamaRejects(t *testing.T) {
 	} {
 		s := llamaFixture(t)
 		c.edit(s)
-		if _, err := BuildLlama(s, 0); err == nil || !strings.Contains(err.Error(), c.error) {
+		if _, err := BuildLlama(s, LlamaOptions{}); err == nil || !strings.Contains(err.Error(), c.error) {
 			t.Errorf("%s: error %v, want one mentioning %q", c.name, err, c.error)
 		}
 	}
-	if _, err := BuildLlama(llamaFixture(t), maxLlamaContext+1); err == nil {
+	if _, err := BuildLlama(llamaFixture(t), LlamaOptions{Context: maxLlamaContext + 1}); err == nil {
 		t.Error("accepted an enormous context")
 	}
 }
