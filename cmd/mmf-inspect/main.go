@@ -147,6 +147,10 @@ func printGraph(w io.Writer, g *mmf.Graph) {
 		fmt.Fprintf(w, "composite %s.v%d = subgraph %d\n", c.Name, c.Version, c.Subgraph)
 	}
 	for _, u := range g.Updates {
-		fmt.Fprintf(w, "update %s <- %s\n", val(u.Variable), val(u.Value))
+		init := ""
+		if g.Values[u.Variable].Zero {
+			init = " (starts as zeros)"
+		}
+		fmt.Fprintf(w, "update %s <- %s%s\n", val(u.Variable), val(u.Value), init)
 	}
 }

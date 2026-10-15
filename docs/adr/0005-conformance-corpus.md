@@ -43,6 +43,8 @@ defined only the decode direction. A runtime had no rule for what
   the JSON files and compare their results with the stated rules.
 - The tolerance numbers in spec/primitives.md now have tests behind them.
   Tightening or loosening one is a spec change that regenerates the corpus.
-- Storage floats as operands of `where` and `bitcast` are left out of the
-  corpus until the inconsistency between spec/primitives.md section 2.2
-  and sections 5.9 and 5.23 is settled.
+- Storage floats as operands of `where` and `bitcast` were left out of the
+  first corpus, because spec/primitives.md section 2.2 forbade them while
+  sections 5.9 and 5.23 allowed them. v0.1 settles this by allowing them
+  (both operations copy bits and do no arithmetic), and the corpus covers
+  them.

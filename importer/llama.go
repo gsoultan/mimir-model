@@ -182,6 +182,12 @@ func (b *llamaBuilder) stored(i int, kind mmf.ValueKind) uint32 {
 	return uint32(len(b.g.Values) - 1)
 }
 
+// zeros adds a variable that starts as zeros.
+func (b *llamaBuilder) zeros(name string, dt mmf.DType, shape ...mmf.Dim) uint32 {
+	b.g.Values = append(b.g.Values, mmf.Value{Name: name, DType: dt, Shape: shape, Kind: mmf.KindVariable, Zero: true})
+	return uint32(len(b.g.Values) - 1)
+}
+
 // weight returns the value for a source tensor, checking its shape.
 func (b *llamaBuilder) weight(name string, shape ...int) (uint32, error) {
 	if id, ok := b.weights[name]; ok {
@@ -324,8 +330,7 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		{Key: "interleaved", Type: mmf.AttrInt, Int: 1}, // llama.cpp's NORM rope: adjacent pairs
 		{Key: "rotary_dims", Type: mmf.AttrInt, Int: int64(c.RopeDims)},
 	}
-	cacheShape := []uint64{1, uint64(c.KVHeads), uint64(c.Context), uint64(c.HeadDim)}
-	cacheBytes := 4 * c.KVHeads * c.Context * c.HeadDim
+	cacheShape := []mmf.Dim{1, mmf.Dim(c.KVHeads), mmf.Dim(c.Context), mmf.Dim(c.HeadDim)}
 	for l := 0; l < c.Layers; l++ {
 		p := fmt.Sprintf("blk.%d.", l)
 		w := func(name string, shape ...int) (uint32, error) { return b.weight(p+name, shape...) }
@@ -365,14 +370,9 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		cacheK, err := b.addTensor(p+"cache_k", mmf.F32, cacheShape, make([]byte, cacheBytes), mmf.KindVariable)
-		if err != nil {
-			return nil, err
-		}
-		cacheV, err := b.addTensor(p+"cache_v", mmf.F32, cacheShape, make([]byte, cacheBytes), mmf.KindVariable)
-		if err != nil {
-			return nil, err
-		}
+		// The caches start as zeros and take no space in the file.
+		cacheK := b.zeros(p+"cache_k", mmf.F32, cacheShape...)
+		cacheV := b.zeros(p+"cache_v", mmf.F32, cacheShape...)
 
 		h := b.call("rms_norm", []uint32{x, b.f32Of(attnNorm)}, b.val(p+"attn_in", mmf.F32, 1, T, E), eps)
 		heads := func(name string, w uint32, n mmf.Dim) uint32 {

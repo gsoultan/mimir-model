@@ -35,6 +35,7 @@ type Program struct {
 	g          *mmf.Graph
 	fixed      map[uint32]*ref.Tensor // weights and consts, by value id
 	initVars   map[uint32]*ref.Tensor // initial variable values, by value id
+	zeroVars   map[uint32]zeroVar     // variables that start as zeros
 	composites map[string]uint32      // "name.vN" to subgraph index
 	inplace    map[*mmf.Op]uint32     // scatters that may run in place, to their variable
 }
@@ -72,10 +73,19 @@ func New(g *mmf.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 		g:          g,
 		fixed:      map[uint32]*ref.Tensor{},
 		initVars:   map[uint32]*ref.Tensor{},
+		zeroVars:   map[uint32]zeroVar{},
 		composites: map[string]uint32{},
 	}
 	for id, v := range g.Values {
 		if v.Kind != mmf.KindWeight && v.Kind != mmf.KindConst && v.Kind != mmf.KindVariable {
+			continue
+		}
+		if v.Zero {
+			z, err := newZeroVar(v)
+			if err != nil {
+				return nil, err
+			}
+			p.zeroVars[uint32(id)] = z
 			continue
 		}
 		t, err := tensor(v.Ref)
@@ -129,7 +139,44 @@ func (p *Program) NewSession() *Session {
 	for id, t := range p.initVars {
 		s.vars[id] = t
 	}
+	// A zero variable's buffer is the session's own from the start, so its
+	// first update can already be made in place.
+	for id, z := range p.zeroVars {
+		s.vars[id] = &ref.Tensor{DType: z.dt, Shape: z.shape, Data: make([]byte, z.bytes)}
+		s.owned[id] = true
+	}
 	return s
+}
+
+// zeroVar is a variable whose initial value is all zero bytes.
+type zeroVar struct {
+	dt    mmf.DType
+	shape []int
+	bytes int
+}
+
+// maxZeroBytes bounds the size of a variable that starts as zeros, which
+// costs memory without costing file space.
+const maxZeroBytes = 1 << 40
+
+func newZeroVar(v mmf.Value) (zeroVar, error) {
+	z := zeroVar{dt: v.DType, shape: make([]int, len(v.Shape))}
+	n := int64(v.DType.BlockBytes())
+	for k, d := range v.Shape {
+		if d.Symbolic() {
+			return zeroVar{}, fmt.Errorf("variable %q dimension %d is symbolic", v.Name, k)
+		}
+		if d > maxZeroBytes || d != 0 && n > maxZeroBytes/int64(d) {
+			return zeroVar{}, fmt.Errorf("variable %q is larger than %d bytes", v.Name, int64(maxZeroBytes))
+		}
+		n *= int64(d)
+		z.shape[k] = int(d)
+	}
+	if int64(int(n)) != n {
+		return zeroVar{}, fmt.Errorf("variable %q does not fit in memory", v.Name)
+	}
+	z.bytes = int(n)
+	return z, nil
 }
 
 // Variable returns the current value of the variable with the given name.

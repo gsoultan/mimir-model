@@ -31,8 +31,12 @@ To reproduce:
 python3 -P tools/gen_bench_models.py /tmp/bench
 go run ./cmd/mmf-import -o /tmp/bench/q4km.mmf /tmp/bench/tinyllama-rand-q4km.gguf
 go run ./cmd/mmf-import -o /tmp/bench/bf16.mmf /tmp/bench/tinyllama-rand-bf16.safetensors
+go run ./cmd/mmf-import -graph -ctx 2048 -o /tmp/bench/q4km-a8.mmf /tmp/bench/tinyllama-rand-q4km.gguf
+go run ./cmd/mmf-import -graph -ctx 2048 -a8=false -o /tmp/bench/q4km-graph.mmf /tmp/bench/tinyllama-rand-q4km.gguf
 go run ./cmd/mmf-bench /tmp/bench/*.gguf /tmp/bench/*.safetensors /tmp/bench/*.mmf
 go run ./cmd/mmf-bench -cold /tmp/bench/*.gguf /tmp/bench/*.safetensors /tmp/bench/*.mmf
+go build -o /tmp/mmf-run ./cmd/mmf-run
+python3 tools/bench_generate.py --mmf-run /tmp/mmf-run /tmp/bench/tinyllama-rand-q4km.gguf /tmp/bench/q4km-*.mmf
 ```
 
 Machine: 4-core Intel Xeon at 2.8 GHz (a cloud VM), 15 GiB of memory,
@@ -44,13 +48,16 @@ Linux, Go 1.24.
 | --- | ---: | ---: |
 | `tinyllama-rand-q4km.gguf` | 667,746,528 | |
 | `q4km.mmf` | 668,028,928 | +0.04% |
+| `q4km-a8.mmf`, with the graph | 668,160,000 | +0.06% |
 | `tinyllama-rand-bf16.safetensors` | 2,200,119,832 | |
 | `bf16.mmf` | 2,200,129,536 | +0.0004% |
 | `tinyllama-rand-f16.gguf` | 2,200,948,864 | |
 
 Tensors are copied byte for byte, so an mmf file is its source plus the
 page alignment of each tensor (4 KiB, against GGUF's 32 bytes) and a binary
-index.
+index. The graph of the Q4_K_M model adds 128 KiB. Its key-value cache, 92
+MiB at a context of 2048, starts as zeros and takes no space in the file
+(spec/graph.md, ZERO_INIT).
 
 ## Opening and reading
 
@@ -63,15 +70,16 @@ every tensor, in file order, one byte per cache line. *heap* is what the Go
 code allocated while opening; *anon* and *mapped* are the process's resident
 anonymous and file-backed memory after reading.
 
-Warm page cache, median of 7 runs:
+Warm page cache, median of 9 runs:
 
 | file | format | open | read | heap | anon | mapped |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `tinyllama-rand-q4km.gguf` | gguf | 2.62 ms | 86 ms | 1.5 MiB | 2.6 MiB | 639 MiB |
-| `q4km.mmf` | mmf | 2.88 ms | 84 ms | 1.2 MiB | 2.2 MiB | 640 MiB |
-| `tinyllama-rand-f16.gguf` | gguf | 2.94 ms | 271 ms | 1.5 MiB | 2.6 MiB | 2101 MiB |
-| `tinyllama-rand-bf16.safetensors` | safetensors | 1.22 ms | 273 ms | 262 KiB | 1.5 MiB | 2101 MiB |
-| `bf16.mmf` | mmf | 0.19 ms | 275 ms | 45 KiB | 1.1 MiB | 2101 MiB |
+| `tinyllama-rand-q4km.gguf` | gguf | 2.67 ms | 82 ms | 1.5 MiB | 2.6 MiB | 639 MiB |
+| `q4km.mmf` | mmf | 1.82 ms | 83 ms | 1.2 MiB | 2.2 MiB | 640 MiB |
+| `q4km-a8.mmf` | mmf + graph | 3.50 ms | 84 ms | 1.6 MiB | 2.7 MiB | 640 MiB |
+| `tinyllama-rand-f16.gguf` | gguf | 2.95 ms | 286 ms | 1.5 MiB | 2.5 MiB | 2101 MiB |
+| `tinyllama-rand-bf16.safetensors` | safetensors | 1.44 ms | 271 ms | 262 KiB | 1.4 MiB | 2101 MiB |
+| `bf16.mmf` | mmf | 0.20 ms | 278 ms | 45 KiB | 1.1 MiB | 2101 MiB |
 
 Cold page cache (each run first drops the file from the cache), median of 7
 runs:
@@ -88,11 +96,13 @@ What this shows:
 
 - **Opening an mmf file costs almost nothing beyond its metadata.** The
   index is binary and fixed-size, so `bf16.mmf`, whose metadata is small,
-  opens in 0.2 ms, 6 times faster than the safetensors file (JSON header)
+  opens in 0.2 ms, 7 times faster than the safetensors file (JSON header)
   and 15 times faster than GGUF (whose header must be walked key by key to
   find the tensors). The Q4_K_M files carry a 32,000-entry tokenizer in
-  their metadata, and decoding it takes most of the 2.9 ms, the same as
-  GGUF's parser.
+  their metadata, and decoding it takes most of the 1.8 ms, against 2.7 ms
+  for GGUF's parser. Decoding and validating the graph adds 1.7 ms.
+- Timings below a few milliseconds vary by about a millisecond from one
+  set of runs to the next on this machine.
 - **Reading the weights costs the same in every format.** All three map the
   file and use the tensor bytes where they lie, so reading is bound by
   memory, or by the disk when the cache is cold. The cold-cache differences
@@ -112,9 +122,11 @@ use the 4 cores. *load* is the time until the model is ready to run,
 
 | file | runtime | load | prompt | generation | peak RSS |
 | --- | --- | ---: | ---: | ---: | ---: |
-| `tinyllama-rand-q4km.gguf` | llama.cpp | 804 ms | 110 tok/s | 26.9 tok/s | 1208 MiB |
-| `q4km-graph.mmf` | mmf-run | 10 ms | 16.8 tok/s | 9.3 tok/s | 1161 MiB |
-| `q4km-a8.mmf` | mmf-run | 9 ms | 22.7 tok/s | 14.7 tok/s | 1013 MiB |
+| `tinyllama-rand-q4km.gguf` | llama.cpp | 670 ms | 123 tok/s | 26.5 tok/s | 1210 MiB |
+| `q4km-graph.mmf` | mmf-run | 9 ms | 19.1 tok/s | 9.2 tok/s | 911 MiB |
+| `q4km-a8.mmf` | mmf-run | 9 ms | 25.6 tok/s | 14.4 tok/s | 931 MiB |
+
+Median of 5 runs.
 
 `q4km-graph.mmf` is imported with `-a8=false`: its matrix products are
 `dequant_matmul.v1`, computed to float32 accuracy. `q4km-a8.mmf` is the
