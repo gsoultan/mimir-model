@@ -105,6 +105,34 @@ the corpus with the current reader and compares against the expected
 output. A change that fails the corpus is a compatibility break and needs a
 major version and an ADR.
 
+### 4.1 Expected files (non-normative)
+
+`<name>.expected.json` describes `<name>.mmf` as UTF-8 JSON with
+`"format": "mmf-compat"` and `"version": 1`. It lists:
+
+- `container`: the preamble's major and minor version and data alignment;
+- `sections`: the section table in table order, each with its kind,
+  required flag, hash algorithm and length;
+- `tensors`: the tensor table in name order, each with its name, dtype
+  name, shape, offset in the weights section and the SHA-256 of its bytes;
+- `metadata`: every entry in key order with its type name and value (int
+  and uint as JSON integers, float as the hex of its little-endian
+  binary64, bytes as hex, floats as a list of such hex strings);
+- `graph`: the names of the main graph's inputs and outputs, when the file
+  has a graph;
+- `runs`: for a file with a graph, a sequence of runs in one session, so
+  variables carry over. Each run gives its inputs and expected outputs as
+  tensors in the format of the conformance corpus (spec/conformance.md
+  section 3). An output's `check` is `bits` (the same bytes) or `close`
+  (every element within `tol` times the largest magnitude of the expected
+  tensor, for outputs whose reductions the spec leaves unordered).
+
+A reader passes a file when it opens it, verifies its hashes and reports
+exactly the listed container, sections, tensors and metadata; a runtime
+passes it when it also reproduces the runs. The reference implementation
+of these checks is the Go package `compat`; `internal/compatgen` writes a
+new version's directory and refuses to touch an existing one.
+
 ## 5. Pre-release status
 
 Versions with major 0 are pre-release. During major 0 the compatibility
