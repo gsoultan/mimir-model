@@ -1,7 +1,7 @@
 // Command mmf-run generates text with a language model stored as an mmf
 // file with a graph, such as one written by `mmf-import -graph`.
 //
-//	mmf-run -m tinyllama.mmf -p "Once upon a time" [-n 64] [-temp 0] [-seed 1] [-ref]
+//	mmf-run -m tinyllama.mmf -p "Once upon a time" [-n 64] [-temp 0] [-seed 1] [-ref] [-cpuprofile f]
 //
 // The prompt is tokenized with the tokenizer in the file's metadata and run
 // through the graph in one step; each new token is then one step with the
@@ -20,6 +20,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"runtime/pprof"
 	"sort"
 	"time"
 	"unicode/utf8"
@@ -37,13 +38,26 @@ func main() {
 	temp := flag.Float64("temp", 0, "sampling temperature; 0 picks the most likely token")
 	seed := flag.Int64("seed", 1, "random seed for sampling")
 	useRef := flag.Bool("ref", false, "run composites through their canonical bodies (slow)")
+	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile to this file")
 	flag.Parse()
 	if *model == "" {
 		fmt.Fprintln(os.Stderr, "usage: mmf-run -m model.mmf -p prompt [-n 64] [-temp 0] [-seed 1] [-ref]")
 		os.Exit(2)
 	}
+	if *cpuProfile != "" {
+		pf, err := os.Create(*cpuProfile)
+		if err == nil {
+			err = pprof.StartCPUProfile(pf)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mmf-run:", err)
+			os.Exit(1)
+		}
+		defer pprof.StopCPUProfile()
+	}
 	cfg := config{prompt: *prompt, tokens: *n, temp: *temp, seed: *seed, ref: *useRef}
 	if err := run(os.Stdout, os.Stderr, *model, cfg); err != nil {
+		pprof.StopCPUProfile()
 		fmt.Fprintln(os.Stderr, "mmf-run:", err)
 		os.Exit(1)
 	}
