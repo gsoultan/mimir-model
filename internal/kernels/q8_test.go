@@ -126,6 +126,56 @@ func TestRowDotQ8(t *testing.T) {
 	}
 }
 
+// TestDotQ8x4 checks that the four-row kernel returns what DotQ8 returns
+// for each row, bit for bit, and refuses the rows DotQ8 refuses.
+func TestDotQ8x4(t *testing.T) {
+	if !useAVX2 || !hasF16C {
+		t.Skip("no 8-bit kernels on this machine")
+	}
+	rng := rand.New(rand.NewSource(10))
+	for _, k := range []int{256, 2048, 5632} {
+		const n = 6
+		var b Q8Batch
+		b.Reset(k, n)
+		for i := 0; i < n; i++ {
+			x := randomVec(rng, k)
+			if i == 2 {
+				for j := range x {
+					x[j] *= 1e-3
+				}
+			}
+			if !b.Row(i).Quantize(x) {
+				t.Fatal("Quantize refused")
+			}
+		}
+		for trial := 0; trial < 6; trial++ {
+			dt, bad := mmf.Q4_K, 2 // dmin of the first block
+			if trial >= 3 {
+				dt, bad = mmf.Q6_K, 208 // d of the first block
+			}
+			row := randomRows(rng, dt, 1, k)
+			if trial%3 == 2 {
+				row[bad], row[bad+1] = 0x00, 0x7C // +inf
+			}
+			r := NewRowDot(dt, k)
+			r.LoadQ8(row)
+			for i := 0; i+4 <= n; i++ {
+				var out [4]float32
+				ok := r.DotQ8x4(&b, i, &out)
+				for j := 0; j < 4; j++ {
+					want, wok := r.DotQ8(b.Row(i + j))
+					if ok != wok {
+						t.Fatalf("%s K=%d trial %d: DotQ8x4 ok=%v, DotQ8 ok=%v", dt, k, trial, ok, wok)
+					}
+					if ok && math.Float32bits(out[j]) != math.Float32bits(want) {
+						t.Errorf("%s K=%d rows %d+%d: got %g, DotQ8 %g", dt, k, i, j, out[j], want)
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestDotQ8RejectsNonFiniteScales(t *testing.T) {
 	if !useAVX2 {
 		t.Skip("no 8-bit kernels on this machine")
@@ -173,5 +223,20 @@ func BenchmarkRowDotQ8(b *testing.B) {
 				r.DotQ8(&a)
 			}
 		})
+		if FusedQ8x4(dt) {
+			var batch Q8Batch
+			batch.Reset(k, 4)
+			for i := 0; i < 4; i++ {
+				batch.Row(i).Quantize(randomVec(rng, k))
+			}
+			b.Run(dt.String()+"/dot4", func(b *testing.B) {
+				r.LoadQ8(row)
+				b.SetBytes(4 * int64(len(row)))
+				var out [4]float32
+				for i := 0; i < b.N; i++ {
+					r.DotQ8x4(&batch, 0, &out)
+				}
+			})
+		}
 	}
 }

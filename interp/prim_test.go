@@ -118,33 +118,59 @@ func TestScatterInPlaceNeedsSoleUse(t *testing.T) {
 }
 
 func TestFastPermute(t *testing.T) {
-	x := f32t([]int{1, 3, 1, 2}, 1, 2, 3, 4, 5, 6)
 	perm := func(p ...int64) *mmf.Op {
 		return &mmf.Op{Opcode: mmf.OpPermute, Attrs: []mmf.Attr{{Key: "perm", Type: mmf.AttrInts, Ints: p}}}
 	}
-	for _, c := range []struct {
-		perm  []int64
-		shape []int
-		fast  bool
-	}{
-		{[]int64{0, 2, 1, 3}, []int{1, 1, 3, 2}, true},
-		{[]int64{2, 1, 0, 3}, []int{1, 3, 1, 2}, true},
-		{[]int64{0, 3, 2, 1}, []int{1, 2, 1, 3}, false},
-	} {
-		got, ok := fastPermute(perm(c.perm...), []*ref.Tensor{x}, mmf.F32, c.shape)
-		if ok != c.fast {
-			t.Errorf("perm %v: handled %v", c.perm, ok)
-			continue
+	// Every permutation of a rank-4 shape, with axes of size 1 among
+	// them, for elements of 4, 2 and 1 bytes; and the empty tensor.
+	var perms [][]int64
+	var gen func(p []int64, used int)
+	gen = func(p []int64, used int) {
+		if len(p) == 4 {
+			perms = append(perms, append([]int64{}, p...))
+			return
 		}
-		if !ok {
-			continue
+		for a := int64(0); a < 4; a++ {
+			if used&(1<<a) == 0 {
+				gen(append(p, a), used|1<<a)
+			}
 		}
-		want, err := ref.Eval(mmf.OpPermute, perm(c.perm...).Attrs, []*ref.Tensor{x}, mmf.F32, c.shape)
-		if err != nil {
-			t.Fatal(err)
+	}
+	gen(nil, 0)
+	for _, dt := range []mmf.DType{mmf.F32, mmf.F16, mmf.Bool} {
+		for _, xs := range [][]int{{1, 3, 1, 2}, {2, 3, 4, 5}, {3, 0, 2, 1}} {
+			x, err := ref.New(dt, xs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range x.Data {
+				x.Data[i] = byte(i*7 + 1)
+				if dt == mmf.Bool {
+					x.Data[i] &= 1
+				}
+			}
+			for _, p := range perms {
+				shape := []int{xs[p[0]], xs[p[1]], xs[p[2]], xs[p[3]]}
+				got, ok := fastPermute(perm(p...), []*ref.Tensor{x}, dt, shape)
+				if !ok {
+					t.Errorf("%s %v perm %v: not handled", dt, xs, p)
+					continue
+				}
+				want, err := ref.Eval(mmf.OpPermute, perm(p...).Attrs, []*ref.Tensor{x}, dt, shape)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got.Data, want.Data) || !sameInts(got.Shape, want.Shape) {
+					t.Errorf("%s %v perm %v: wrong result", dt, xs, p)
+				}
+			}
 		}
-		if !bytes.Equal(got.Data, want.Data) {
-			t.Errorf("perm %v: %v, want %v", c.perm, f32s(got), f32s(want))
-		}
+	}
+	q, err := ref.New(mmf.Q8_0, []int{2, 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fastPermute(perm(1, 0), []*ref.Tensor{q}, mmf.Q8_0, []int{32, 2}); ok {
+		t.Error("handled a block dtype")
 	}
 }

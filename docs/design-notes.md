@@ -132,10 +132,14 @@ memory more slowly than the machine allows.
    kept between the few hundred parallel calls of each token, instead of
    new goroutines for each; software prefetch of the weight rows in the
    block kernels; the activations quantized in parallel. Target: match
-   llama.cpp at generation, which is bound by memory.
+   llama.cpp at generation, which is bound by memory. Done: 29 tokens per
+   second against llama.cpp's 25.
 2. **Matrix by matrix for the prompt.** Kernels that multiply one weight
    row by several activation rows at once, decoding each block of weights
    and its scales once for all of them. Target: halve the prompt gap.
+   Done, with the serial steps a profile showed next to them (attention
+   over the whole cache, permutations): the prompt went from 4.2 to 2.2
+   times slower than llama.cpp.
 3. **AVX-512 and VNNI.** On CPUs that have them (Intel Xeon since Cascade
    Lake, AMD Zen 4), 512-bit kernels whose integer dot products take one
    instruction. Detected at run time, like AVX2 today.
