@@ -22,6 +22,11 @@ table computed from a buffer of frequencies, are evaluated once at export
 time and stored as constants. Parameters are never folded, so they keep
 their names.
 
+A buffer the model mutates, such as a static key-value cache, becomes a
+graph variable and its final value the variable's update (ADR 0003);
+index_copy_ and index assignment become scatter. A buffer that starts as
+zeros is ZERO_INIT and takes no file space.
+
 Anything the exporter cannot express is rejected with the operator's name;
 nothing is approximated. See SUPPORTED for the operators it handles.
 """
@@ -34,7 +39,7 @@ import torch
 
 from . import container as C
 from . import dtypes as D
-from .writer import CONST, INPUT, OUTPUT, WEIGHT, GraphBuilder, Writer, encode_metadata, write_file
+from .writer import CONST, INPUT, OUTPUT, VARIABLE, WEIGHT, GraphBuilder, Writer, encode_metadata, write_file
 
 __all__ = ["export", "convert", "ExportError", "SUPPORTED"]
 
@@ -103,7 +108,20 @@ def export(model, args, path=None, *, kwargs=None, dynamic_shapes=None, metadata
 def convert(ep, *, metadata=None, name=None, output_names=None, dim_names=None):
     """Converts a torch.export.ExportedProgram into a Writer holding the
     weights, the graph and the metadata."""
+    if _has_mutation(ep):
+        # torch.export keeps in-place operators such as index_copy_ in its
+        # graph; functionalizing turns them into functional ones and the
+        # mutated buffers into outputs. The empty table decomposes nothing.
+        ep = ep.run_decompositions({})
     return _Converter(ep, dim_names or {}).run(metadata or {}, name, output_names)
+
+
+def _has_mutation(ep):
+    for node in ep.graph.nodes:
+        schema = getattr(node.target, "_schema", None) if node.op == "call_function" else None
+        if schema is not None and schema.is_mutable:
+            return True
+    return False
 
 
 def _dim_names(ep, dynamic_shapes):
@@ -359,6 +377,20 @@ class _Converter:
             self.tensor_refs.append(c.vid)
         return c.vid
 
+    def variable(self, name, t):
+        """A graph variable for the mutated buffer t. A buffer of zeros, such
+        as an empty key-value cache, is ZERO_INIT and takes no file space;
+        any other starts from its stored value."""
+        dt = _mmf_dtype(t.dtype)
+        shape = list(t.shape)
+        self.tensor_names.add(name)
+        if t.numel() and not torch.count_nonzero(t) and not (t.is_floating_point() and torch.signbit(t).any()):
+            return self.g.value(name, dt, shape, VARIABLE, 0, zero=True)
+        idx = self.w.add_tensor(name, dt, shape, _tensor_bytes(t))
+        vid = self.g.value(name, dt, shape, VARIABLE, idx)
+        self.tensor_refs.append(vid)
+        return vid
+
     def const_of(self, x):
         """The tensor of an argument known at export time, or None."""
         if isinstance(x, torch.fx.Node):
@@ -376,6 +408,14 @@ class _Converter:
         state = ep.state_dict
         consts = getattr(ep, "constants", {}) or {}
         nodes = list(ep.graph.nodes)
+        out_specs = list(ep.graph_signature.output_specs)
+        for s in out_specs:
+            if s.kind.name not in ("USER_OUTPUT", "BUFFER_MUTATION"):
+                what = "an input" if s.kind.name == "USER_INPUT_MUTATION" else s.kind.name.lower().replace("_", " ")
+                raise ExportError(f"the program mutates {what} ({s.target}); only buffers may be mutated, "
+                                  "and they become graph variables")
+        mutated = {s.target for s in out_specs if s.kind.name == "BUFFER_MUTATION"}
+        variables = {}  # buffer name -> value of kind variable
 
         # Symbolic dimensions, named after the user's Dim objects, in the
         # order they first appear in the inputs.
@@ -418,7 +458,10 @@ class _Converter:
                         t = consts.get(spec.target, state.get(spec.target))
                     if not isinstance(t, torch.Tensor):
                         self.fail(f"{kind.lower()} {spec.target} is not a tensor")
-                    self.env[node] = _Const(t.detach(), spec.target, kind == "PARAMETER")
+                    if kind == "BUFFER" and spec.target in mutated:
+                        self.tv[node] = variables[spec.target] = self.variable(spec.target, t.detach())
+                    else:
+                        self.env[node] = _Const(t.detach(), spec.target, kind == "PARAMETER")
                 else:
                     self.fail(f"input kind {kind} is not supported")
             elif node.op == "get_attr":
@@ -434,9 +477,25 @@ class _Converter:
                 self.fail(f"node kind {node.op} is not supported")
         self.node = None
 
-        user_outs = [s for s in ep.graph_signature.output_specs]
-        if any(s.kind.name != "USER_OUTPUT" for s in user_outs):
-            raise ExportError("the program mutates buffers or inputs; only pure inference graphs are supported")
+        if len(outputs) != len(out_specs):
+            raise ExportError(f"{len(outputs)} graph outputs for {len(out_specs)} output specs")
+        # A mutated buffer is a variable, and its value at the end of the
+        # run is the variable's update (spec/primitives.md section 7).
+        for o, spec in zip(outputs, out_specs):
+            if spec.kind.name != "BUFFER_MUTATION":
+                continue
+            var = variables.get(spec.target)
+            if var is None:
+                raise ExportError(f"buffer {spec.target} is mutated but not read")
+            new = self.v(o) if isinstance(o, torch.fx.Node) else None
+            if new is None:
+                raise ExportError(f"the new value of buffer {spec.target} is not a tensor")
+            new = self.cast(new, self.dt(var))
+            if self.shp(new) != self.shp(var):
+                raise ExportError(f"buffer {spec.target} changes shape from {self.shp(var)} to {self.shp(new)}")
+            if new != var:
+                g.update(var, new)
+        outputs = [o for o, spec in zip(outputs, out_specs) if spec.kind.name == "USER_OUTPUT"]
         if output_names is None:
             output_names = ["output"] if len(outputs) == 1 else [f"output_{i}" for i in range(len(outputs))]
         if len(output_names) != len(outputs):
@@ -1125,6 +1184,50 @@ def _index_select(cv, node, a):
     x = cv.v(a["self"])
     ax = _axis(a["dim"], len(cv.shp(x)))
     return cv.prim("gather", [x, cv.v(a["index"])], dt, shape, [("axis", "int", ax)])
+
+
+def _scatter(cv, node, x, ax, idx, src):
+    """A copy of x with the slices at idx along axis ax replaced by src,
+    broadcast to their shape: the scatter primitive. Indices must be in
+    range; unlike PyTorch, a negative index does not count from the end."""
+    dt, shape = _out(cv, node)
+    if cv.dt(idx).name not in ("i32", "i64"):
+        cv.fail(f"indices of {cv.dt(idx).name}; only integer indices are supported")
+    s = cv.shp(x)
+    want = s[:ax] + cv.shp(idx) + s[ax + 1:]
+    src = cv.expand(cv.cast(src, dt), want)
+    return cv.prim("scatter", [cv.cast(x, dt), idx, src], dt, shape, [("axis", "int", ax)])
+
+
+@_lower("index_copy.default")
+def _index_copy(cv, node, a):
+    x = cv.v(a["self"])
+    ax = _axis(a["dim"], len(cv.shp(x)))
+    idx = cv.v(a["index"])
+    if len(cv.shp(idx)) != 1:
+        cv.fail("index_copy with an index that is not 1-D")
+    return _scatter(cv, node, x, ax, idx, cv.v(a["source"]))
+
+
+@_lower("index_put.default")
+def _index_put(cv, node, a):
+    # x[..., idx, ...] = values with one index tensor, as in writing new
+    # keys at their positions in a cache.
+    if a.get("accumulate"):
+        cv.fail("index_put with accumulate=True")
+    x = cv.v(a["self"])
+    found = [(i, t) for i, t in enumerate(a["indices"]) if t is not None]
+    if len(found) != 1:
+        cv.fail(f"index_put with {len(found)} index tensors; only one is supported")
+    ax, t = found[0]
+    idx = cv.v(t)
+    if cv.dt(idx) is D.BOOL:
+        cv.fail("index_put with a boolean mask")
+    val = a["values"]
+    src = cv.v(val) if isinstance(val, torch.fx.Node) else None
+    if src is None:
+        cv.fail("index_put of a value that is not a tensor")
+    return _scatter(cv, node, x, ax, idx, src)
 
 
 @_lower("embedding.default")

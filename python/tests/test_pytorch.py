@@ -127,6 +127,49 @@ class TestExport(unittest.TestCase):
                 self.assertEqual(fh.read(), data)
             self.assertEqual(File(data).metadata()["general.license"], ("string", "MIT"))
 
+    def test_kv_cache(self):
+        m = TM.build_kv()
+        args, dyn = TM.TinyLlamaKV.example()
+        f = File(export(m, args, dynamic_shapes=dyn))
+        g = f.graph()
+        caches = [v for v in g.values if v.name.endswith("_cache")]
+        self.assertEqual(len(caches), 4)
+        for v in caches:
+            self.assertEqual(v.kind, 4)  # variable
+            self.assertTrue(v.zero)  # an empty cache takes no file space
+            self.assertEqual(list(v.shape), [1, 2, TM.TinyLlamaKV.MAX_LEN, 8])
+        self.assertFalse([t.name for t in f.tensors() if "cache" in t.name])
+        self.assertEqual(sorted(g.values[u.variable].name for u in g.updates), sorted(v.name for v in caches))
+        # Each update is a scatter into its own variable, so a runtime can
+        # write the new rows in place.
+        producer = {o: op for op in g.main.ops for o in op.outputs}
+        for u in g.updates:
+            op = producer[u.value]
+            self.assertEqual(op.name, "scatter")
+            self.assertEqual(op.inputs[0], u.variable)
+
+        full = TM.build("tiny-llama")
+        torch.manual_seed(3)
+        for prompt, steps in ((5, 4), (1, 3), (9, 0)):
+            ids = torch.randint(0, 64, (1, prompt + steps))
+            s = Program.load(f).session()
+            m.reset()
+            with torch.no_grad():
+                want = full(ids).double().numpy()
+            t = 0
+            for n in [prompt] + [1] * steps:
+                x, pos = ids[:, t:t + n], torch.arange(t, t + n)
+                got = values(s.run({"ids": to_mmf(x), "pos": to_mmf(pos)})["output"])
+                with torch.no_grad():
+                    ref = m(x, pos).double().numpy()
+                scale = max(np.abs(ref).max(), 1)
+                self.assertLessEqual(np.abs(got - ref).max(), TOL * scale, f"step at {t}")
+                # A cached decode gives the logits of the full forward pass.
+                self.assertLessEqual(np.abs(got - want[:, t:t + n]).max(), TOL * scale, f"full pass at {t}")
+                t += n
+            k = s.variable("layers.0.k_cache")
+            self.assertTrue(np.all(D.to_f64(k.arr, k.dtype)[:, :, t:] == 0))
+
     def test_rejections(self):
         class Sort(nn.Module):
             def forward(self, x):
@@ -136,6 +179,24 @@ class TestExport(unittest.TestCase):
             def forward(self, x):
                 return x.reshape(-1)
 
+        class Mutate(nn.Module):
+            def forward(self, x):
+                x.add_(1)
+                return x * 2
+
+        class Accumulate(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("hist", torch.zeros(4))
+
+            def forward(self, i):
+                self.hist.index_put_((i,), torch.ones(i.shape), accumulate=True)
+                return self.hist * 1
+
+        with self.assertRaisesRegex(ExportError, "mutates an input"):
+            export(Mutate().eval(), (torch.randn(3),))
+        with self.assertRaisesRegex(ExportError, "accumulate"):
+            export(Accumulate().eval(), (torch.tensor([1, 2]),))
         with self.assertRaisesRegex(ExportError, "aten.sort"):
             export(Sort().eval(), (torch.randn(4),))
         b, t = Dim("b", max=8), Dim("t", max=8)
