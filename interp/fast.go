@@ -41,6 +41,7 @@ var fastPaths = map[string]fastFunc{
 	"linear.v1":            fastLinear,
 	"dequant_matmul.v1":    fastDequantMatmul,
 	"dequant_matmul_a8.v1": fastDequantMatmulA8,
+	"dequant_matmul_a8.v2": fastDequantMatmulA8V2,
 	"rms_norm.v1":          fastRMSNorm,
 	"swiglu.v1":            fastSwiglu,
 	"rope.v1":              fastRope,
@@ -142,14 +143,31 @@ func fastDequantMatmul(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]i
 // quantized to 8-bit blocks where the kernels allow (spec/stdlib.md section
 // 3.4), and as dequant_matmul.v1 otherwise.
 func fastDequantMatmulA8(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	if len(list) != 0 || len(in) < 2 || len(in) > 3 {
+	if len(list) != 0 {
+		return nil, false, nil
+	}
+	return dequantMatmulA8(in, 32)
+}
+
+// fastDequantMatmulA8V2 runs dequant_matmul_a8.v2 as fastDequantMatmulA8
+// does, with activation blocks of the call's block attribute.
+func fastDequantMatmulA8V2(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	block, err := a8Block(list)
+	if err != nil {
+		return nil, false, err
+	}
+	return dequantMatmulA8(in, block)
+}
+
+func dequantMatmulA8(in []*ref.Tensor, block int) ([]*ref.Tensor, bool, error) {
+	if len(in) < 2 || len(in) > 3 {
 		return nil, false, nil
 	}
 	if err := checkDequantMatmul(in); err != nil {
 		return nil, false, err
 	}
 	x, w := in[0], in[1]
-	if !kernels.FusedQ8(w.DType) {
+	if !kernels.FusedQ8Blocks(w.DType, block) {
 		out, ok := linearFast(in)
 		return out, ok, nil
 	}
@@ -165,7 +183,7 @@ func fastDequantMatmulA8(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][
 		bias = f32View(in[2])
 	}
 	rows := x.NumElems() / m.k
-	y := linearA8(f32View(x), rows, m, bias)
+	y := linearA8(f32View(x), rows, m, bias, block)
 	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), w.Shape[0])
 	return []*ref.Tensor{f32Tensor(shape, y)}, true, nil
 }
@@ -175,19 +193,20 @@ func fastDequantMatmulA8(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][
 // very large) use the float32 kernels. Where the weights' dtype has a
 // four-row kernel, rows of x go through it four at a time; its results are
 // those of the one-row kernel, bit for bit, so the output does not depend
-// on how many rows are multiplied together.
-func linearA8(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
+// on how many rows are multiplied together. The activation blocks are block
+// long, and kernels.FusedQ8Blocks must accept the weights' dtype for it.
+func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) []float32 {
 	n, k := w.t.Shape[0], w.k
 	var acts kernels.Q8Batch
 	acts.Reset(k, rows)
 	quantized := make([]bool, rows)
 	parallel(rows, func(lo, hi int) {
 		for i := lo; i < hi; i++ {
-			quantized[i] = acts.Row(i).Quantize(x[i*k : (i+1)*k])
+			quantized[i] = acts.Row(i).QuantizeBlocks(x[i*k:(i+1)*k], block)
 		}
 	})
 	// four[i] reports whether rows i to i+3 are all quantized.
-	x4 := kernels.FusedQ8x4(w.t.DType)
+	x4 := kernels.FusedQ8x4(w.t.DType) || block == 256
 	four := make([]bool, rows)
 	for i := 0; x4 && i+4 <= rows; i++ {
 		four[i] = quantized[i] && quantized[i+1] && quantized[i+2] && quantized[i+3]

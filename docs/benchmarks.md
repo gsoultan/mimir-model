@@ -175,3 +175,27 @@ These are steps 1 and 2 of the speed plan in docs/design-notes.md:
 Generation is now faster than llama.cpp's on this machine. The prompt is
 still 2.2 times slower; llama.cpp uses the machine's AVX-512 and VNNI
 instructions there, which mmf's kernels do not yet (step 3).
+
+### Activation blocks of 256
+
+Same machine and script, median of 3 runs. `q4km-a8k.mmf` is the same GGUF
+imported again: its K-quant matrix products are now
+`dequant_matmul_a8.v2` with blocks of 256, where `q4km-a8.mmf` has `v1`
+with blocks of 32. Both run with the same mmf-run.
+
+| file | runtime | prompt | generation | peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| `tinyllama-rand-q4km.gguf` | llama.cpp | 145.7 tok/s | 26.4 tok/s | 1296 MiB |
+| `q4km-a8.mmf` | mmf-run, blocks of 32 | 60.1 tok/s | 26.3 tok/s | 901 MiB |
+| `q4km-a8k.mmf` | mmf-run, blocks of 256 | 70.9 tok/s | 31.5 tok/s | 876 MiB |
+
+With one activation scale per weight block, the kernels add up the
+integer products of the whole block and convert to float32 once, instead
+of once per 32. The four-row kernels got 16% (Q4_K) and 29% (Q6_K) faster
+alone, the prompt 18% and generation 20%. The prompt is still 2.1 times
+slower than llama.cpp's. The llama-cpp-python build on this machine
+reports AMX_INT8, AVX512_VNNI and REPACK, so llama.cpp most likely
+multiplies the prompt with AMX tiles on weights repacked at load; that
+is a different kind of kernel from the AVX2 ones here, not a matter of
+block size. On the tiny test model the largest logit difference from the
+float64 oracle went from 0.33 to 0.41, still under llama.cpp's 0.53.

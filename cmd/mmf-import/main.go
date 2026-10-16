@@ -23,8 +23,9 @@
 // with -graph, a GGUF file of the llama architecture also gets a runnable
 // forward-pass graph with a key-value cache of -ctx positions (default: the
 // model's context length), which mmf-run can generate text with. Its
-// matrix products with quantized weights are dequant_matmul_a8.v1, which
-// lets a runtime round the activations to 8-bit blocks as llama.cpp does;
+// matrix products with quantized weights are dequant_matmul_a8, which
+// lets a runtime round the activations to 8-bit blocks as llama.cpp does:
+// blocks of 256 for K-quant weights (v2) and of 32 for the others (v1).
 // -a8=false writes dequant_matmul.v1, which keeps them in float32.
 // An ONNX model (a file ending in .onnx) of the convolutional subset that
 // package importer documents is converted with its graph, so the output
@@ -52,7 +53,7 @@ func main() {
 	nohash := flag.Bool("nohash", false, "do not write section hashes")
 	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama architecture)")
 	ctx := flag.Int("ctx", 0, "with -graph, the key-value cache length (default: the model's context length)")
-	a8 := flag.Bool("a8", true, "with -graph, let runtimes round activations to 8 bits in quantized matrix products (dequant_matmul_a8.v1), as llama.cpp does")
+	a8 := flag.Bool("a8", true, "with -graph, let runtimes round activations to 8 bits in quantized matrix products (dequant_matmul_a8), as llama.cpp does")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: mmf-import [-o out.mmf] [-bench] [-nohash] input...")
