@@ -16,9 +16,6 @@ package interp
 import (
 	"encoding/binary"
 	"math"
-	"runtime"
-	"sync"
-	"sync/atomic"
 
 	"github.com/gsoultan/mmf"
 	"github.com/gsoultan/mmf/internal/kernels"
@@ -51,37 +48,6 @@ var fastPaths = map[string]fastFunc{
 	"embedding.v1":         fastEmbedding,
 	"conv2d.v1":            fastConv2d,
 }
-
-// parallel runs f(lo, hi) over [0, n) on the available CPUs. The range is
-// cut into many more pieces than there are CPUs and the workers take them
-// in turn, so a slow or busy CPU does not hold the others up.
-func parallel(n int, f func(lo, hi int)) {
-	w := min(runtime.GOMAXPROCS(0), n)
-	if w <= 1 {
-		f(0, n)
-		return
-	}
-	chunk := max(1, n/(w*parallelPieces))
-	var next atomic.Int64
-	var wg sync.WaitGroup
-	for range w {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				lo := int(next.Add(int64(chunk))) - chunk
-				if lo >= n {
-					return
-				}
-				f(lo, min(lo+chunk, n))
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-// parallelPieces is the number of pieces per CPU.
-const parallelPieces = 8
 
 // matrixRows decodes rows of a [N, K] matrix of any decodable dtype.
 type matrixRows struct {
@@ -206,25 +172,50 @@ func fastDequantMatmulA8(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][
 
 // linearA8 is linearF32 with each row of x quantized to 8-bit blocks. Rows
 // of x or w that the 8-bit kernels refuse (values that are not finite or
-// very large) use the float32 kernels.
+// very large) use the float32 kernels. Where the weights' dtype has a
+// four-row kernel, rows of x go through it four at a time; its results are
+// those of the one-row kernel, bit for bit, so the output does not depend
+// on how many rows are multiplied together.
 func linearA8(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
 	n, k := w.t.Shape[0], w.k
-	acts := make([]kernels.Q8, rows)
+	var acts kernels.Q8Batch
+	acts.Reset(k, rows)
 	quantized := make([]bool, rows)
-	for i := range acts {
-		quantized[i] = acts[i].Quantize(x[i*k : (i+1)*k])
+	parallel(rows, func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			quantized[i] = acts.Row(i).Quantize(x[i*k : (i+1)*k])
+		}
+	})
+	// four[i] reports whether rows i to i+3 are all quantized.
+	x4 := kernels.FusedQ8x4(w.t.DType)
+	four := make([]bool, rows)
+	for i := 0; x4 && i+4 <= rows; i++ {
+		four[i] = quantized[i] && quantized[i+1] && quantized[i+2] && quantized[i+3]
 	}
 	y := make([]float32, rows*n)
 	parallel(n, func(lo, hi int) {
 		rd := kernels.NewRowDot(w.t.DType, k)
+		var out [4]float32
 		for j := lo; j < hi; j++ {
 			row := w.rowBytesOf(j)
 			rd.LoadQ8(row)
 			q8, loaded := true, false
-			for i := 0; i < rows; i++ {
+			for i := 0; i < rows; {
+				if q8 && four[i] {
+					if q8 = rd.DotQ8x4(&acts, i, &out); q8 {
+						for r, s := range out {
+							if bias != nil {
+								s += bias[j]
+							}
+							y[(i+r)*n+j] = s
+						}
+						i += 4
+						continue
+					}
+				}
 				var s float32
 				if q8 && quantized[i] {
-					s, q8 = rd.DotQ8(&acts[i])
+					s, q8 = rd.DotQ8(acts.Row(i))
 				}
 				if !q8 || !quantized[i] {
 					if !loaded {
@@ -237,6 +228,7 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
 					s += bias[j]
 				}
 				y[i*n+j] = s
+				i++
 			}
 		}
 	})
@@ -393,6 +385,31 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 	qv, kv, vv := f32View(q), f32View(k), f32View(v)
 	out := make([]float32, B*Hq*Tq*Dv)
 	scale := float32(p.scale)
+	// ends holds, for each query row, the end of its visible keys: keys
+	// past the last one a boolean mask allows, or past the causal limit,
+	// get no weight, so the loops below stop there. With a cache sized for
+	// the whole context, most keys are past the end.
+	var ends []int
+	if mask != nil && mask.DType == mmf.Bool && mst[3] == 1 {
+		ends = make([]int, B*Hq*Tq)
+		for b := 0; b < B; b++ {
+			for h := 0; h < Hq; h++ {
+				for i := 0; i < Tq; i++ {
+					at := (b*Hq+h)*Tq + i
+					if h > 0 && mst[1] == 0 {
+						ends[at] = ends[at-h*Tq]
+						continue
+					}
+					row := mask.Data[b*mst[0]+h*mst[1]+i*mst[2]:][:Tk]
+					e := len(row)
+					for e > 0 && row[e-1] == 0 {
+						e--
+					}
+					ends[at] = e
+				}
+			}
+		}
+	}
 	parallel(B*Hq, func(lo, hi int) {
 		sc := make([]float32, Tk)
 		acc := make([]float32, Dv)
@@ -403,8 +420,16 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 			vb := vv[kvh*Tk*Dv:]
 			for i := 0; i < Tq; i++ {
 				qi := qv[(bh*Tq+i)*D:][:D]
+				end := Tk
+				if ends != nil {
+					end = ends[bh*Tq+i]
+				}
+				if p.causal {
+					end = max(0, min(end, i+(Tk-Tq)+1))
+				}
+				sc := sc[:end]
 				mx := float32(math.Inf(-1))
-				for j := 0; j < Tk; j++ {
+				for j := 0; j < end; j++ {
 					s := float32(math.Inf(-1))
 					allowed := !p.causal || j <= i+(Tk-Tq)
 					var add float32

@@ -59,8 +59,11 @@ func fastAddMul(opc mmf.Opcode, in []*ref.Tensor, dt mmf.DType, shape []int) (*r
 	return f32Tensor(shape, y), true
 }
 
-// fastPermute handles permutations that only move axes of size 1, which
-// leave the elements in the same order: the result is a copy.
+// fastPermute handles permutations of tensors whose elements are whole
+// bytes. One that only moves axes of size 1 leaves the elements in the
+// same order, so the result is a copy; any other is copied in runs along
+// the last output axis, walking the input with strides instead of
+// recomputing every index as the reference does.
 func fastPermute(op *mmf.Op, in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool) {
 	p := attr(op, "perm")
 	if len(in) != 1 || in[0].DType != dt || p == nil || p.Type != mmf.AttrInts ||
@@ -69,20 +72,75 @@ func fastPermute(op *mmf.Op, in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.
 	}
 	x := in[0]
 	seen := make([]bool, len(shape))
-	last := -1
+	last, moved := -1, false
 	for i, a := range p.Ints {
 		if a < 0 || int(a) >= len(shape) || seen[a] || x.Shape[a] != shape[i] {
 			return nil, false
 		}
 		seen[a] = true
 		if shape[i] != 1 {
-			if int(a) < last {
-				return nil, false
-			}
+			moved = moved || int(a) < last
 			last = int(a)
 		}
 	}
-	return &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: append([]byte{}, x.Data...)}, true
+	if !moved {
+		return &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: append([]byte{}, x.Data...)}, true
+	}
+	return permuteStrided(x, p.Ints, shape)
+}
+
+// permuteStrided permutes x, of a dtype whose elements are whole bytes,
+// into shape.
+func permuteStrided(x *ref.Tensor, perm []int64, shape []int) (*ref.Tensor, bool) {
+	if x.DType.IsBlock() {
+		return nil, false
+	}
+	es, err := ref.ByteSize(x.DType, []int{1})
+	if n8, err8 := ref.ByteSize(x.DType, []int{8}); err != nil || err8 != nil || n8 != 8*es {
+		return nil, false
+	}
+	r := len(shape)
+	in := make([]int, r) // input stride, in elements, of each output axis
+	acc := 1
+	for a := r - 1; a >= 0; a-- {
+		for k, pa := range perm {
+			if int(pa) == a {
+				in[k] = acc
+			}
+		}
+		acc *= x.Shape[a]
+	}
+	total := 1
+	for _, d := range shape {
+		total *= d
+	}
+	y := make([]byte, total*es)
+	if total == 0 {
+		return &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: y}, true
+	}
+	inner, step := shape[r-1], in[r-1]
+	idx := make([]int, r-1)
+	src := 0
+	for dst := 0; dst < total; dst += inner {
+		if step == 1 {
+			copy(y[dst*es:(dst+inner)*es], x.Data[src*es:(src+inner)*es])
+		} else {
+			for i := 0; i < inner; i++ {
+				copy(y[(dst+i)*es:(dst+i+1)*es], x.Data[(src+i*step)*es:])
+			}
+		}
+		// Advance the outer index, last axis first.
+		for k := r - 2; k >= 0; k-- {
+			idx[k]++
+			src += in[k]
+			if idx[k] < shape[k] {
+				break
+			}
+			src -= idx[k] * in[k]
+			idx[k] = 0
+		}
+	}
+	return &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: y}, true
 }
 
 // In-place scatter. A key-value cache is a variable that each step
