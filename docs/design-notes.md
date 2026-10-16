@@ -142,14 +142,24 @@ memory more slowly than the machine allows.
    times slower than llama.cpp.
 3. **AVX-512 and VNNI.** On CPUs that have them (Intel Xeon since Cascade
    Lake, AMD Zen 4), 512-bit kernels whose integer dot products take one
-   instruction. Detected at run time, like AVX2 today.
+   instruction. Tried and dropped: 512-bit versions of the four-row
+   kernels, bit for bit equal to the AVX2 ones, ran at the same speed for
+   Q4_K and 20% slower for Q6_K on the 2.1 GHz Xeon of docs/benchmarks.md
+   ('After the first speed work'). With activation blocks of 32, every 32
+   products need their own conversion to float32 and multiply-add, and a
+   512-bit instruction does twice the work on half the ports, so the count
+   of port cycles per product does not change. VNNI saves one integer
+   instruction in five. The rest of the prompt gap comes from the block
+   size (below), not from the vector width.
 
 Each step is measured end to end with tools/bench_generate.py against
 llama.cpp on the same machine, and recorded in docs/benchmarks.md.
 
-Not in this plan, and open for a decision: dequant_matmul_a8.v1 fixes the
-activation blocks at 32 elements (spec/stdlib.md section 3.4), where
-llama.cpp's K-quant kernels use blocks of 256 with one scale each. Blocks
-of 256 would let a kernel stay in integers across a whole Q4_K block and
-convert once instead of eight times, at the cost of a looser tolerance,
-so it would be a spec change.
+Open for a decision: dequant_matmul_a8.v1 fixes the activation blocks at
+32 elements (spec/stdlib.md section 3.4), where llama.cpp's K-quant
+kernels use blocks of 256 with one scale each. Blocks of 256 let a kernel
+stay in integers across a whole Q4_K block and convert once instead of
+eight times: about two instructions per 64 products instead of five, which
+is likely where llama.cpp's prompt speed comes from. The cost is a looser
+tolerance, so it would be a spec change, for example a block-size
+attribute on the composite with 32 as the default.
