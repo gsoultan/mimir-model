@@ -13,7 +13,12 @@
 
 package kernels
 
-import "math"
+import (
+	"encoding/binary"
+	"math"
+
+	"github.com/gsoultan/mmf"
+)
 
 // Kernels for the attention fast path: the scores of one query against a
 // run of keys, their softmax, and the weighted sum of the values.
@@ -63,5 +68,45 @@ func WeightedSumF32(p, v, acc []float32) {
 	}
 	for j, e := range p {
 		AxpyF32(e, v[j*d:(j+1)*d], acc)
+	}
+}
+
+// ScoresF16 is ScoresF32 for keys stored as f16, len(q) elements (2*len(q)
+// bytes) per row. The keys convert to float32 exactly, and the result is
+// that of ScoresF32 on the converted keys, bit for bit.
+func ScoresF16(q []float32, k []byte, scale float32, out []float32) {
+	d := len(q)
+	k = k[:2*len(out)*d]
+	if useAVX2 && hasF16C && d >= 8 && d%8 == 0 && len(out) > 0 {
+		scoresF16AVX2(&q[0], &k[0], d, len(out), scale, &out[0])
+		return
+	}
+	row := make([]float32, d)
+	for j := range out {
+		f16Row(k[2*j*d:], row)
+		ScoresF32(q, row, scale, out[j:j+1])
+	}
+}
+
+// WeightedSumF16 is WeightedSumF32 for values stored as f16, len(acc)
+// elements per row, with the same result on the converted values.
+func WeightedSumF16(p []float32, v []byte, acc []float32) {
+	d := len(acc)
+	v = v[:2*len(p)*d]
+	if useAVX2 && hasF16C && d >= 8 && d%8 == 0 && len(p) > 0 {
+		wsumF16AVX2(&p[0], &v[0], len(p), d, &acc[0])
+		return
+	}
+	row := make([]float32, d)
+	for j, e := range p {
+		f16Row(v[2*j*d:], row)
+		AxpyF32(e, row, acc)
+	}
+}
+
+// f16Row converts len(dst) f16 values from b.
+func f16Row(b []byte, dst []float32) {
+	for i := range dst {
+		dst[i] = mmf.F16ToF32(binary.LittleEndian.Uint16(b[2*i:]))
 	}
 }

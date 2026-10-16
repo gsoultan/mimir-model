@@ -17,6 +17,8 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	"github.com/gsoultan/mmf"
 )
 
 func TestScoresF32(t *testing.T) {
@@ -113,6 +115,43 @@ func TestWeightedSumF32(t *testing.T) {
 			for i := range acc {
 				if acc[i] != want[i] {
 					t.Fatalf("d=%d n=%d: element %d is %g, want %g as AxpyF32 gives", d, n, i, acc[i], want[i])
+				}
+			}
+		}
+	}
+}
+
+// TestF16Attention checks that the f16 kernels give what the float32 ones
+// give on the converted keys and values, bit for bit.
+func TestF16Attention(t *testing.T) {
+	rng := rand.New(rand.NewSource(4))
+	for _, d := range []int{8, 64, 72, 160, 5} {
+		for _, n := range []int{1, 3, 4, 9} {
+			kb := randomRows(rng, mmf.F16, n, d)
+			k := make([]float32, n*d)
+			f16Row(kb, k)
+			q := make([]float32, d)
+			p := make([]float32, n)
+			for i := range q {
+				q[i] = float32(rng.NormFloat64())
+			}
+			for i := range p {
+				p[i] = rng.Float32()
+			}
+			got, want := make([]float32, n), make([]float32, n)
+			ScoresF16(q, kb, 0.125, got)
+			ScoresF32(q, k, 0.125, want)
+			for j := range got {
+				if math.Float32bits(got[j]) != math.Float32bits(want[j]) {
+					t.Errorf("d=%d n=%d: score %d is %g, ScoresF32 gives %g", d, n, j, got[j], want[j])
+				}
+			}
+			acc, wacc := make([]float32, d), make([]float32, d)
+			WeightedSumF16(p, kb, acc)
+			WeightedSumF32(p, k, wacc)
+			for i := range acc {
+				if math.Float32bits(acc[i]) != math.Float32bits(wacc[i]) {
+					t.Fatalf("d=%d n=%d: element %d is %g, WeightedSumF32 gives %g", d, n, i, acc[i], wacc[i])
 				}
 			}
 		}

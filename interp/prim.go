@@ -14,6 +14,8 @@
 package interp
 
 import (
+	"encoding/binary"
+
 	"github.com/gsoultan/mmf"
 	"github.com/gsoultan/mmf/ref"
 )
@@ -32,8 +34,32 @@ func (r *run) fastPrimitive(op *mmf.Op, in []*ref.Tensor, dt mmf.DType, shape []
 		return fastPermute(op, in, dt, shape)
 	case mmf.OpScatter:
 		return r.scatterInPlace(op, in, dt, shape)
+	case mmf.OpCast:
+		return fastCastF16(in, dt, shape)
 	}
 	return nil, false
+}
+
+// fastCastF16 casts an f32 tensor to f16, as a key-value cache in f16
+// needs for every new key and value, in parallel. mmf.F32ToF16 rounds as
+// the reference does except in the payload of a NaN, which goes through
+// the reference's rounding.
+func fastCastF16(in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool) {
+	if len(in) != 1 || in[0].DType != mmf.F32 || dt != mmf.F16 || !sameInts(in[0].Shape, shape) {
+		return nil, false
+	}
+	x := f32View(in[0])
+	t := &ref.Tensor{DType: mmf.F16, Shape: append([]int{}, shape...), Data: make([]byte, 2*len(x))}
+	parallel(len(x), func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			h := mmf.F32ToF16(x[i])
+			if x[i] != x[i] {
+				h = uint16(ref.RoundFloat(mmf.F16, float64(x[i]), false))
+			}
+			binary.LittleEndian.PutUint16(t.Data[2*i:], h)
+		}
+	})
+	return t, true
 }
 
 // fastAddMul adds or multiplies two f32 tensors of the output's shape.

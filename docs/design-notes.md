@@ -208,4 +208,7 @@ llama.cpp's 123, and its memory grew to 4.5 GB.
 3. **A key-value cache in f16.** The cache variables in f16 instead of
    f32: half the memory (46 MiB instead of 92 at a context of 2048 for
    TinyLlama, and proportionally more at long contexts), and half the
-   bytes attention reads per token.
+   bytes attention reads per token. Done: `mmf-import` writes an f16 cache
+   by default, read by `attention.v2`, with the same speed and 93 MiB less
+   memory at a 741-token prompt (docs/benchmarks.md, 'A key-value cache in
+   f16').
