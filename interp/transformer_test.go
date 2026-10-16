@@ -230,46 +230,68 @@ func kquant(rng *rand.Rand, dt mmf.DType, n, k int) *ref.Tensor {
 	return &ref.Tensor{DType: dt, Shape: []int{n, k}, Data: b}
 }
 
-// TestDequantMatmulA8 checks the 8-bit activation fast path against the
-// exact canonical body with the dequant_matmul_a8.v1 tolerance: one
-// quantization step of each activation block per weight, plus rounding.
+// TestDequantMatmulA8 checks the 8-bit activation fast paths of
+// dequant_matmul_a8.v1 and v2 against the exact canonical body with their
+// tolerance: one quantization step of each activation block per weight,
+// plus rounding. Five rows of x take both the four-row and the one-row
+// kernels.
 func TestDequantMatmulA8(t *testing.T) {
 	rng := rand.New(rand.NewSource(3))
-	const k = 512
-	x := randF32(rng, []int{1, 3, k}, 1)
+	const k, rows = 512, 5
+	x := randF32(rng, []int{1, rows, k}, 1)
 	xv := f32Values(x)
-	for _, w := range []*ref.Tensor{
-		quantized(t, mmf.Q8_0, rng, 6, k), kquant(rng, mmf.Q4_K, 6, k), kquant(rng, mmf.Q6_K, 6, k), quantized(t, mmf.Q4_0, rng, 6, k),
+	for _, c := range []struct {
+		name  string
+		attrs []mmf.Attr
+		block int
+	}{
+		{"dequant_matmul_a8.v1", nil, 32},
+		{"dequant_matmul_a8.v2", nil, 32},
+		{"dequant_matmul_a8.v2", []mmf.Attr{intAttr("block", 32)}, 32},
+		{"dequant_matmul_a8.v2", []mmf.Attr{intAttr("block", 256)}, 256},
 	} {
-		in := []*ref.Tensor{x, w, randF32(rng, []int{6}, 1)}
-		want, err := stdlib["dequant_matmul_a8.v1"](nil, in, []mmf.DType{mmf.F32}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, handled, err := fastPaths["dequant_matmul_a8.v1"](nil, in, []mmf.DType{mmf.F32}, nil)
-		if err != nil || !handled {
-			t.Fatalf("%s: handled %v, %v", w.DType, handled, err)
-		}
-		wd := make([]float32, 6*k)
-		mmf.Dequantize(w.DType, w.Data, wd)
-		g, e := f32Values(got[0]), f32Values(want[0])
-		for i := 0; i < 3; i++ {
-			for j := 0; j < 6; j++ {
-				var bound float64
-				for b := 0; b < k; b += 32 {
-					var amax float64
-					for _, v := range xv[i*k+b : i*k+b+32] {
-						amax = math.Max(amax, math.Abs(float64(v)))
+		for _, w := range []*ref.Tensor{
+			quantized(t, mmf.Q8_0, rng, 6, k), kquant(rng, mmf.Q4_K, 6, k), kquant(rng, mmf.Q6_K, 6, k), quantized(t, mmf.Q4_0, rng, 6, k),
+		} {
+			in := []*ref.Tensor{x, w, randF32(rng, []int{6}, 1)}
+			want, err := stdlib[c.name](c.attrs, in, []mmf.DType{mmf.F32}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, handled, err := fastPaths[c.name](c.attrs, in, []mmf.DType{mmf.F32}, nil)
+			if err != nil || !handled {
+				t.Fatalf("%s %s: handled %v, %v", c.name, w.DType, handled, err)
+			}
+			wd := make([]float32, 6*k)
+			mmf.Dequantize(w.DType, w.Data, wd)
+			g, e := f32Values(got[0]), f32Values(want[0])
+			for i := 0; i < rows; i++ {
+				for j := 0; j < 6; j++ {
+					var bound float64
+					for b := 0; b < k; b += c.block {
+						var amax float64
+						for _, v := range xv[i*k+b : i*k+b+c.block] {
+							amax = math.Max(amax, math.Abs(float64(v)))
+						}
+						for kk := b; kk < b+c.block; kk++ {
+							aw := math.Abs(float64(wd[j*k+kk]))
+							bound += amax/127*aw + 1e-4*(math.Abs(float64(xv[i*k+kk]))+amax/127)*aw
+						}
 					}
-					for kk := b; kk < b+32; kk++ {
-						aw := math.Abs(float64(wd[j*k+kk]))
-						bound += amax/127*aw + 1e-4*(math.Abs(float64(xv[i*k+kk]))+amax/127)*aw
+					if d := math.Abs(float64(g[i*6+j] - e[i*6+j])); d > bound {
+						t.Errorf("%s/%d %s [%d,%d]: got %g, exact %g, diff %g > %g", c.name, c.block, w.DType, i, j, g[i*6+j], e[i*6+j], d, bound)
 					}
-				}
-				if d := math.Abs(float64(g[i*6+j] - e[i*6+j])); d > bound {
-					t.Errorf("%s [%d,%d]: got %g, exact %g, diff %g > %g", w.DType, i, j, g[i*6+j], e[i*6+j], d, bound)
 				}
 			}
+		}
+	}
+	for _, bad := range [][]mmf.Attr{{intAttr("block", 64)}, {intAttr("other", 1)}} {
+		in := []*ref.Tensor{x, kquant(rng, mmf.Q4_K, 6, k)}
+		if _, err := stdlib["dequant_matmul_a8.v2"](bad, in, []mmf.DType{mmf.F32}, nil); err == nil {
+			t.Errorf("body accepted %v", bad)
+		}
+		if _, _, err := fastPaths["dequant_matmul_a8.v2"](bad, in, []mmf.DType{mmf.F32}, nil); err == nil {
+			t.Errorf("fast path accepted %v", bad)
 		}
 	}
 	// Activations that are not finite take the float32 path, so infinities

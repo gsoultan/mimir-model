@@ -54,6 +54,23 @@ func TestQuantizeQ8(t *testing.T) {
 			t.Errorf("Quantize accepted %g", bad)
 		}
 	}
+	// Blocks of 256 share one scale; each run of 32 repeats it.
+	z := randomVec(rng, 512)
+	z[300] = 40
+	if !a.QuantizeBlocks(z, 256) {
+		t.Fatal("QuantizeBlocks refused finite input")
+	}
+	for r := 8; r < 16; r++ {
+		if a.d[r] != 40.0/127 {
+			t.Errorf("d[%d] = %g, want %g", r, a.d[r], 40.0/127)
+		}
+	}
+	if a.q[300] != 127 {
+		t.Errorf("q[300] = %d, want 127", a.q[300])
+	}
+	if a.QuantizeBlocks(make([]float32, 288), 256) || a.QuantizeBlocks(make([]float32, 64), 64) {
+		t.Error("QuantizeBlocks accepted a bad length or block")
+	}
 	if a.Quantize(make([]float32, 48)) {
 		t.Error("Quantize accepted a length that is not a multiple of 32")
 	}
@@ -84,7 +101,11 @@ func TestRowDotQ8(t *testing.T) {
 		t.Skip("no 8-bit kernels on this machine")
 	}
 	rng := rand.New(rand.NewSource(7))
-	for _, dt := range []mmf.DType{mmf.Q4_K, mmf.Q6_K, mmf.Q8_0} {
+	for _, c := range []struct {
+		dt    mmf.DType
+		block int
+	}{{mmf.Q4_K, 32}, {mmf.Q6_K, 32}, {mmf.Q8_0, 32}, {mmf.Q4_K, 256}, {mmf.Q6_K, 256}} {
+		dt := c.dt
 		for _, k := range []int{256, 2048, 5632} {
 			row := randomRows(rng, dt, 1, k)
 			if dt == mmf.Q8_0 {
@@ -104,7 +125,7 @@ func TestRowDotQ8(t *testing.T) {
 				}
 				x[3] = 0
 				var a Q8
-				if !a.Quantize(x) {
+				if !a.QuantizeBlocks(x, c.block) {
 					t.Fatal("Quantize refused")
 				}
 				var want, bound float64
@@ -119,7 +140,7 @@ func TestRowDotQ8(t *testing.T) {
 				}
 				got := float64(g)
 				if tol := float64(k+2) * 0x1p-24 * bound; math.Abs(got-want) > tol {
-					t.Errorf("%s K=%d: got %g, want %g (diff %g > %g)", dt, k, got, want, math.Abs(got-want), tol)
+					t.Errorf("%s/%d K=%d: got %g, want %g (diff %g > %g)", dt, c.block, k, got, want, math.Abs(got-want), tol)
 				}
 			}
 		}
@@ -133,7 +154,8 @@ func TestDotQ8x4(t *testing.T) {
 		t.Skip("no 8-bit kernels on this machine")
 	}
 	rng := rand.New(rand.NewSource(10))
-	for _, k := range []int{256, 2048, 5632} {
+	for _, kb := range [][2]int{{256, 32}, {2048, 32}, {5632, 32}, {256, 256}, {2048, 256}, {5632, 256}} {
+		k, block := kb[0], kb[1]
 		const n = 6
 		var b Q8Batch
 		b.Reset(k, n)
@@ -144,7 +166,7 @@ func TestDotQ8x4(t *testing.T) {
 					x[j] *= 1e-3
 				}
 			}
-			if !b.Row(i).Quantize(x) {
+			if !b.Row(i).QuantizeBlocks(x, block) {
 				t.Fatal("Quantize refused")
 			}
 		}
@@ -165,10 +187,10 @@ func TestDotQ8x4(t *testing.T) {
 				for j := 0; j < 4; j++ {
 					want, wok := r.DotQ8(b.Row(i + j))
 					if ok != wok {
-						t.Fatalf("%s K=%d trial %d: DotQ8x4 ok=%v, DotQ8 ok=%v", dt, k, trial, ok, wok)
+						t.Fatalf("%s/%d K=%d trial %d: DotQ8x4 ok=%v, DotQ8 ok=%v", dt, block, k, trial, ok, wok)
 					}
 					if ok && math.Float32bits(out[j]) != math.Float32bits(want) {
-						t.Errorf("%s K=%d rows %d+%d: got %g, DotQ8 %g", dt, k, i, j, out[j], want)
+						t.Errorf("%s/%d K=%d rows %d+%d: got %g, DotQ8 %g", dt, block, k, i, j, out[j], want)
 					}
 				}
 			}
@@ -188,12 +210,17 @@ func TestDotQ8RejectsNonFiniteScales(t *testing.T) {
 		row := randomRows(rng, c.dt, 1, 512)
 		size := int(c.dt.BlockBytes())
 		row[size+c.off], row[size+c.off+1] = 0x00, 0x7C // +inf in the second block
-		var a Q8
-		a.Quantize(randomVec(rng, 512))
-		r := NewRowDot(c.dt, 512)
-		r.LoadQ8(row)
-		if _, ok := r.DotQ8(&a); ok {
-			t.Errorf("%s: accepted an infinite scale at byte %d", c.dt, c.off)
+		for _, block := range []int{32, 256} {
+			if !FusedQ8Blocks(c.dt, block) {
+				continue
+			}
+			var a Q8
+			a.QuantizeBlocks(randomVec(rng, 512), block)
+			r := NewRowDot(c.dt, 512)
+			r.LoadQ8(row)
+			if _, ok := r.DotQ8(&a); ok {
+				t.Errorf("%s/%d: accepted an infinite scale at byte %d", c.dt, block, c.off)
+			}
 		}
 	}
 }
@@ -230,6 +257,30 @@ func BenchmarkRowDotQ8(b *testing.B) {
 				batch.Row(i).Quantize(randomVec(rng, k))
 			}
 			b.Run(dt.String()+"/dot4", func(b *testing.B) {
+				r.LoadQ8(row)
+				b.SetBytes(4 * int64(len(row)))
+				var out [4]float32
+				for i := 0; i < b.N; i++ {
+					r.DotQ8x4(&batch, 0, &out)
+				}
+			})
+		}
+		if FusedQ8Blocks(dt, 256) {
+			var a256 Q8
+			a256.QuantizeBlocks(randomVec(rng, k), 256)
+			b.Run(dt.String()+"/dot256", func(b *testing.B) {
+				r.LoadQ8(row)
+				b.SetBytes(int64(len(row)))
+				for i := 0; i < b.N; i++ {
+					r.DotQ8(&a256)
+				}
+			})
+			var batch Q8Batch
+			batch.Reset(k, 4)
+			for i := 0; i < 4; i++ {
+				batch.Row(i).QuantizeBlocks(randomVec(rng, k), 256)
+			}
+			b.Run(dt.String()+"/dot4x256", func(b *testing.B) {
 				r.LoadQ8(row)
 				b.SetBytes(4 * int64(len(row)))
 				var out [4]float32

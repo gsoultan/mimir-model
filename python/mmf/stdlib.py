@@ -205,6 +205,12 @@ def dequant_matmul(attrs, ins, dts, shapes):
     return [_out(dts[0], shapes[0], _linear(values(x), values(w), bias))]
 
 
+def dequant_matmul_a8_v2(attrs, ins, dts, shapes):
+    block = _Attrs(attrs, "dequant_matmul_a8", "block").int("block", 32)
+    _need(block in (32, 256), f"dequant_matmul_a8: block must be 32 or 256, got {block}")
+    return dequant_matmul({}, ins, dts, shapes)
+
+
 def conv2d(attrs, ins, dts, shapes):
     at = _Attrs(attrs, "conv2d", "strides", "dilations", "pads", "groups")
     sh, sw = at.ints("strides", [1, 1])
@@ -518,6 +524,7 @@ COMPOSITES = {
     "linear.v1": linear,
     "dequant_matmul.v1": dequant_matmul,
     "dequant_matmul_a8.v1": dequant_matmul,
+    "dequant_matmul_a8.v2": dequant_matmul_a8_v2,
     "conv2d.v1": conv2d,
     "swiglu.v1": swiglu,
     "geglu.v1": geglu,
