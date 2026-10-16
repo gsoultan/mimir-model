@@ -199,3 +199,26 @@ multiplies the prompt with AMX tiles on weights repacked at load; that
 is a different kind of kernel from the AVX2 ones here, not a matter of
 block size. On the tiny test model the largest logit difference from the
 float64 oracle went from 0.33 to 0.41, still under llama.cpp's 0.53.
+
+### AMX tiles
+
+Same machine and script, median of 5 runs, with a 21-token prompt. The
+Xeon has AMX, which the Linux kernel lets a process use once it asks
+(`arch_prctl(ARCH_REQ_XCOMP_PERM)`). Both rows run the same
+`q4km-a8k.mmf`; "before" is mmf-run at the previous step.
+
+| file | runtime | prompt | generation | peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| `tinyllama-rand-q4km.gguf` | llama.cpp | 154.8 tok/s | 23.8 tok/s | 1314 MiB |
+| `q4km-a8k.mmf` | mmf-run before | 65.9 tok/s | 28.5 tok/s | 920 MiB |
+| `q4km-a8k.mmf` | mmf-run with AMX | 112.8 tok/s | 31.3 tok/s | 1013 MiB |
+
+llama.cpp's prompt speed varied from 152 to 191 tokens per second between
+runs. With a 223-token prompt mmf-run reached about 120. The matrix
+products of 16 or more rows now go to AMX tile kernels, which take 4 to 7
+picoseconds per multiply-add on one core against 25 to 30 for the
+four-row AVX2 kernels (`go test -bench TileDot ./internal/kernels`).
+Quantizing the activations moved to assembly as well, which a profile
+showed next. Generation still runs one row at a time and does not use
+the tiles.
+

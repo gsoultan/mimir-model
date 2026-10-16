@@ -35,12 +35,9 @@ type Q8 struct {
 	d     []float32 // scale of the block holding each run of 32
 	dbs   []float32 // d times the sum of each run of 32 quants (Q4_K offsets)
 	m32   []int16   // 32*(q[2i]+q[2i+1]) (Q6_K's bias of 32)
+	xs    []int16   // the sum of each run of 32 quants
 	ok    bool
 }
-
-// maxQ8 bounds the activations that are quantized: beyond it the scaled
-// integer sums could overflow float32 where the exact product would not.
-const maxQ8 = 0x1p60
 
 // Quantize sets a to x quantized to 8-bit blocks of 32. It returns false,
 // and the caller must use the float32 kernels, if x is not a multiple of
@@ -53,7 +50,7 @@ func (a *Q8) Quantize(x []float32) bool { return a.QuantizeBlocks(x, 32) }
 func (a *Q8) QuantizeBlocks(x []float32, block int) bool {
 	a.ok = false
 	n := len(x)
-	if !useAVX2 || !hasF16C || n == 0 || (block != 32 && block != 256) || n%block != 0 {
+	if !q8K || n == 0 || (block != 32 && block != 256) || n%block != 0 || (block == 32 && !(useAVX2 && hasF16C)) {
 		return false
 	}
 	a.k, a.block = n, block
@@ -62,19 +59,17 @@ func (a *Q8) QuantizeBlocks(x []float32, block int) bool {
 		a.m32 = make([]int16, n/2)
 		a.d = make([]float32, n/32)
 		a.dbs = make([]float32, n/32)
+		a.xs = make([]int16, n/32)
 	}
-	a.q, a.m32, a.d, a.dbs = a.q[:n], a.m32[:n/2], a.d[:n/32], a.dbs[:n/32]
+	a.q, a.m32, a.d, a.dbs, a.xs = a.q[:n], a.m32[:n/2], a.d[:n/32], a.dbs[:n/32], a.xs[:n/32]
 	for b := 0; b < n/block; b++ {
 		xb := x[block*b : block*b+block]
-		var amax float32
-		for _, v := range xb {
-			if v < 0 {
-				v = -v
-			}
-			if !(v <= maxQ8) { // also NaN
-				return false
-			}
-			amax = max(amax, v)
+		// amaxQ8 refuses NaN and any |x| above 2^60, beyond which the
+		// scaled integer sums could overflow float32 where the exact
+		// product would not.
+		amax, ok := amaxQ8(xb)
+		if !ok {
+			return false
 		}
 		qb := a.q[block*b : block*b+block]
 		if amax == 0 {
@@ -84,22 +79,17 @@ func (a *Q8) QuantizeBlocks(x []float32, block int) bool {
 			// 2^-46 of the exact 127*x/amax, which for float32 operands
 			// is either a half-integer or at least 2^-34 away from one:
 			// the result is the exact quotient rounded to nearest even.
-			for i, v := range xb {
-				qb[i] = int8(math.RoundToEven(127 * float64(v) / float64(amax)))
-			}
+			// quantQ8 computes RoundToEven(127*float64(v)/float64(amax))
+			// for each v.
+			quantQ8(xb, qb, amax)
 		}
+		// For each run of 32: m32 = 32*(q[2i]+q[2i+1]) and xs = sum q,
+		// |xs| <= 32*127.
+		sumsQ8(qb, a.m32[block*b/2:block*(b+1)/2], a.xs[block*b/32:block*(b+1)/32])
 		d := amax / 127
 		for r := block * b / 32; r < block*(b+1)/32; r++ {
-			qr := a.q[32*r : 32*r+32]
-			var sum int32
-			for _, q := range qr {
-				sum += int32(q)
-			}
-			for i := 0; i < 16; i++ {
-				a.m32[16*r+i] = 32 * (int16(qr[2*i]) + int16(qr[2*i+1]))
-			}
 			a.d[r] = d
-			a.dbs[r] = d * float32(sum)
+			a.dbs[r] = d * float32(a.xs[r])
 		}
 	}
 	a.ok = true
@@ -119,7 +109,7 @@ func FusedQ8Blocks(dt mmf.DType, block int) bool {
 	case 32:
 		return FusedQ8(dt)
 	case 256:
-		return useAVX2 && hasF16C && (dt == mmf.Q4_K || dt == mmf.Q6_K)
+		return q8K && (dt == mmf.Q4_K || dt == mmf.Q6_K)
 	}
 	return false
 }
@@ -142,9 +132,9 @@ func (r *RowDot) DotQ8(a *Q8) (float32, bool) {
 	if a.block == 256 {
 		switch r.dt {
 		case mmf.Q4_K:
-			return dotQ4KQ8KAVX2(&r.row[0], &a.q[0], &a.d[0], &a.dbs[0], r.k/256)
+			return dotQ4KQ8K(&r.row[0], &a.q[0], &a.d[0], &a.xs[0], r.k/256)
 		case mmf.Q6_K:
-			return dotQ6KQ8KAVX2(&r.row[0], &a.q[0], &a.d[0], &a.m32[0], r.k/256)
+			return dotQ6KQ8K(&r.row[0], &a.q[0], &a.d[0], &a.m32[0], r.k/256)
 		}
 		panic("kernels: DotQ8 with blocks of 256 on a dtype without a kernel")
 	}
@@ -169,6 +159,7 @@ type Q8Batch struct {
 	d    []float32
 	dbs  []float32
 	m32  []int16
+	xs   []int16
 }
 
 // Reset prepares b for n rows of k activations. The rows are then set with
@@ -184,12 +175,14 @@ func (b *Q8Batch) Reset(k, n int) {
 	b.m32 = make([]int16, n*k/2)
 	b.d = make([]float32, n*k/32)
 	b.dbs = make([]float32, n*k/32)
+	b.xs = make([]int16, n*k/32)
 	for i := range b.rows {
 		r := &b.rows[i]
 		r.q = b.q[i*k : (i+1)*k : (i+1)*k]
 		r.m32 = b.m32[i*k/2 : (i+1)*k/2 : (i+1)*k/2]
 		r.d = b.d[i*k/32 : (i+1)*k/32 : (i+1)*k/32]
 		r.dbs = b.dbs[i*k/32 : (i+1)*k/32 : (i+1)*k/32]
+		r.xs = b.xs[i*k/32 : (i+1)*k/32 : (i+1)*k/32]
 	}
 }
 
@@ -223,9 +216,9 @@ func (r *RowDot) DotQ8x4(b *Q8Batch, i int, out *[4]float32) bool {
 	if block == 256 {
 		switch r.dt {
 		case mmf.Q4_K:
-			return dotQ4KQ8Kx4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.dbs[i*k/32], k, k/32*4, k/256, out)
+			return dotQ4KQ8Kx4(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.xs[i*k/32], k, k/32*4, k/256, out)
 		case mmf.Q6_K:
-			return dotQ6KQ8Kx4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.m32[i*k/2], k, k/32*4, k/256, out)
+			return dotQ6KQ8Kx4(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.m32[i*k/2], k, k/32*4, k/256, out)
 		}
 		panic("kernels: DotQ8x4 with blocks of 256 on a dtype without a kernel")
 	}
@@ -236,4 +229,42 @@ func (r *RowDot) DotQ8x4(b *Q8Batch, i int, out *[4]float32) bool {
 		return dotQ6KQ8x4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.m32[i*k/2], k, k/32*4, k/256, out)
 	}
 	panic("kernels: DotQ8x4 on a dtype without a kernel")
+}
+
+// amaxQ8Go returns max|x| for amaxQ8, and false if x holds NaN or a value
+// above 2^60 in magnitude.
+func amaxQ8Go(x []float32) (float32, bool) {
+	var m float32
+	for _, v := range x {
+		a := math.Float32frombits(math.Float32bits(v) &^ (1 << 31))
+		if !(a <= 0x1p60) {
+			return 0, false
+		}
+		m = max(m, a)
+	}
+	return m, true
+}
+
+// quantQ8Go sets q[i] to x[i] quantized for the scale amax/127, rounded
+// to nearest even, for quantQ8.
+func quantQ8Go(x []float32, q []int8, amax float32) {
+	x = x[:len(q)]
+	for i, v := range x {
+		q[i] = int8(math.RoundToEven(127 * float64(v) / float64(amax)))
+	}
+}
+
+// sumsQ8Go sets, for sumsQ8, m32[i] = 32*(q[2i]+q[2i+1]) and xs[r] to the
+// sum of the run of 32 quants r.
+func sumsQ8Go(q []int8, m32, xs []int16) {
+	for r := range xs {
+		var s int16
+		for _, v := range q[32*r : 32*r+32] {
+			s += int16(v)
+		}
+		xs[r] = s
+	}
+	for i := range m32 {
+		m32[i] = 32 * (int16(q[2*i]) + int16(q[2*i+1]))
+	}
 }
