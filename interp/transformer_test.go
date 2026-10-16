@@ -83,6 +83,16 @@ func checkFast(t *testing.T, key string, attrs []mmf.Attr, in []*ref.Tensor, tol
 	return want[0]
 }
 
+// castTo casts x with the reference cast.
+func castTo(t *testing.T, x *ref.Tensor, dt mmf.DType) *ref.Tensor {
+	t.Helper()
+	y, err := ref.Eval(mmf.OpCast, []mmf.Attr{{Key: "to", Type: mmf.AttrDType, DType: dt}}, []*ref.Tensor{x}, dt, x.Shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return y
+}
+
 func TestFastPathsMatchBodies(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	t.Run("dequant_matmul", func(t *testing.T) {
@@ -148,6 +158,18 @@ func TestFastPathsMatchBodies(t *testing.T) {
 		}
 		checkFast(t, "attention.v1", gqa, []*ref.Tensor{q, k, v, causal}, 1e-5)
 		checkFast(t, "attention.v1", append(gqa, iAttr("causal", 1)), []*ref.Tensor{q, k, v}, 1e-5)
+
+		// attention.v2 with the keys and values in f16 or bf16, as a cache
+		// in f16 holds them.
+		for _, dt := range []mmf.DType{mmf.F16, mmf.BF16} {
+			k2, v2 := castTo(t, k, dt), castTo(t, v, dt)
+			checkFast(t, "attention.v2", gqa, []*ref.Tensor{q, k2, v2, causal}, 1e-5)
+			checkFast(t, "attention.v2", append(gqa, iAttr("causal", 1)), []*ref.Tensor{q, k2, v2}, 1e-5)
+			checkFast(t, "attention.v2", gqa, []*ref.Tensor{q, k2, v, randF32(rng, []int{1, 4, 11, 1}, 1)}, 1e-5)
+		}
+		if _, err := stdlib["attention.v1"](gqa, []*ref.Tensor{q, castTo(t, k, mmf.F16), v}, []mmf.DType{mmf.F32}, nil); err == nil {
+			t.Error("attention.v1 accepted f16 keys with f32 queries")
+		}
 	})
 	t.Run("embedding", func(t *testing.T) {
 		table := quantized(t, mmf.Q8_0, rng, 6, 32)
@@ -194,7 +216,7 @@ func TestAttentionDefinition(t *testing.T) {
 	q := randF32(rng, []int{1, 2, 2, 4}, 1)
 	k := randF32(rng, []int{1, 1, 3, 4}, 1)
 	v := randF32(rng, []int{1, 1, 3, 2}, 1)
-	out, err := attentionV1([]mmf.Attr{iAttr("num_kv_heads", 1), iAttr("causal", 1)}, []*ref.Tensor{q, k, v}, nil, nil)
+	out, err := attentionCanonical("attention.v1", []mmf.Attr{iAttr("num_kv_heads", 1), iAttr("causal", 1)}, []*ref.Tensor{q, k, v})
 	if err != nil {
 		t.Fatal(err)
 	}

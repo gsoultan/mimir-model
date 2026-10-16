@@ -212,7 +212,9 @@ that it can multiply in integers: in blocks of 256 for K-quant weights
 writes `dequant_matmul.v1`,
 computed to float32 accuracy. `-ctx` sets the cache length. The cache is
 a variable that starts as zeros, so it takes no space in the file; a
-session allocates it (4 bytes per element) when it starts.
+session allocates it when it starts. The cache holds keys and values in
+f16 (2 bytes per element, read by `attention.v2`); `-kv f32` keeps them in
+float32 instead.
 
 The tests check the whole path on a tiny Llama quantized to Q4_K_M by
 llama.cpp: token ids against llama.cpp's tokenizer, and the logits of a
@@ -233,7 +235,7 @@ run. Of the standard library it runs `matmul.v1`, `linear.v1`, `conv2d.v1`,
 `dequant_matmul.v1`, `dequant_matmul_a8.v1`, `dequant_matmul_a8.v2`, `softmax.v1`, `rms_norm.v1`,
 `layer_norm.v1`, `mean.v1`, `cumsum.v1`, `exp.v1`, `cos.v1`, `erf.v1`,
 `tanh.v1`, `sigmoid.v1`, `silu.v1`, `gelu_erf.v1`, `gelu_tanh.v1`,
-`swiglu.v1`, `rope.v1`, `attention.v1` and `embedding.v1` by evaluating their canonical bodies on the primitive
+`swiglu.v1`, `rope.v1`, `attention.v1`, `attention.v2` and `embedding.v1` by evaluating their canonical bodies on the primitive
 kernels; other composites are reported as unsupported. With
 `p.FastPaths = true` it runs its own float32 kernels for the composites a
 transformer spends its time in (the matrix products, normalisation, rope,

@@ -304,3 +304,154 @@ ws8k:
 wsdone:
 	VZEROUPPER
 	RET
+
+// func scoresF16AVX2(q *float32, k *byte, d, n int, scale float32, out *float32)
+//
+// scoresF32AVX2 for keys stored as f16, converted to float32 (exactly) as
+// they are loaded. Needs F16C.
+TEXT ·scoresF16AVX2(SB), NOSPLIT, $0-48
+	MOVQ         q+0(FP), SI
+	MOVQ         k+8(FP), DI
+	MOVQ         d+16(FP), R9
+	MOVQ         n+24(FP), CX
+	VBROADCASTSS scale+32(FP), X15
+	MOVQ         out+40(FP), R8
+	SHLQ         $1, R9           // bytes per row
+	LEAQ         (R9)(R9*2), R10  // three rows
+
+sh4:
+	CMPQ   CX, $4
+	JL     sh1
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	VXORPS Y2, Y2, Y2
+	VXORPS Y3, Y3, Y3
+	XORQ   AX, AX
+
+sh4d:
+	VMOVUPS     (SI)(AX*2), Y4
+	LEAQ        (DI)(AX*1), BX
+	VCVTPH2PS   (BX), Y5
+	VCVTPH2PS   (BX)(R9*1), Y6
+	VCVTPH2PS   (BX)(R9*2), Y7
+	VCVTPH2PS   (BX)(R10*1), Y8
+	VFMADD231PS Y5, Y4, Y0
+	VFMADD231PS Y6, Y4, Y1
+	VFMADD231PS Y7, Y4, Y2
+	VFMADD231PS Y8, Y4, Y3
+	ADDQ        $16, AX
+	CMPQ        AX, R9
+	JL          sh4d
+
+	VHADDPS      Y1, Y0, Y0
+	VHADDPS      Y3, Y2, Y2
+	VHADDPS      Y2, Y0, Y0
+	VEXTRACTF128 $1, Y0, X1
+	VADDPS       X1, X0, X0
+	VMULPS       X15, X0, X0
+	VMOVUPS      X0, (R8)
+	ADDQ         $16, R8
+	LEAQ         (DI)(R9*4), DI
+	SUBQ         $4, CX
+	JMP          sh4
+
+sh1:
+	TESTQ  CX, CX
+	JZ     shdone
+	VXORPS Y0, Y0, Y0
+	XORQ   AX, AX
+
+sh1d:
+	VMOVUPS     (SI)(AX*2), Y4
+	VCVTPH2PS   (DI)(AX*1), Y5
+	VFMADD231PS Y5, Y4, Y0
+	ADDQ        $16, AX
+	CMPQ        AX, R9
+	JL          sh1d
+
+	VEXTRACTF128 $1, Y0, X1
+	VADDPS       X1, X0, X0
+	VHADDPS      X0, X0, X0
+	VHADDPS      X0, X0, X0
+	VMULSS       X15, X0, X0
+	VMOVSS       X0, (R8)
+	ADDQ         $4, R8
+	ADDQ         R9, DI
+	DECQ         CX
+	JMP          sh1
+
+shdone:
+	VZEROUPPER
+	RET
+
+// func wsumF16AVX2(p *float32, v *byte, n, d int, acc *float32)
+//
+// wsumF32AVX2 for values stored as f16. Needs F16C.
+TEXT ·wsumF16AVX2(SB), NOSPLIT, $0-40
+	MOVQ p+0(FP), R11
+	MOVQ v+8(FP), R12
+	MOVQ n+16(FP), R13
+	MOVQ d+24(FP), R9
+	MOVQ acc+32(FP), R8
+	SHLQ $1, R9 // bytes per row
+	XORQ AX, AX // offset of the current columns in a row
+
+wh32:
+	MOVQ    R9, BX
+	SUBQ    AX, BX
+	CMPQ    BX, $64
+	JL      wh8
+	VMOVUPS (R8)(AX*2), Y0
+	VMOVUPS 32(R8)(AX*2), Y1
+	VMOVUPS 64(R8)(AX*2), Y2
+	VMOVUPS 96(R8)(AX*2), Y3
+	MOVQ    R11, SI
+	LEAQ    (R12)(AX*1), DI
+	MOVQ    R13, CX
+
+wh32k:
+	VBROADCASTSS (SI), Y4
+	VCVTPH2PS    (DI), Y5
+	VCVTPH2PS    16(DI), Y6
+	VCVTPH2PS    32(DI), Y7
+	VCVTPH2PS    48(DI), Y8
+	VFMADD231PS  Y5, Y4, Y0
+	VFMADD231PS  Y6, Y4, Y1
+	VFMADD231PS  Y7, Y4, Y2
+	VFMADD231PS  Y8, Y4, Y3
+	ADDQ         $4, SI
+	ADDQ         R9, DI
+	DECQ         CX
+	JNZ          wh32k
+
+	VMOVUPS Y0, (R8)(AX*2)
+	VMOVUPS Y1, 32(R8)(AX*2)
+	VMOVUPS Y2, 64(R8)(AX*2)
+	VMOVUPS Y3, 96(R8)(AX*2)
+	ADDQ    $64, AX
+	JMP     wh32
+
+wh8:
+	CMPQ    AX, R9
+	JGE     whdone
+	VMOVUPS (R8)(AX*2), Y0
+	MOVQ    R11, SI
+	LEAQ    (R12)(AX*1), DI
+	MOVQ    R13, CX
+
+wh8k:
+	VBROADCASTSS (SI), Y4
+	VCVTPH2PS    (DI), Y5
+	VFMADD231PS  Y5, Y4, Y0
+	ADDQ         $4, SI
+	ADDQ         R9, DI
+	DECQ         CX
+	JNZ          wh8k
+
+	VMOVUPS Y0, (R8)(AX*2)
+	ADDQ    $16, AX
+	JMP     wh8
+
+whdone:
+	VZEROUPPER
+	RET

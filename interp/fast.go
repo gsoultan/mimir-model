@@ -46,6 +46,7 @@ var fastPaths = map[string]fastFunc{
 	"swiglu.v1":            fastSwiglu,
 	"rope.v1":              fastRope,
 	"attention.v1":         fastAttention,
+	"attention.v2":         fastAttentionV2,
 	"embedding.v1":         fastEmbedding,
 	"conv2d.v1":            fastConv2d,
 }
@@ -447,13 +448,28 @@ func fastRope(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*r
 	return []*ref.Tensor{f32Tensor(x.Shape, v)}, true, nil
 }
 
-func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	p, err := readAttention(list, in)
+func fastAttention(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, shapes [][]int) ([]*ref.Tensor, bool, error) {
+	return attentionFast("attention.v1", list, in)
+}
+
+func fastAttentionV2(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, shapes [][]int) ([]*ref.Tensor, bool, error) {
+	return attentionFast("attention.v2", list, in)
+}
+
+// attentionFast computes attention.v1 or v2 (name) for f32 queries, with
+// keys and values in f32 or f16 (or, for v2, bf16, converted first).
+func attentionFast(name string, list []mmf.Attr, in []*ref.Tensor) ([]*ref.Tensor, bool, error) {
+	p, err := readAttention(name, list, in)
 	if err != nil {
 		return nil, false, err
 	}
 	q, k, v := in[0], in[1], in[2]
 	if q.DType != mmf.F32 || p.softcap > 0 {
+		return nil, false, nil
+	}
+	kr, kok := newKVRows(k)
+	vr, vok := newKVRows(v)
+	if !kok || !vok {
 		return nil, false, nil
 	}
 	var mask *ref.Tensor
@@ -476,7 +492,7 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 	B, Hq, Tq, D := q.Shape[0], q.Shape[1], q.Shape[2], q.Shape[3]
 	Hkv, Tk, Dv := k.Shape[1], k.Shape[2], v.Shape[3]
 	G := Hq / Hkv
-	qv, kv, vv := f32View(q), f32View(k), f32View(v)
+	qv := f32View(q)
 	out := make([]float32, B*Hq*Tq*Dv)
 	scale := float32(p.scale)
 	// ends holds, for each query row, the end of its visible keys: keys
@@ -516,11 +532,12 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 	parallel(B*Hq, func(lo, hi int) {
 		sc := make([]float32, Tk)
 		acc := make([]float32, Dv)
+		kbuf, vbuf := make([]float32, D), make([]float32, Dv)
 		for bh := lo; bh < hi; bh++ {
 			b, h := bh/Hq, bh%Hq
 			kvh := b*Hkv + h/G
-			kb := kv[kvh*Tk*D:]
-			vb := vv[kvh*Tk*Dv:]
+			kb := kr.sub(kvh*Tk, Tk)
+			vb := vr.sub(kvh*Tk, Tk)
 			for i := 0; i < Tq; i++ {
 				qi := qv[(bh*Tq+i)*D:][:D]
 				end := Tk
@@ -532,7 +549,7 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 				}
 				sc := sc[:end]
 				o := out[(bh*Tq+i)*Dv:][:Dv]
-				if vector && attendRow(qi, kb[:end*D], vb[:end*Dv], scale, maskRow(b, h, i, end), sc, acc, o) {
+				if vector && attendRow(qi, kb.sub(0, end), vb.sub(0, end), scale, maskRow(b, h, i, end), sc, acc, o) {
 					continue
 				}
 				mx := float32(math.Inf(-1))
@@ -549,7 +566,7 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 						}
 					}
 					if allowed {
-						s = kernels.DotF32(qi, kb[j*D:(j+1)*D])*scale + add
+						s = kernels.DotF32(qi, kb.row(j, kbuf))*scale + add
 					}
 					sc[j] = s
 					if s > mx || s != s {
@@ -571,7 +588,7 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 					if e == 0 {
 						continue
 					}
-					kernels.AxpyF32(e, vb[j*Dv:][:Dv], acc)
+					kernels.AxpyF32(e, vb.row(j, vbuf), acc)
 				}
 				for d := range o {
 					o[d] = acc[d] / sum
@@ -588,13 +605,13 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 // holds a zero for it. It uses sc, one score per key, and acc, one float
 // per element of o. It reports false, leaving o to the caller, when a key
 // within the row is masked or the largest score is not finite.
-func attendRow(q, k, v []float32, scale float32, mask []byte, sc, acc, o []float32) bool {
+func attendRow(q []float32, k, v kvRows, scale float32, mask []byte, sc, acc, o []float32) bool {
 	for _, m := range mask {
 		if m == 0 {
 			return false
 		}
 	}
-	kernels.ScoresF32(q, k, scale, sc)
+	k.scores(q, scale, sc)
 	mx := float32(math.Inf(-1))
 	for _, s := range sc {
 		if s > mx || s != s {
@@ -606,11 +623,76 @@ func attendRow(q, k, v []float32, scale float32, mask []byte, sc, acc, o []float
 	}
 	sum := kernels.ExpSumF32(sc, mx)
 	clear(acc)
-	kernels.WeightedSumF32(sc, v, acc)
+	v.wsum(sc, acc)
 	for d := range o {
 		o[d] = acc[d] / sum
 	}
 	return true
+}
+
+// kvRows are the rows of the keys or values of attention, the last axis
+// of the tensor, held as float32 or as f16.
+type kvRows struct {
+	f32 []float32
+	f16 []byte
+	d   int
+}
+
+// newKVRows returns the rows of t, which must be f32, f16 or bf16; bf16 is
+// converted to float32, exactly.
+func newKVRows(t *ref.Tensor) (kvRows, bool) {
+	d := t.Shape[len(t.Shape)-1]
+	switch t.DType {
+	case mmf.F32:
+		return kvRows{f32: f32View(t), d: d}, true
+	case mmf.F16:
+		return kvRows{f16: t.Data, d: d}, true
+	case mmf.BF16:
+		v := make([]float32, t.NumElems())
+		for i := range v {
+			v[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(t.Data[2*i:])) << 16)
+		}
+		return kvRows{f32: v, d: d}, true
+	}
+	return kvRows{}, false
+}
+
+// sub returns rows from to from+n-1.
+func (r kvRows) sub(from, n int) kvRows {
+	if r.f16 != nil {
+		return kvRows{f16: r.f16[2*from*r.d : 2*(from+n)*r.d], d: r.d}
+	}
+	return kvRows{f32: r.f32[from*r.d : (from+n)*r.d], d: r.d}
+}
+
+// row returns row j as float32, converted into buf if need be.
+func (r kvRows) row(j int, buf []float32) []float32 {
+	if r.f16 == nil {
+		return r.f32[j*r.d : (j+1)*r.d]
+	}
+	b := r.f16[2*j*r.d:]
+	for i := range buf {
+		buf[i] = mmf.F16ToF32(binary.LittleEndian.Uint16(b[2*i:]))
+	}
+	return buf
+}
+
+// scores sets out[j] to scale times the dot product of q with row j.
+func (r kvRows) scores(q []float32, scale float32, out []float32) {
+	if r.f16 != nil {
+		kernels.ScoresF16(q, r.f16, scale, out)
+		return
+	}
+	kernels.ScoresF32(q, r.f32, scale, out)
+}
+
+// wsum adds p[j] times row j to acc.
+func (r kvRows) wsum(p, acc []float32) {
+	if r.f16 != nil {
+		kernels.WeightedSumF16(p, r.f16, acc)
+		return
+	}
+	kernels.WeightedSumF32(p, r.f32, acc)
 }
 
 func fastEmbedding(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
