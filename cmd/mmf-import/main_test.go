@@ -58,3 +58,37 @@ func TestRunRejects(t *testing.T) {
 		t.Error("accepted a non-model file")
 	}
 }
+
+func TestRunONNX(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join("..", "..", "testdata", "onnx")
+	b, err := os.ReadFile(filepath.Join(src, "tiny-cnn.onnx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(dir, "tiny-cnn.onnx")
+	if err := os.WriteFile(in, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run(&out, []string{in}, options{hash: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "from onnx") {
+		t.Errorf("output %q", out.String())
+	}
+	got, err := os.ReadFile(defaultOutput(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join(src, "tiny-cnn.mmf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("the conversion differs from testdata/onnx/tiny-cnn.mmf")
+	}
+	if err := run(&bytes.Buffer{}, []string{in}, options{out: filepath.Join(dir, "b.mmf"), bench: true}); err == nil {
+		t.Error("-bench accepted an ONNX input")
+	}
+}
