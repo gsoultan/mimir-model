@@ -140,3 +140,38 @@ tokens per second. llama.cpp is still about 1.8 times faster at generation
 and 5 times faster on the prompt, where it multiplies matrices by matrices
 rather than row by row. mmf-run's load is fast because nothing is read
 until the first step.
+
+### After the first speed work
+
+Measured on a different machine from the tables above: 4 cores of an
+Intel Xeon at 2.1 GHz (a cloud VM with AVX-512, which none of the kernels
+use yet), 15 GiB of memory, Linux, Go 1.24, llama-cpp-python 0.3.16 built
+on the machine. Same models, same script, median of 3 runs.
+
+| file | runtime | prompt | generation | peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| `tinyllama-rand-q4km.gguf` | llama.cpp | 131.1 tok/s | 25.1 tok/s | 1297 MiB |
+| `q4km-graph.mmf` | mmf-run before | 21.8 tok/s | 11.1 tok/s | 843 MiB |
+| `q4km-graph.mmf` | mmf-run after | 27.9 tok/s | 15.7 tok/s | 904 MiB |
+| `q4km-a8.mmf` | mmf-run before | 31.3 tok/s | 15.1 tok/s | 932 MiB |
+| `q4km-a8.mmf` | mmf-run after | 59.2 tok/s | 29.4 tok/s | 920 MiB |
+
+These are steps 1 and 2 of the speed plan in docs/design-notes.md:
+
+- The executor keeps its worker goroutines between parallel calls,
+  spinning for 0.2 ms before they sleep, instead of starting new ones for
+  each of the few hundred calls of a token. That took the CPU use of a
+  generation step from 2.6 to 3.4 of the 4 cores.
+- The Q4_K and Q6_K kernels prefetch the weights two rows ahead, which let
+  each core read them at nearly twice the rate.
+- The 8-bit kernels multiply one row of Q4_K or Q6_K weights by four rows
+  of activations at once, decoding the weights once for all four. Each of
+  the four results is bit for bit what the one-row kernel returns, so the
+  output does not depend on how many tokens are run together.
+- Attention stops at the last key the mask allows, instead of walking the
+  whole cache, and permutations of heads copy rows instead of computing
+  every index.
+
+Generation is now faster than llama.cpp's on this machine. The prompt is
+still 2.2 times slower; llama.cpp uses the machine's AVX-512 and VNNI
+instructions there, which mmf's kernels do not yet (step 3).
