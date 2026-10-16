@@ -548,6 +548,181 @@ q4q8bad:
 	MOVB $0, ret1+44(FP)
 	RET
 
+// Q4Q8ROW multiplies the two sub-blocks of one chunk, held as unsigned
+// nibbles in Y9 and Y10 with their scale pairs in Y11 and Y12, by one row
+// of activations: quants at x0 and x1, block scales at d0 and d1. It is
+// the inner step of dotQ4KQ8AVX2, instruction for instruction.
+#define Q4Q8ROW(x0, x1, d0, d1, accA, accB) \
+	VPMADDUBSW   x0, Y9, Y8; \
+	VPMADDUBSW   x1, Y10, Y13; \
+	VPMADDWD     Y11, Y8, Y8; \
+	VPMADDWD     Y12, Y13, Y13; \
+	VCVTDQ2PS    Y8, Y8; \
+	VCVTDQ2PS    Y13, Y13; \
+	VBROADCASTSS d0, Y14; \
+	VFMADD231PS  Y14, Y8, accA; \
+	VBROADCASTSS d1, Y14; \
+	VFMADD231PS  Y14, Y13, accB
+
+// Q4Q8OFF adds dmin*m (Y8) times the row's xdbs at mem to the row's
+// offsets, kept on the stack at off.
+#define Q4Q8OFF(mem, off) \
+	VMOVUPS     off(SP), Y13; \
+	VFMADD231PS mem, Y8, Y13; \
+	VMOVUPS     Y13, off(SP)
+
+// Q4Q8END adds d (Y8) times the row's block sum accA+accB to its total,
+// kept on the stack at tot.
+#define Q4Q8END(accA, accB, tot) \
+	VADDPS      accB, accA, accA; \
+	VMOVUPS     tot(SP), Y13; \
+	VFMADD231PS Y8, accA, Y13; \
+	VMOVUPS     Y13, tot(SP)
+
+// Q4Q8OUT stores the dot product of one row, total minus offsets, at
+// mem.
+#define Q4Q8OUT(tot, off, mem) \
+	VMOVUPS tot(SP), Y0; \
+	VSUBPS  off(SP), Y0, Y0; \
+	HSUM1; \
+	MOVSS   X0, mem
+
+// func dotQ4KQ8x4AVX2(q *byte, xq *int8, xd, xdbs *float32, xstride, dstride, nb int, out *[4]float32) bool
+//
+// dotQ4KQ8AVX2 for one row of weights and four rows of activations, the
+// quants xstride bytes apart and the scales dstride bytes apart. Each
+// weight chunk is decoded once for the four rows. The eight block
+// accumulators fill the registers, so the totals and offsets of the rows
+// live on the stack: totals at 64(SP), offsets at 192(SP), 32 bytes per
+// row; d at 32(SP) and the scale pairs at 0(SP).
+TEXT ·dotQ4KQ8x4AVX2(SB), NOSPLIT, $320-65
+	MOVQ    q+0(FP), SI
+	MOVQ    xq+8(FP), DI
+	MOVQ    xd+16(FP), R13
+	MOVQ    xdbs+24(FP), R14
+	MOVQ    xstride+32(FP), R11
+	MOVQ    dstride+40(FP), DX
+	MOVQ    nb+48(FP), CX
+	LEAQ    (R11)(R11*2), R12
+	LEAQ    (DX)(DX*2), R9
+	VXORPS  Y0, Y0, Y0
+	VMOVUPS Y0, 64(SP)
+	VMOVUPS Y0, 96(SP)
+	VMOVUPS Y0, 128(SP)
+	VMOVUPS Y0, 160(SP)
+	VMOVUPS Y0, 192(SP)
+	VMOVUPS Y0, 224(SP)
+	VMOVUPS Y0, 256(SP)
+	VMOVUPS Y0, 288(SP)
+	BYTES0F(Y15)
+
+x4block:
+	PREFETCHT0 2304(SI)
+	PREFETCHT0 2368(SI)
+	PREFETCHT0 2432(SI)
+	F16FINITE(0(SI), x4bad)
+	F16FINITE(2(SI), x4bad)
+	F16SCALAR(0(SI), X13)
+	VMOVSS X13, 32(SP) // d
+	F16SCALAR(2(SI), X12)
+	VBROADCASTSS X12, Y12 // dmin
+
+	// The scales and offsets, unpacked as in dotQ4KQ8AVX2 with fewer
+	// registers.
+	MOVL 12(SI), AX
+	SHRL $4, AX
+	ANDL $0x0f0f0f0f, AX
+	MOVL 8(SI), BX
+	SHRL $6, BX
+	ANDL $0x03030303, BX
+	SHLL $4, BX
+	ORL  BX, AX // m 4..7
+	MOVL 8(SI), BX
+	ANDL $0x3f3f3f3f, BX // m 0..3
+	SHLQ $32, AX
+	ORQ  BX, AX
+
+	MOVL 12(SI), R8
+	ANDL $0x0f0f0f0f, R8
+	MOVL 4(SI), BX
+	SHRL $6, BX
+	ANDL $0x03030303, BX
+	SHLL $4, BX
+	ORL  BX, R8 // sc 4..7
+	MOVL 4(SI), BX
+	ANDL $0x3f3f3f3f, BX // sc 0..3
+	SHLQ $32, R8
+	ORQ  BX, R8
+
+	VMOVQ     AX, X8
+	VPMOVZXBD X8, Y8
+	VCVTDQ2PS Y8, Y8
+	VMULPS    Y12, Y8, Y8 // dmin*m
+	Q4Q8OFF((R14), 192)
+	Q4Q8OFF((R14)(DX*1), 224)
+	Q4Q8OFF((R14)(DX*2), 256)
+	Q4Q8OFF((R14)(R9*1), 288)
+
+	VMOVQ      R8, X10
+	VPMOVZXBW  X10, X10
+	VPUNPCKLWD X10, X10, X11
+	VPUNPCKHWD X10, X10, X10
+	VMOVDQU    X11, 0(SP)
+	VMOVDQU    X10, 16(SP)
+
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	VXORPS Y2, Y2, Y2
+	VXORPS Y3, Y3, Y3
+	VXORPS Y4, Y4, Y4
+	VXORPS Y5, Y5, Y5
+	VXORPS Y6, Y6, Y6
+	VXORPS Y7, Y7, Y7
+	LEAQ   16(SI), R8 // the nibbles of chunk 0
+	LEAQ   0(SP), R10 // the scale pairs of chunk 0
+	MOVQ   $4, BX
+
+x4chunk:
+	VMOVDQU      (R8), Y8
+	VPAND        Y15, Y8, Y9   // sub-block 2c
+	VPSRLW       $4, Y8, Y10
+	VPAND        Y15, Y10, Y10 // sub-block 2c+1
+	VPBROADCASTD (R10), Y11
+	VPBROADCASTD 4(R10), Y12
+	Q4Q8ROW((DI), 32(DI), (R13), 4(R13), Y0, Y1)
+	Q4Q8ROW((DI)(R11*1), 32(DI)(R11*1), (R13)(DX*1), 4(R13)(DX*1), Y2, Y3)
+	Q4Q8ROW((DI)(R11*2), 32(DI)(R11*2), (R13)(DX*2), 4(R13)(DX*2), Y4, Y5)
+	Q4Q8ROW((DI)(R12*1), 32(DI)(R12*1), (R13)(R9*1), 4(R13)(R9*1), Y6, Y7)
+	ADDQ         $32, R8
+	ADDQ         $64, DI
+	ADDQ         $8, R10
+	ADDQ         $8, R13
+	DECQ         BX
+	JNZ          x4chunk
+
+	VBROADCASTSS 32(SP), Y8 // d
+	Q4Q8END(Y0, Y1, 64)
+	Q4Q8END(Y2, Y3, 96)
+	Q4Q8END(Y4, Y5, 128)
+	Q4Q8END(Y6, Y7, 160)
+	ADDQ $144, SI
+	ADDQ $32, R14
+	DECQ CX
+	JNZ  x4block
+
+	MOVQ out+56(FP), AX
+	Q4Q8OUT(64, 192, 0(AX))
+	Q4Q8OUT(96, 224, 4(AX))
+	Q4Q8OUT(128, 256, 8(AX))
+	Q4Q8OUT(160, 288, 12(AX))
+	MOVB $1, ret+64(FP)
+	RET
+
+x4bad:
+	VZEROUPPER
+	MOVB $0, ret+64(FP)
+	RET
+
 // Q6Q8DOT finishes one quarter of a Q6_K half block: qv holds its 32
 // unsigned 6-bit quants. It subtracts the bias of 32 using m32, applies the
 // two scales (one per 16 weights) picked from Y7 by shuffle mask sm,
@@ -670,6 +845,159 @@ q6q8half:
 q6q8bad:
 	VZEROUPPER
 	MOVB $0, ret1+44(FP)
+	RET
+
+// Q6Q8ROW is the per-row part of Q6Q8DOT for one quarter, with the quants
+// in Y8 kept for the other rows and the shuffled scales in Y10: quants at
+// xq, pair sums at m, block scale at d.
+#define Q6Q8ROW(xq, m, d, acc) \
+	VPMADDUBSW   xq, Y8, Y9; \
+	VPSUBW       m, Y9, Y9; \
+	VPMADDWD     Y10, Y9, Y9; \
+	VCVTDQ2PS    Y9, Y9; \
+	VBROADCASTSS d, Y11; \
+	VFMADD231PS  Y11, Y9, acc
+
+// Q6Q8ROWS runs Q6Q8ROW for the four rows of one quarter, at byte offset
+// xo into the quants and pair sums and do into the scales.
+#define Q6Q8ROWS(xo, do, acc0, acc1, acc2, acc3) \
+	Q6Q8ROW(xo(DI), xo(R14), do(R13), acc0); \
+	Q6Q8ROW(xo(DI)(R11*1), xo(R14)(R11*1), do(R13)(DX*1), acc1); \
+	Q6Q8ROW(xo(DI)(R11*2), xo(R14)(R11*2), do(R13)(DX*2), acc2); \
+	Q6Q8ROW(xo(DI)(R12*1), xo(R14)(R12*1), do(R13)(R9*1), acc3)
+
+// Q6Q8END adds d (Y9) times the row's block sum accA+accB to its total,
+// kept on the stack at tot.
+#define Q6Q8END(accA, accB, tot) \
+	VADDPS      accB, accA, accA; \
+	VMOVUPS     tot(SP), Y13; \
+	VFMADD231PS Y9, accA, Y13; \
+	VMOVUPS     Y13, tot(SP)
+
+// func dotQ6KQ8x4AVX2(q *byte, xq *int8, xd *float32, m32 *int16, xstride, dstride, nb int, out *[4]float32) bool
+//
+// dotQ6KQ8AVX2 for one row of weights and four rows of activations, laid
+// out as for dotQ4KQ8x4AVX2; the pair sums m32 have the stride of the
+// quants. Each quarter is decoded once for the four rows. The row totals
+// live on the stack at 32(SP), 32 bytes per row, and d at 0(SP).
+TEXT ·dotQ6KQ8x4AVX2(SB), NOSPLIT, $160-65
+	MOVQ    q+0(FP), SI
+	MOVQ    xq+8(FP), DI
+	MOVQ    xd+16(FP), R13
+	MOVQ    m32+24(FP), R14
+	MOVQ    xstride+32(FP), R11
+	MOVQ    dstride+40(FP), DX
+	MOVQ    nb+48(FP), CX
+	LEAQ    (R11)(R11*2), R12
+	LEAQ    (DX)(DX*2), R9
+	VXORPS  Y0, Y0, Y0
+	VMOVUPS Y0, 32(SP)
+	VMOVUPS Y0, 64(SP)
+	VMOVUPS Y0, 96(SP)
+	VMOVUPS Y0, 128(SP)
+	BYTES0F(Y15)
+	BYTES03(Y14)
+	VPSLLW $4, Y14, Y14 // 0x30
+
+x46block:
+	PREFETCHT0 3360(SI)
+	PREFETCHT0 3424(SI)
+	PREFETCHT0 3488(SI)
+	PREFETCHT0 3552(SI)
+	F16FINITE(208(SI), x46bad)
+	F16SCALAR(208(SI), X13)
+	VMOVSS X13, 0(SP) // d
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	VXORPS Y2, Y2, Y2
+	VXORPS Y3, Y3, Y3
+	VXORPS Y4, Y4, Y4
+	VXORPS Y5, Y5, Y5
+	VXORPS Y6, Y6, Y6
+	VXORPS Y12, Y12, Y12
+	MOVQ   SI, R8       // ql of half 0
+	LEAQ   128(SI), AX  // qh of half 0
+	LEAQ   192(SI), R10 // scales of half 0
+	MOVQ   $2, BX
+
+x46half:
+	VPMOVSXBW   (R10), X7
+	VINSERTI128 $1, X7, Y7, Y7 // the half's eight scales in both lanes
+
+	VMOVDQU (R8), Y8
+	VPAND   Y15, Y8, Y8
+	VMOVDQU (AX), Y9
+	VPSLLW  $4, Y9, Y9
+	VPAND   Y14, Y9, Y9
+	VPOR    Y9, Y8, Y8
+	VPSHUFB q6scales<>+0(SB), Y7, Y10
+	Q6Q8ROWS(0, 0, Y0, Y2, Y4, Y6)
+
+	VMOVDQU 32(R8), Y8
+	VPAND   Y15, Y8, Y8
+	VMOVDQU (AX), Y9
+	VPSLLW  $2, Y9, Y9
+	VPAND   Y14, Y9, Y9
+	VPOR    Y9, Y8, Y8
+	VPSHUFB q6scales<>+32(SB), Y7, Y10
+	Q6Q8ROWS(32, 4, Y1, Y3, Y5, Y12)
+
+	VMOVDQU (R8), Y8
+	VPSRLW  $4, Y8, Y8
+	VPAND   Y15, Y8, Y8
+	VMOVDQU (AX), Y9
+	VPAND   Y14, Y9, Y9
+	VPOR    Y9, Y8, Y8
+	VPSHUFB q6scales<>+64(SB), Y7, Y10
+	Q6Q8ROWS(64, 8, Y0, Y2, Y4, Y6)
+
+	VMOVDQU 32(R8), Y8
+	VPSRLW  $4, Y8, Y8
+	VPAND   Y15, Y8, Y8
+	VMOVDQU (AX), Y9
+	VPSRLW  $2, Y9, Y9
+	VPAND   Y14, Y9, Y9
+	VPOR    Y9, Y8, Y8
+	VPSHUFB q6scales<>+96(SB), Y7, Y10
+	Q6Q8ROWS(96, 12, Y1, Y3, Y5, Y12)
+
+	ADDQ $64, R8
+	ADDQ $32, AX
+	ADDQ $8, R10
+	ADDQ $128, DI
+	ADDQ $128, R14
+	ADDQ $16, R13
+	DECQ BX
+	JNZ  x46half
+
+	VBROADCASTSS 0(SP), Y9 // d
+	Q6Q8END(Y0, Y1, 32)
+	Q6Q8END(Y2, Y3, 64)
+	Q6Q8END(Y4, Y5, 96)
+	Q6Q8END(Y6, Y12, 128)
+	ADDQ $210, SI
+	DECQ CX
+	JNZ  x46block
+
+	MOVQ    out+56(FP), AX
+	VMOVUPS 32(SP), Y0
+	HSUM1
+	MOVSS   X0, 0(AX)
+	VMOVUPS 64(SP), Y0
+	HSUM1
+	MOVSS   X0, 4(AX)
+	VMOVUPS 96(SP), Y0
+	HSUM1
+	MOVSS   X0, 8(AX)
+	VMOVUPS 128(SP), Y0
+	HSUM1
+	MOVSS   X0, 12(AX)
+	MOVB    $1, ret+64(FP)
+	RET
+
+x46bad:
+	VZEROUPPER
+	MOVB $0, ret+64(FP)
 	RET
 
 // func dotQ8_0Q8AVX2(q *byte, xq *int8, xd *float32, nb int) (float32, bool)

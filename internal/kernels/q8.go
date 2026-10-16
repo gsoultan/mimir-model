@@ -126,3 +126,68 @@ func (r *RowDot) DotQ8(a *Q8) (float32, bool) {
 	}
 	panic("kernels: DotQ8 on a dtype without a kernel")
 }
+
+// Q8Batch holds rows of activations quantized to 8-bit blocks, stored one
+// after another so that a kernel can read several rows at fixed strides.
+type Q8Batch struct {
+	k    int
+	rows []Q8
+	q    []int8
+	d    []float32
+	dbs  []float32
+	m32  []int16
+}
+
+// Reset prepares b for n rows of k activations. The rows are then set with
+// b.Row(i).Quantize, which may run concurrently for different rows.
+func (b *Q8Batch) Reset(k, n int) {
+	b.k = k
+	b.rows = make([]Q8, n)
+	if k%32 != 0 {
+		return // Quantize refuses such rows
+	}
+	b.q = make([]int8, n*k)
+	b.m32 = make([]int16, n*k/2)
+	b.d = make([]float32, n*k/32)
+	b.dbs = make([]float32, n*k/32)
+	for i := range b.rows {
+		r := &b.rows[i]
+		r.q = b.q[i*k : (i+1)*k : (i+1)*k]
+		r.m32 = b.m32[i*k/2 : (i+1)*k/2 : (i+1)*k/2]
+		r.d = b.d[i*k/32 : (i+1)*k/32 : (i+1)*k/32]
+		r.dbs = b.dbs[i*k/32 : (i+1)*k/32 : (i+1)*k/32]
+	}
+}
+
+// Row returns row i of b.
+func (b *Q8Batch) Row(i int) *Q8 { return &b.rows[i] }
+
+// FusedQ8x4 reports whether rows of dt have a kernel that multiplies one
+// row by four rows of activations at once (RowDot.DotQ8x4).
+func FusedQ8x4(dt mmf.DType) bool {
+	return useAVX2 && hasF16C && (dt == mmf.Q4_K || dt == mmf.Q6_K)
+}
+
+// DotQ8x4 sets out to the dot products of the row loaded with LoadQ8 and
+// rows i to i+3 of b, which must all have been quantized. The results are
+// those DotQ8 returns for each row, bit for bit: the four products are
+// computed side by side, in the same order, and share the decoding of the
+// weights. It returns false where DotQ8 would.
+func (r *RowDot) DotQ8x4(b *Q8Batch, i int, out *[4]float32) bool {
+	if b.k != r.k || i < 0 || i+4 > len(b.rows) {
+		panic("kernels: DotQ8x4 with activations of another shape")
+	}
+	for j := i; j < i+4; j++ {
+		if !b.rows[j].ok {
+			panic("kernels: DotQ8x4 with a row that is not quantized")
+		}
+	}
+	k := r.k
+	switch r.dt {
+	case mmf.Q4_K:
+		return dotQ4KQ8x4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.dbs[i*k/32], k, k/32*4, k/256, out)
+	case mmf.Q6_K:
+		return dotQ6KQ8x4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.m32[i*k/2], k, k/32*4, k/256, out)
+	}
+	panic("kernels: DotQ8x4 on a dtype without a kernel")
+}
