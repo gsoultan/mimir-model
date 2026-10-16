@@ -34,11 +34,25 @@ import (
 // group, that the AMX kernels multiply at once.
 const TileRows = 16
 
-// TileQ8 reports whether rows of dt have AMX kernels for activations in
-// blocks of 256 (TileDot).
+// TileQ8 reports whether rows of dt have AMX or VNNI kernels for
+// activations in blocks of 256 (TileDot).
 func TileQ8(dt mmf.DType) bool {
-	return useAMX && (dt == mmf.Q4_K || dt == mmf.Q6_K)
+	return (useAMX || useVNNI) && (dt == mmf.Q4_K || dt == mmf.Q6_K)
 }
+
+// TileMinRows is the number of rows of activations from which the tile
+// kernels are faster than the four-row kernels: an AMX tile product costs
+// the same for 1 row as for 16, and a VNNI instruction works on 16 rows
+// whether or not they are all used.
+func TileMinRows() int {
+	if useAMX && !noAMX {
+		return 8
+	}
+	return 12
+}
+
+// noAMX makes TileDot use the VNNI kernels on a CPU with AMX, for tests.
+var noAMX = false
 
 // tileArgs are the arguments of the AMX kernels in amx_amd64.s, which read
 // the fields at fixed offsets: keep the order.
@@ -66,26 +80,43 @@ type TileActs struct {
 	q               []int8    // [group][k/4][16][4]
 	xs              []int16   // [group][block][pair][16][2], sums of each run of 32
 	dx              []float32 // [group][block][16], the block scales
+	x32             []int32   // [group][k/16][16], 32 times the sum of each run of 16 (VNNI, Q6_K)
+	b               *Q8Batch  // the rows, between Reset and SetRows
+	use             []bool
 }
 
 // Set lays out the rows i of b for which use[i] is true, which must have
 // been quantized in blocks of 256; the other rows are zeros, and the
 // caller computes them some other way.
 func (t *TileActs) Set(b *Q8Batch, use []bool) {
+	t.Reset(b, use)
+	t.SetRows(0, len(use))
+}
+
+// Reset prepares t for the rows of b, which Set or SetRows then lays out.
+func (t *TileActs) Reset(b *Q8Batch, use []bool) {
 	k, rows := b.k, len(b.rows)
 	if k%256 != 0 || len(use) != rows {
 		panic("kernels: TileActs.Set with activations of another shape")
 	}
 	nb := k / 256
+	t.b, t.use = b, use
 	t.k, t.rows, t.groups = k, rows, (rows+TileRows-1)/TileRows
 	t.q = make([]int8, t.groups*TileRows*k)
 	t.xs = make([]int16, t.groups*nb*4*TileRows*2)
 	t.dx = make([]float32, t.groups*nb*TileRows)
-	for i := range rows {
-		if !use[i] {
+	t.x32 = make([]int32, t.groups*k/16*TileRows)
+}
+
+// SetRows lays out rows lo to hi-1 as Set does, after Reset. Calls for
+// rows that do not overlap may run concurrently.
+func (t *TileActs) SetRows(lo, hi int) {
+	k, nb := t.k, t.k/256
+	for i := lo; i < hi; i++ {
+		if !t.use[i] {
 			continue
 		}
-		r := &b.rows[i]
+		r := &t.b.rows[i]
 		if !r.ok || r.block != 256 {
 			panic("kernels: TileActs.Set with a row that is not quantized in blocks of 256")
 		}
@@ -103,6 +134,13 @@ func (t *TileActs) Set(b *Q8Batch, use []bool) {
 			}
 			t.dx[gb*TileRows+m] = r.d[8*blk]
 		}
+		for s := range k / 16 {
+			var sum int32
+			for _, v := range r.q[16*s : 16*s+16] {
+				sum += int32(v)
+			}
+			t.x32[(g*k/16+s)*TileRows+m] = 32 * sum
+		}
 	}
 }
 
@@ -112,8 +150,8 @@ func (t *TileActs) Set(b *Q8Batch, use []bool) {
 const tileScratch, tileConfig = 12800, 12736
 
 // TileDot multiplies 16 rows of weights by the rows of a TileActs with
-// the AMX kernels. It holds scratch space, so each goroutine needs its
-// own.
+// the AMX kernels, or the VNNI ones (vnni.go) on CPUs without AMX. It
+// holds scratch space, so each goroutine needs its own.
 type TileDot struct {
 	dt       mmf.DType
 	k        int
@@ -121,13 +159,16 @@ type TileDot struct {
 	mem      []byte
 	scr      []byte
 	tot, off []float32
+	sc       []int32   // VNNI: the sub-block scales
+	mp       []int16   // VNNI: the Q4_K sub-block offsets
+	dd       []float32 // VNNI: d and dmin
 }
 
 // NewTileDot returns a TileDot for rows of k elements of dt, for which
 // TileQ8 must be true.
 func NewTileDot(dt mmf.DType, k int) *TileDot {
 	if !TileQ8(dt) || k%256 != 0 {
-		panic("kernels: NewTileDot without an AMX kernel")
+		panic("kernels: NewTileDot without a tile kernel")
 	}
 	d := &TileDot{dt: dt, k: k, rowBytes: k / 256 * int(dt.BlockBytes())}
 	d.mem = make([]byte, tileScratch+64)
@@ -170,9 +211,12 @@ func (d *TileDot) Dot(w []byte, a *TileActs, y []float32, stride int, bias []flo
 		tot: &tot[0], off: &off[0], scr: &d.scr[0],
 	}
 	var ok bool
-	if d.dt == mmf.Q4_K {
+	switch {
+	case !useAMX || noAMX:
+		ok = d.vnniDot(w, a, tot, off)
+	case d.dt == mmf.Q4_K:
 		ok = amxQ4K(&args)
-	} else {
+	default:
 		ok = amxQ6K(&args)
 	}
 	if !ok {

@@ -52,3 +52,33 @@ func detectAMX() bool {
 	}
 	return requestAMX()
 }
+
+//go:noescape
+func vnniQ4K(a *vnniArgs)
+
+//go:noescape
+func vnniQ6K(a *vnniArgs)
+
+var useVNNI = detectVNNI()
+
+// detectVNNI reports whether the CPU has AVX-512 (F and BW) with VNNI and
+// the operating system saves the AVX-512 state.
+func detectVNNI() bool {
+	if !useAVX2 || !hasF16C {
+		return false
+	}
+	_, b7, c7, _ := cpuid(7, 0)
+	const (
+		avx512f    = 1 << 16
+		avx512bw   = 1 << 30
+		avx512vnni = 1 << 11 // in ECX
+	)
+	if b7&(avx512f|avx512bw) != avx512f|avx512bw || c7&avx512vnni == 0 {
+		return false
+	}
+	// XCR0: opmask, the upper ZMM halves and ZMM16..31.
+	if lo, _ := xgetbv(); lo&0xE0 != 0xE0 {
+		return false
+	}
+	return true
+}
