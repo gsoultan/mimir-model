@@ -16,6 +16,7 @@ package kernels
 import (
 	"math"
 	"math/rand"
+	"slices"
 	"testing"
 
 	"github.com/gsoultan/mmf"
@@ -90,10 +91,30 @@ func TestQuantizeQ8(t *testing.T) {
 	}
 }
 
-// TestQuantQ8 checks the assembly rounding of QuantizeBlocks against the
-// float64 formula, on values near the half-integers where it matters.
+// TestQuantizeQ8Rejects checks that QuantizeBlocks refuses values the
+// 8-bit kernels cannot take, with blocks of 256.
+func TestQuantizeQ8Rejects(t *testing.T) {
+	if !q8K {
+		t.Skip("no 8-bit kernels on this machine")
+	}
+	x := randomVec(rand.New(rand.NewSource(15)), 512)
+	var a Q8
+	if !a.QuantizeBlocks(x, 256) {
+		t.Fatal("QuantizeBlocks refused finite input")
+	}
+	for _, bad := range []float32{float32(math.Inf(-1)), float32(math.NaN()), 1e30} {
+		x[300] = bad
+		if a.QuantizeBlocks(x, 256) {
+			t.Errorf("QuantizeBlocks accepted %g", bad)
+		}
+	}
+}
+
+// TestQuantQ8 checks the rounding of QuantizeBlocks against the float64
+// formula, on values near the half-integers where it matters, and the
+// maximum and sums against the plain Go versions.
 func TestQuantQ8(t *testing.T) {
-	if !useAVX2 {
+	if !q8K {
 		t.Skip("no 8-bit kernels on this machine")
 	}
 	rng := rand.New(rand.NewSource(13))
@@ -110,11 +131,31 @@ func TestQuantQ8(t *testing.T) {
 			x[i] = max(-amax, min(amax, v))
 		}
 		q := make([]int8, len(x))
-		quantQ8AVX2(&x[0], &q[0], len(x), amax)
+		quantQ8(x, q, amax)
 		for i, v := range x {
 			if want := int8(math.RoundToEven(127 * float64(v) / float64(amax))); q[i] != want {
 				t.Fatalf("x = %g, amax = %g: got %d, want %d", v, amax, q[i], want)
 			}
+		}
+		quantQ8Go(x, q, amax)
+		for i, v := range x {
+			if want := int8(math.RoundToEven(127 * float64(v) / float64(amax))); q[i] != want {
+				t.Fatalf("quantQ8Go: x = %g, amax = %g: got %d, want %d", v, amax, q[i], want)
+			}
+		}
+		x[rng.Intn(len(x))] = -amax
+		if m, ok := amaxQ8(x); !ok || m != amax {
+			t.Fatalf("amaxQ8 = %g, %v, want %g", m, ok, amax)
+		}
+		if m, ok := amaxQ8Go(x); !ok || m != amax {
+			t.Fatalf("amaxQ8Go = %g, %v, want %g", m, ok, amax)
+		}
+		m32, xs := make([]int16, len(q)/2), make([]int16, len(q)/32)
+		wm32, wxs := make([]int16, len(q)/2), make([]int16, len(q)/32)
+		sumsQ8(q, m32, xs)
+		sumsQ8Go(q, wm32, wxs)
+		if !slices.Equal(m32, wm32) || !slices.Equal(xs, wxs) {
+			t.Fatal("sumsQ8 differs from sumsQ8Go")
 		}
 	}
 }
@@ -140,15 +181,15 @@ func offsets(dt mmf.DType, row []byte, k int) []float64 {
 }
 
 func TestRowDotQ8(t *testing.T) {
-	if !useAVX2 {
-		t.Skip("no 8-bit kernels on this machine")
-	}
 	rng := rand.New(rand.NewSource(7))
 	for _, c := range []struct {
 		dt    mmf.DType
 		block int
 	}{{mmf.Q4_K, 32}, {mmf.Q6_K, 32}, {mmf.Q8_0, 32}, {mmf.Q4_K, 256}, {mmf.Q6_K, 256}} {
 		dt := c.dt
+		if !FusedQ8Blocks(dt, c.block) {
+			continue
+		}
 		for _, k := range []int{256, 2048, 5632} {
 			row := randomRows(rng, dt, 1, k)
 			if dt == mmf.Q8_0 {
@@ -193,12 +234,12 @@ func TestRowDotQ8(t *testing.T) {
 // TestDotQ8x4 checks that the four-row kernel returns what DotQ8 returns
 // for each row, bit for bit, and refuses the rows DotQ8 refuses.
 func TestDotQ8x4(t *testing.T) {
-	if !useAVX2 || !hasF16C {
-		t.Skip("no 8-bit kernels on this machine")
-	}
 	rng := rand.New(rand.NewSource(10))
 	for _, kb := range [][2]int{{256, 32}, {2048, 32}, {5632, 32}, {256, 256}, {2048, 256}, {5632, 256}} {
 		k, block := kb[0], kb[1]
+		if !FusedQ8Blocks(mmf.Q4_K, block) || (block == 32 && !FusedQ8x4(mmf.Q4_K)) {
+			continue
+		}
 		const n = 6
 		var b Q8Batch
 		b.Reset(k, n)
@@ -242,9 +283,6 @@ func TestDotQ8x4(t *testing.T) {
 }
 
 func TestDotQ8RejectsNonFiniteScales(t *testing.T) {
-	if !useAVX2 {
-		t.Skip("no 8-bit kernels on this machine")
-	}
 	rng := rand.New(rand.NewSource(8))
 	for _, c := range []struct {
 		dt  mmf.DType
@@ -269,7 +307,7 @@ func TestDotQ8RejectsNonFiniteScales(t *testing.T) {
 }
 
 func BenchmarkRowDotQ8(b *testing.B) {
-	if !useAVX2 {
+	if !q8K {
 		b.Skip("no 8-bit kernels on this machine")
 	}
 	rng := rand.New(rand.NewSource(9))
@@ -279,20 +317,22 @@ func BenchmarkRowDotQ8(b *testing.B) {
 	for _, dt := range []mmf.DType{mmf.Q4_K, mmf.Q6_K, mmf.Q8_0} {
 		row := randomRows(rng, dt, 1, k)
 		r := NewRowDot(dt, k)
-		b.Run(dt.String(), func(b *testing.B) {
-			b.SetBytes(int64(len(row)))
-			for i := 0; i < b.N; i++ {
+		if FusedQ8(dt) {
+			b.Run(dt.String(), func(b *testing.B) {
+				b.SetBytes(int64(len(row)))
+				for i := 0; i < b.N; i++ {
+					r.LoadQ8(row)
+					r.DotQ8(&a)
+				}
+			})
+			b.Run(dt.String()+"/dot", func(b *testing.B) {
 				r.LoadQ8(row)
-				r.DotQ8(&a)
-			}
-		})
-		b.Run(dt.String()+"/dot", func(b *testing.B) {
-			r.LoadQ8(row)
-			b.SetBytes(int64(len(row)))
-			for i := 0; i < b.N; i++ {
-				r.DotQ8(&a)
-			}
-		})
+				b.SetBytes(int64(len(row)))
+				for i := 0; i < b.N; i++ {
+					r.DotQ8(&a)
+				}
+			})
+		}
 		if FusedQ8x4(dt) {
 			var batch Q8Batch
 			batch.Reset(k, 4)
