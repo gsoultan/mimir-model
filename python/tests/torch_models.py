@@ -156,6 +156,67 @@ class TinyLlama(nn.Module):
         return (torch.randint(0, 64, (1, 9)),), {"ids": {1: Dim("seq", max=64)}}
 
 
+class LlamaCacheBlock(LlamaBlock):
+    """A LlamaBlock that keeps its keys and values in buffers of max_len
+    positions and attends over the whole cache with a mask, as a static
+    cache does. Keys are written with index_copy_ and values with index
+    assignment, so both lowerings are exercised."""
+
+    def __init__(self, d, heads, kv_heads, hidden, max_len):
+        super().__init__(d, heads, kv_heads, hidden)
+        shape = (1, kv_heads, max_len, self.hd)
+        self.register_buffer("k_cache", torch.zeros(shape), persistent=False)
+        self.register_buffer("v_cache", torch.zeros(shape), persistent=False)
+
+    def forward(self, x, cos, sin, pos, mask):
+        B, T, _ = x.shape
+        h = self.norm1(x)
+        q = self.q(h).view(B, T, self.heads, self.hd).transpose(1, 2)
+        k = self.k(h).view(B, T, self.kv_heads, self.hd).transpose(1, 2)
+        v = self.v(h).view(B, T, self.kv_heads, self.hd).transpose(1, 2)
+        q, k = q * cos + _rotate_half(q) * sin, k * cos + _rotate_half(k) * sin
+        self.k_cache.index_copy_(2, pos, k)
+        self.v_cache[:, :, pos] = v
+        y = F.scaled_dot_product_attention(q, self.k_cache, self.v_cache, attn_mask=mask, enable_gqa=True)
+        x = x + self.o(y.transpose(1, 2).reshape(B, T, -1))
+        h = self.norm2(x)
+        return x + self.down(F.silu(self.gate(h)) * self.up(h))
+
+
+class TinyLlamaKV(TinyLlama):
+    """TinyLlama with a key-value cache: forward(ids, pos) runs the tokens
+    ids at the positions pos and leaves their keys and values in the cache,
+    so a prompt followed by one token per step gives the logits of the full
+    forward pass. Its parameters have TinyLlama's names."""
+
+    MAX_LEN = 32
+
+    def __init__(self, vocab=64, d=32, heads=4, kv_heads=2, hidden=48, layers=2, theta=10000.0):
+        super().__init__(vocab, d, heads, kv_heads, hidden, layers, theta)
+        self.layers = nn.ModuleList(LlamaCacheBlock(d, heads, kv_heads, hidden, self.MAX_LEN) for _ in range(layers))
+        self.register_buffer("kpos", torch.arange(self.MAX_LEN), persistent=False)
+
+    def forward(self, ids, pos):
+        freqs = pos.float()[:, None] * self.inv_freq[None, :]
+        emb = torch.cat((freqs, freqs), dim=-1)
+        x = self.embed(ids)
+        cos, sin = emb.cos()[None, None].to(x.dtype), emb.sin()[None, None].to(x.dtype)
+        mask = (self.kpos[None, :] <= pos[:, None])[None, None]  # [1, 1, T, MAX_LEN]
+        for layer in self.layers:
+            x = layer(x, cos, sin, pos, mask)
+        return self.lm_head(self.norm(x))
+
+    def reset(self):
+        for layer in self.layers:
+            layer.k_cache.zero_()
+            layer.v_cache.zero_()
+
+    @staticmethod
+    def example():
+        seq = Dim("seq", max=TinyLlamaKV.MAX_LEN)
+        return (torch.randint(0, 64, (1, 5)), torch.arange(5)), {"ids": {1: seq}, "pos": {0: seq}}
+
+
 class Ops(nn.Module):
     """Elementwise, comparison, integer and reduction operations."""
 
@@ -203,4 +264,12 @@ def build(name, seed=0):
                 mod.running_var.uniform_(0.5, 1.5)
                 mod.weight.normal_(1, 0.2)
                 mod.bias.normal_(0, 0.1)
+    return m.eval()
+
+
+def build_kv(seed=0):
+    """TinyLlamaKV with the weights of build("tiny-llama", seed) and an
+    empty cache."""
+    m = TinyLlamaKV()
+    m.load_state_dict(build("tiny-llama", seed).state_dict())
     return m.eval()
