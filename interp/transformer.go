@@ -23,7 +23,7 @@ import (
 
 // This file holds the canonical bodies of the composites a decoder-only
 // transformer needs beyond the basic ones in stdlib.go: dequant_matmul.v1
-// and dequant_matmul_a8.v1, swiglu.v1, cos.v1, tanh.v1, rope.v1 and attention.v1 (spec/stdlib.md
+// and dequant_matmul_a8.v1 and v2, swiglu.v1, cos.v1, tanh.v1, rope.v1 and attention.v1 (spec/stdlib.md
 // sections 3.3, 4 and 6). Like the rest of the executor's standard library
 // they evaluate the body on the primitive kernels, so their results are the
 // body's results.
@@ -32,6 +32,7 @@ func init() {
 	stdlib["dequant_matmul.v1"] = dequantMatmulV1
 	// dequant_matmul_a8.v1 has the same body; only its tolerance is looser.
 	stdlib["dequant_matmul_a8.v1"] = dequantMatmulV1
+	stdlib["dequant_matmul_a8.v2"] = dequantMatmulA8V2
 	stdlib["swiglu.v1"] = swigluV1
 	stdlib["cos.v1"] = unaryComposite(cosBody)
 	stdlib["tanh.v1"] = unaryComposite(tanhBody)
@@ -183,6 +184,32 @@ func dequantMatmulV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]i
 	}
 	y := b.linear(b.cast(x, cd), b.cast(wd, cd), bias)
 	return []*ref.Tensor{b.cast(y, x.DType)}, b.err
+}
+
+// dequantMatmulA8V2 checks the block attribute and evaluates the body,
+// which is that of dequant_matmul.v1.
+func dequantMatmulA8V2(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, shapes [][]int) ([]*ref.Tensor, error) {
+	if _, err := a8Block(list); err != nil {
+		return nil, err
+	}
+	return dequantMatmulV1(nil, in, dts, shapes)
+}
+
+// a8Block returns the block attribute of dequant_matmul_a8.v2: 32 or 256,
+// 32 by default.
+func a8Block(list []mmf.Attr) (int, error) {
+	a, err := readAttrs(list, "block")
+	if err != nil {
+		return 0, fmt.Errorf("dequant_matmul_a8: %v", err)
+	}
+	b, err := a.int("block", 32)
+	if err != nil {
+		return 0, fmt.Errorf("dequant_matmul_a8: %v", err)
+	}
+	if b != 32 && b != 256 {
+		return 0, fmt.Errorf("dequant_matmul_a8: block must be 32 or 256, got %d", b)
+	}
+	return int(b), nil
 }
 
 func checkDequantMatmul(in []*ref.Tensor) error {

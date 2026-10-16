@@ -19,39 +19,44 @@ import (
 	"github.com/gsoultan/mmf"
 )
 
-// 8-bit activations, for dequant_matmul_a8.v1 (spec/stdlib.md section
-// 3.4). A row of activations is split into blocks of 32 along K; each
-// block is stored as 32 int8 values q and a scale d = max|x|/127, with
-// q = round(x/d) to nearest, ties to even, so that |x - q*d| <= d/2. The
-// weights are still decoded exactly; the dot product of a block is then an
-// integer dot product of the 8-bit activations with the weights' integer
-// quants, scaled once per block.
+// 8-bit activations, for dequant_matmul_a8.v1 and v2 (spec/stdlib.md
+// section 3.4). A row of activations is split into blocks of 32 or 256
+// along K; each block is stored as int8 values q and a scale
+// d = max|x|/127, with q = round(x/d) to nearest, ties to even, so that
+// |x - q*d| <= d/2. The weights are still decoded exactly; the dot product
+// of a block is then an integer dot product of the 8-bit activations with
+// the weights' integer quants, scaled once per block.
 
 // Q8 is a row of activations quantized to 8-bit blocks.
 type Q8 struct {
-	k   int
-	q   []int8
-	d   []float32 // scale of each block of 32
-	dbs []float32 // d times the sum of the block's quants (Q4_K offsets)
-	m32 []int16   // 32*(q[2i]+q[2i+1]) (Q6_K's bias of 32)
-	ok  bool
+	k     int
+	block int // 32 or 256
+	q     []int8
+	d     []float32 // scale of the block holding each run of 32
+	dbs   []float32 // d times the sum of each run of 32 quants (Q4_K offsets)
+	m32   []int16   // 32*(q[2i]+q[2i+1]) (Q6_K's bias of 32)
+	ok    bool
 }
 
 // maxQ8 bounds the activations that are quantized: beyond it the scaled
 // integer sums could overflow float32 where the exact product would not.
 const maxQ8 = 0x1p60
 
-// Quantize sets a to x quantized to 8-bit blocks. It returns false, and
-// the caller must use the float32 kernels, if x is not a multiple of 32
-// long, holds a value that is not finite or is very large, or the
+// Quantize sets a to x quantized to 8-bit blocks of 32. It returns false,
+// and the caller must use the float32 kernels, if x is not a multiple of
+// 32 long, holds a value that is not finite or is very large, or the
 // assembly kernels are not available.
-func (a *Q8) Quantize(x []float32) bool {
+func (a *Q8) Quantize(x []float32) bool { return a.QuantizeBlocks(x, 32) }
+
+// QuantizeBlocks is Quantize with blocks of block elements, 32 or 256.
+// x must be a multiple of block long.
+func (a *Q8) QuantizeBlocks(x []float32, block int) bool {
 	a.ok = false
 	n := len(x)
-	if !useAVX2 || !hasF16C || n == 0 || n%32 != 0 {
+	if !useAVX2 || !hasF16C || n == 0 || (block != 32 && block != 256) || n%block != 0 {
 		return false
 	}
-	a.k = n
+	a.k, a.block = n, block
 	if cap(a.q) < n {
 		a.q = make([]int8, n)
 		a.m32 = make([]int16, n/2)
@@ -59,8 +64,8 @@ func (a *Q8) Quantize(x []float32) bool {
 		a.dbs = make([]float32, n/32)
 	}
 	a.q, a.m32, a.d, a.dbs = a.q[:n], a.m32[:n/2], a.d[:n/32], a.dbs[:n/32]
-	for b := 0; b < n/32; b++ {
-		xb := x[32*b : 32*b+32]
+	for b := 0; b < n/block; b++ {
+		xb := x[block*b : block*b+block]
 		var amax float32
 		for _, v := range xb {
 			if v < 0 {
@@ -71,8 +76,7 @@ func (a *Q8) Quantize(x []float32) bool {
 			}
 			amax = max(amax, v)
 		}
-		qb := a.q[32*b : 32*b+32]
-		var sum int32
+		qb := a.q[block*b : block*b+block]
 		if amax == 0 {
 			clear(qb)
 		} else {
@@ -81,24 +85,43 @@ func (a *Q8) Quantize(x []float32) bool {
 			// is either a half-integer or at least 2^-34 away from one:
 			// the result is the exact quotient rounded to nearest even.
 			for i, v := range xb {
-				q := int8(math.RoundToEven(127 * float64(v) / float64(amax)))
-				qb[i] = q
-				sum += int32(q)
+				qb[i] = int8(math.RoundToEven(127 * float64(v) / float64(amax)))
 			}
 		}
-		for i := 0; i < 16; i++ {
-			a.m32[16*b+i] = 32 * (int16(qb[2*i]) + int16(qb[2*i+1]))
+		d := amax / 127
+		for r := block * b / 32; r < block*(b+1)/32; r++ {
+			qr := a.q[32*r : 32*r+32]
+			var sum int32
+			for _, q := range qr {
+				sum += int32(q)
+			}
+			for i := 0; i < 16; i++ {
+				a.m32[16*r+i] = 32 * (int16(qr[2*i]) + int16(qr[2*i+1]))
+			}
+			a.d[r] = d
+			a.dbs[r] = d * float32(sum)
 		}
-		a.d[b] = amax / 127
-		a.dbs[b] = a.d[b] * float32(sum)
 	}
 	a.ok = true
 	return true
 }
 
-// FusedQ8 reports whether rows of dt have an 8-bit activation kernel.
+// FusedQ8 reports whether rows of dt have an 8-bit activation kernel for
+// blocks of 32.
 func FusedQ8(dt mmf.DType) bool {
 	return useAVX2 && hasF16C && (dt == mmf.Q4_K || dt == mmf.Q6_K || dt == mmf.Q8_0)
+}
+
+// FusedQ8Blocks reports whether rows of dt have an 8-bit activation kernel
+// for blocks of block elements, one-row and four-row.
+func FusedQ8Blocks(dt mmf.DType, block int) bool {
+	switch block {
+	case 32:
+		return FusedQ8(dt)
+	case 256:
+		return useAVX2 && hasF16C && (dt == mmf.Q4_K || dt == mmf.Q6_K)
+	}
+	return false
 }
 
 // LoadQ8 prepares row, the bytes of one row of a dtype for which FusedQ8
@@ -116,6 +139,15 @@ func (r *RowDot) DotQ8(a *Q8) (float32, bool) {
 	if !a.ok || a.k != r.k {
 		panic("kernels: DotQ8 with activations of another length")
 	}
+	if a.block == 256 {
+		switch r.dt {
+		case mmf.Q4_K:
+			return dotQ4KQ8KAVX2(&r.row[0], &a.q[0], &a.d[0], &a.dbs[0], r.k/256)
+		case mmf.Q6_K:
+			return dotQ6KQ8KAVX2(&r.row[0], &a.q[0], &a.d[0], &a.m32[0], r.k/256)
+		}
+		panic("kernels: DotQ8 with blocks of 256 on a dtype without a kernel")
+	}
 	switch r.dt {
 	case mmf.Q4_K:
 		return dotQ4KQ8AVX2(&r.row[0], &a.q[0], &a.d[0], &a.dbs[0], r.k/256)
@@ -129,6 +161,7 @@ func (r *RowDot) DotQ8(a *Q8) (float32, bool) {
 
 // Q8Batch holds rows of activations quantized to 8-bit blocks, stored one
 // after another so that a kernel can read several rows at fixed strides.
+// The rows of one batch must all use one block length.
 type Q8Batch struct {
 	k    int
 	rows []Q8
@@ -139,7 +172,8 @@ type Q8Batch struct {
 }
 
 // Reset prepares b for n rows of k activations. The rows are then set with
-// b.Row(i).Quantize, which may run concurrently for different rows.
+// b.Row(i).Quantize or QuantizeBlocks, which may run concurrently for
+// different rows.
 func (b *Q8Batch) Reset(k, n int) {
 	b.k = k
 	b.rows = make([]Q8, n)
@@ -163,7 +197,9 @@ func (b *Q8Batch) Reset(k, n int) {
 func (b *Q8Batch) Row(i int) *Q8 { return &b.rows[i] }
 
 // FusedQ8x4 reports whether rows of dt have a kernel that multiplies one
-// row by four rows of activations at once (RowDot.DotQ8x4).
+// row by four rows of activations in blocks of 32 at once
+// (RowDot.DotQ8x4). Every dtype FusedQ8Blocks accepts for blocks of 256
+// has one.
 func FusedQ8x4(dt mmf.DType) bool {
 	return useAVX2 && hasF16C && (dt == mmf.Q4_K || dt == mmf.Q6_K)
 }
@@ -177,12 +213,22 @@ func (r *RowDot) DotQ8x4(b *Q8Batch, i int, out *[4]float32) bool {
 	if b.k != r.k || i < 0 || i+4 > len(b.rows) {
 		panic("kernels: DotQ8x4 with activations of another shape")
 	}
+	block := b.rows[i].block
 	for j := i; j < i+4; j++ {
-		if !b.rows[j].ok {
-			panic("kernels: DotQ8x4 with a row that is not quantized")
+		if !b.rows[j].ok || b.rows[j].block != block {
+			panic("kernels: DotQ8x4 with a row that is not quantized, or quantized differently")
 		}
 	}
 	k := r.k
+	if block == 256 {
+		switch r.dt {
+		case mmf.Q4_K:
+			return dotQ4KQ8Kx4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.dbs[i*k/32], k, k/32*4, k/256, out)
+		case mmf.Q6_K:
+			return dotQ6KQ8Kx4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.m32[i*k/2], k, k/32*4, k/256, out)
+		}
+		panic("kernels: DotQ8x4 with blocks of 256 on a dtype without a kernel")
+	}
 	switch r.dt {
 	case mmf.Q4_K:
 		return dotQ4KQ8x4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.dbs[i*k/32], k, k/32*4, k/256, out)

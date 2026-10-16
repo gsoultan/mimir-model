@@ -205,9 +205,11 @@ go run ./cmd/mmf-run -m tinyllama-1.1b-chat-v1.0.Q4_K_M.mmf -p "Once upon a time
 runs it through the graph in one step and then generates one token per
 step. Greedy decoding is the default; `-temp` samples instead. The weights
 stay quantized in the mapped file and are decoded row by row inside the
-matrix products. By default the matrix products are `dequant_matmul_a8.v1`,
+matrix products. By default the matrix products are `dequant_matmul_a8`,
 which lets a runtime round the activations to 8 bits, as llama.cpp does, so
-that it can multiply in integers; `-a8=false` writes `dequant_matmul.v1`,
+that it can multiply in integers: in blocks of 256 for K-quant weights
+(`dequant_matmul_a8.v2`) and of 32 for the others (`v1`); `-a8=false`
+writes `dequant_matmul.v1`,
 computed to float32 accuracy. `-ctx` sets the cache length. The cache is
 a variable that starts as zeros, so it takes no space in the file; a
 session allocates it (4 bytes per element) when it starts.
@@ -228,7 +230,7 @@ out, err := s.Run(map[string]*ref.Tensor{"x": x})
 `interp` binds symbolic dimensions from the inputs, runs `while`, `if` and
 model-local composites, and applies variable updates atomically after each
 run. Of the standard library it runs `matmul.v1`, `linear.v1`, `conv2d.v1`,
-`dequant_matmul.v1`, `dequant_matmul_a8.v1`, `softmax.v1`, `rms_norm.v1`,
+`dequant_matmul.v1`, `dequant_matmul_a8.v1`, `dequant_matmul_a8.v2`, `softmax.v1`, `rms_norm.v1`,
 `layer_norm.v1`, `mean.v1`, `cumsum.v1`, `exp.v1`, `cos.v1`, `erf.v1`,
 `tanh.v1`, `sigmoid.v1`, `silu.v1`, `gelu_erf.v1`, `gelu_tanh.v1`,
 `swiglu.v1`, `rope.v1`, `attention.v1` and `embedding.v1` by evaluating their canonical bodies on the primitive

@@ -145,6 +145,17 @@ class TestComposites(unittest.TestCase):
         with self.assertRaises(RunError):
             call("softmax.v1", {"dim": Attr("int", 0)}, [f32([1.0])], [D.F32], [(1,)])
 
+    def test_dequant_matmul_a8_v2(self):
+        x = np.arange(6, dtype=np.float32).reshape(1, 2, 3) / 4
+        w = Tensor(D.F16, (2, 3), np.array([[1, 2, 3], [-1, 0, 0.5]], dtype=np.float16))
+        want = x @ w.arr.astype(np.float64).T
+        for attrs in ({}, {"block": Attr("int", 32)}, {"block": Attr("int", 256)}):
+            (y,) = call("dequant_matmul_a8.v2", attrs, [f32(x), w], [D.F32], [(1, 2, 2)])
+            np.testing.assert_allclose(y.arr, want, rtol=1e-6)
+        for attrs in ({"block": Attr("int", 64)}, {"other": Attr("int", 1)}):
+            with self.assertRaises(RunError):
+                call("dequant_matmul_a8.v2", attrs, [f32(x), w], [D.F32], [(1, 2, 2)])
+
 
 if __name__ == "__main__":
     unittest.main()
