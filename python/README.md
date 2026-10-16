@@ -43,6 +43,26 @@ cannot express raises `ExportError` naming it; `mmf.pytorch.SUPPORTED`
 lists the ones it handles. The exporter needs PyTorch 2.6 or later
 (`pip install "mmf[torch]"`); the rest of the package does not.
 
+A buffer the model writes to in `forward`, such as a static key-value
+cache, becomes a graph variable (ADR 0003), and its value at the end of
+the call becomes the variable's update; a buffer of zeros is stored as
+ZERO_INIT and takes no file space. Writes with `index_copy_` and with
+index assignment of one index tensor (`cache[:, :, pos] = k`) become
+`scatter`, which a runtime can apply in place. A session keeps the cache
+between runs, so a prompt followed by one token per step gives the logits
+of the full forward pass:
+
+```python
+s = Program.load(File.open("model.mmf")).session()
+s.run({"ids": prompt, "pos": positions})   # i64 tensors [1, n] and [n]: 0..n-1
+s.run({"ids": next_id, "pos": position})   # [1, 1] and [1]: n, one decode step
+```
+
+Positions are tensors, not Python integers, so one export serves every
+step; the model attends over the whole cache with a mask of the positions
+written so far (see `TinyLlamaKV` in `tests/torch_models.py`). Mutating an
+input is rejected.
+
 ## How it computes
 
 - Primitives on f32, f16 and bf16 compute in float64 and round once to the

@@ -97,6 +97,11 @@ func TestPyTorchExports(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The exported cache writes are scatters into their own
+			// variables, so every one of them runs in place.
+			if m.Name == "tiny-llama-kv" && (len(p.inplace) != 4 || len(p.inplace) != len(p.g.Updates)) {
+				t.Errorf("%d in-place scatters for %d variable updates, want 4", len(p.inplace), len(p.g.Updates))
+			}
 			s := p.NewSession()
 			for ri, run := range m.Runs {
 				in := map[string]*ref.Tensor{}
