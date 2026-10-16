@@ -105,3 +105,12 @@ func amaxAVX2(x *float32, n int) (amax float32, ok bool)
 
 //go:noescape
 func sumsQ8AVX2(q *int8, m32 *int16, xs *int16, n int)
+
+//go:noescape
+func scoresF32AVX2(q, k *float32, d, n int, scale float32, out *float32)
+
+//go:noescape
+func expSumF32AVX2(x *float32, n int, m float32) float32
+
+//go:noescape
+func wsumF32AVX2(p, v *float32, n, d int, acc *float32)

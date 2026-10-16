@@ -218,52 +218,79 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 	for i := 0; x4 && i+4 <= rows; i++ {
 		four[i] = quantized[i] && quantized[i+1] && quantized[i+2] && quantized[i+3]
 	}
+	// The rows of x go through in blocks of rb, and each piece of weight
+	// rows runs over one block before the next, so that the block's quants
+	// stay in the core's cache while every weight row of the piece reads
+	// them. Without blocks, each weight row would read all of x, which for
+	// a long prompt does not fit in the cache.
+	rb := a8RowBlock(k, w.t.DType)
 	parallel(n, func(lo, hi int) {
 		rd := kernels.NewRowDot(w.t.DType, k)
 		var out [4]float32
-		for j := lo; j < hi; j++ {
-			row := w.rowBytesOf(j)
-			rd.LoadQ8(row)
-			q8, loaded := true, false
-			done := j/kernels.TileRows < len(tiled) && tiled[j/kernels.TileRows]
-			for i := 0; i < rows; {
-				if done && quantized[i] {
-					i++
-					continue
-				}
-				if q8 && four[i] {
-					if q8 = rd.DotQ8x4(&acts, i, &out); q8 {
-						for r, s := range out {
-							if bias != nil {
-								s += bias[j]
-							}
-							y[(i+r)*n+j] = s
-						}
-						i += 4
+		// refused[j-lo] reports that a block scale of weight row j is not
+		// finite, so the 8-bit kernels refuse the row.
+		refused := make([]bool, hi-lo)
+		for r0 := 0; r0 < rows; r0 += rb {
+			r1 := min(rows, r0+rb)
+			for j := lo; j < hi; j++ {
+				row := w.rowBytesOf(j)
+				rd.LoadQ8(row)
+				q8, loaded := !refused[j-lo], false
+				done := j/kernels.TileRows < len(tiled) && tiled[j/kernels.TileRows]
+				for i := r0; i < r1; {
+					if done && quantized[i] {
+						i++
 						continue
 					}
-				}
-				var s float32
-				if q8 && quantized[i] {
-					s, q8 = rd.DotQ8(acts.Row(i))
-				}
-				if !q8 || !quantized[i] {
-					if !loaded {
-						rd.Load(row, rows)
-						loaded = true
+					if q8 && four[i] && i+4 <= r1 {
+						if q8 = rd.DotQ8x4(&acts, i, &out); q8 {
+							for r, s := range out {
+								if bias != nil {
+									s += bias[j]
+								}
+								y[(i+r)*n+j] = s
+							}
+							i += 4
+							continue
+						}
 					}
-					s = rd.Dot(x[i*k : (i+1)*k])
+					var s float32
+					if q8 && quantized[i] {
+						s, q8 = rd.DotQ8(acts.Row(i))
+					}
+					if !q8 || !quantized[i] {
+						if !loaded {
+							rd.Load(row, rows)
+							loaded = true
+						}
+						s = rd.Dot(x[i*k : (i+1)*k])
+					}
+					if bias != nil {
+						s += bias[j]
+					}
+					y[i*n+j] = s
+					i++
 				}
-				if bias != nil {
-					s += bias[j]
-				}
-				y[i*n+j] = s
-				i++
+				refused[j-lo] = !q8
 			}
 		}
 	})
 	return y
 }
+
+// a8RowBlock returns the number of rows of activations of length k that
+// linearA8 multiplies by each piece of weight rows at a time: as many as
+// fit in a budget of the core's cache, in multiples of 4, at least 4.
+func a8RowBlock(k int, dt mmf.DType) int {
+	per := k // the quants
+	if dt == mmf.Q6_K {
+		per += k // and the pair sums
+	}
+	return max(4, a8CacheBytes/per&^3)
+}
+
+// a8CacheBytes is the cache budget of a8RowBlock.
+const a8CacheBytes = 32 << 10
 
 // tileMinRows is the number of rows of activations from which linearA8
 // multiplies with the AMX kernels: with fewer, the four-row kernels are as
@@ -324,24 +351,27 @@ func fastRMSNorm(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([
 		}
 		scale = f32View(in[1])
 	}
-	v := f32Values(x)
 	if n == 0 {
 		return []*ref.Tensor{x}, true, nil
 	}
-	for i := 0; i < len(v); i += n {
-		row := v[i : i+n]
-		var ss float64
-		for _, e := range row {
-			ss += float64(e) * float64(e)
-		}
-		inv := float32(1 / math.Sqrt(float64(float32(ss/float64(n)))+float64(float32(eps))))
-		for j := range row {
-			row[j] *= inv
-			if scale != nil {
-				row[j] *= scale[j]
+	xv := f32View(x)
+	v := make([]float32, len(xv))
+	parallel(len(v)/n, func(lo, hi int) {
+		for i := lo * n; i < hi*n; i += n {
+			src, row := xv[i:i+n], v[i:i+n]
+			var ss float64
+			for _, e := range src {
+				ss += float64(e) * float64(e)
+			}
+			inv := float32(1 / math.Sqrt(float64(float32(ss/float64(n)))+float64(float32(eps))))
+			for j, e := range src {
+				row[j] = e * inv
+				if scale != nil {
+					row[j] *= scale[j]
+				}
 			}
 		}
-	}
+	})
 	return []*ref.Tensor{f32Tensor(x.Shape, v)}, true, nil
 }
 
@@ -350,11 +380,11 @@ func fastSwiglu(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]
 		!sameInts(in[0].Shape, in[1].Shape) {
 		return nil, false, nil
 	}
-	a, b := f32Values(in[0]), f32View(in[1])
+	x, b := f32View(in[0]), f32View(in[1])
+	a := make([]float32, len(x))
 	parallel(len(a), func(lo, hi int) {
 		for i := lo; i < hi; i++ {
-			x := a[i]
-			a[i] = float32(float64(x) / (1 + math.Exp(-float64(x))) * float64(b[i]))
+			a[i] = float32(float64(x[i]) / (1 + math.Exp(-float64(x[i]))) * float64(b[i]))
 		}
 	})
 	return []*ref.Tensor{f32Tensor(in[0].Shape, a)}, true, nil
@@ -381,14 +411,18 @@ func fastRope(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*r
 		return nil, false, err
 	}
 	h := p.rotary / 2
-	v := f32Values(x)
-	cs := make([]float32, 2*h)
-	for b := 0; b < B; b++ {
-		pb := 0
-		if pos.Shape[0] != 1 {
-			pb = b
-		}
-		for t := 0; t < T; t++ {
+	xv := f32View(x)
+	v := make([]float32, len(xv))
+	// Each piece takes positions (b, t), computes their angles once and
+	// rotates the rows of every head there.
+	parallel(B*T, func(lo, hi int) {
+		cs := make([]float32, 2*h)
+		for bt := lo; bt < hi; bt++ {
+			b, t := bt/T, bt%T
+			pb := 0
+			if pos.Shape[0] != 1 {
+				pb = b
+			}
 			pp := position(pos, pb*T+t)
 			for i := 0; i < h; i++ {
 				ang := pp * p.invFreq[i]
@@ -396,20 +430,22 @@ func fastRope(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*r
 				cs[2*i+1] = float32(math.Sin(ang) * p.ms)
 			}
 			for hd := 0; hd < H; hd++ {
-				row := v[((b*H+hd)*T+t)*D:][:D]
+				at := ((b*H+hd)*T + t) * D
+				src, row := xv[at:at+D], v[at:at+D]
+				copy(row, src)
 				for i := 0; i < h; i++ {
 					i1, i2 := i, i+h
 					if p.interleaved {
 						i1, i2 = 2*i, 2*i+1
 					}
-					x1, x2 := row[i1], row[i2]
+					x1, x2 := src[i1], src[i2]
 					c, s := cs[2*i], cs[2*i+1]
 					row[i1] = x1*c - x2*s
 					row[i2] = x2*c + x1*s
 				}
 			}
 		}
-	}
+	})
 	return []*ref.Tensor{f32Tensor(x.Shape, v)}, true, nil
 }
 
@@ -470,6 +506,15 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 			}
 		}
 	}
+	// vector reports whether rows can go through attendRow: with no mask
+	// or a boolean one whose rows lie in order.
+	vector := mask == nil || ends != nil
+	maskRow := func(b, h, i, end int) []byte {
+		if mask == nil {
+			return nil
+		}
+		return mask.Data[b*mst[0]+h*mst[1]+i*mst[2]:][:end]
+	}
 	parallel(B*Hq, func(lo, hi int) {
 		sc := make([]float32, Tk)
 		acc := make([]float32, Dv)
@@ -488,6 +533,10 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 					end = max(0, min(end, i+(Tk-Tq)+1))
 				}
 				sc := sc[:end]
+				o := out[(bh*Tq+i)*Dv:][:Dv]
+				if vector && attendRow(qi, kb[:end*D], vb[:end*Dv], scale, maskRow(b, h, i, end), sc, acc, o) {
+					continue
+				}
 				mx := float32(math.Inf(-1))
 				for j := 0; j < end; j++ {
 					s := float32(math.Inf(-1))
@@ -526,7 +575,6 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 					}
 					kernels.AxpyF32(e, vb[j*Dv:][:Dv], acc)
 				}
-				o := out[(bh*Tq+i)*Dv:][:Dv]
 				for d := range o {
 					o[d] = acc[d] / sum
 				}
@@ -534,6 +582,37 @@ func fastAttention(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) 
 		}
 	})
 	return []*ref.Tensor{f32Tensor([]int{B, Hq, Tq, Dv}, out)}, true, nil
+}
+
+// attendRow computes one row of attention with the vector kernels: o gets
+// the softmax of scale times the dot products of q with the rows of k,
+// weighting the rows of v. Every key is visible unless mask, when not nil,
+// holds a zero for it. It uses sc, one score per key, and acc, one float
+// per element of o. It reports false, leaving o to the caller, when a key
+// within the row is masked or the largest score is not finite.
+func attendRow(q, k, v []float32, scale float32, mask []byte, sc, acc, o []float32) bool {
+	for _, m := range mask {
+		if m == 0 {
+			return false
+		}
+	}
+	kernels.ScoresF32(q, k, scale, sc)
+	mx := float32(math.Inf(-1))
+	for _, s := range sc {
+		if s > mx || s != s {
+			mx = s
+		}
+	}
+	if math.IsInf(float64(mx), 0) || mx != mx {
+		return false
+	}
+	sum := kernels.ExpSumF32(sc, mx)
+	clear(acc)
+	kernels.WeightedSumF32(sc, v, acc)
+	for d := range o {
+		o[d] = acc[d] / sum
+	}
+	return true
 }
 
 func fastEmbedding(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
