@@ -182,3 +182,28 @@ memory more slowly than the machine allows.
 
 Each step is measured end to end with tools/bench_generate.py against
 llama.cpp on the same machine, and recorded in docs/benchmarks.md.
+
+## Plan after the speed plan
+
+With every step of the speed plan done, a benchmark on a Xeon without AMX
+(docs/benchmarks.md, 'Long prompts') showed a gap the 21-token prompt had
+hidden: with a 741-token prompt mmf-run read 39 tokens per second against
+llama.cpp's 123, and its memory grew to 4.5 GB.
+
+1. **Long prompts.** Matrix products in blocks of activations that fit in
+   a core's cache, vector kernels for attention, the element-wise
+   composites in parallel without a copy, and the executor dropping each
+   value after its last use. Done: 85 tokens per second at 741 tokens,
+   and a peak of 965 MiB instead of 4.5 GB (docs/benchmarks.md, 'Long
+   prompts').
+2. **VNNI kernels for CPUs without AMX.** On CPUs with AVX-512 VNNI (AMD
+   Zen 4, Intel since Cascade Lake), one instruction multiplies four
+   weights by four quants of each of 16 activation rows and adds the
+   products into 16 int32 sums. Kernels for 16 activation rows at a time,
+   on the activation layout of the AMX kernels, with each block's integer
+   sums and float operations those of the other kernels, so results stay
+   bit for bit the same.
+3. **A key-value cache in f16.** The cache variables in f16 instead of
+   f32: half the memory (46 MiB instead of 92 at a context of 2048 for
+   TinyLlama, and proportionally more at long contexts), and half the
+   bytes attention reads per token.

@@ -8,7 +8,8 @@ An .mmf file is run with mmf-run; a .gguf file with llama.cpp through
 llama-cpp-python, as the reference. Every run is a fresh process: the table
 reports the median over the runs of the load time, the prompt and
 generation speed (greedy, one token per step) and the peak resident memory
-of the process, which counts the mapped weights the run touched.
+of the process, which counts the mapped weights the run touched. With
+--repeat N the prompt is the sentence below N times over, for long prompts.
 """
 
 import argparse
@@ -67,16 +68,17 @@ def run(cmd):
 
 
 def measure(path, args):
+    prompt = " ".join([PROMPT] * args.repeat)
     if path.endswith(".gguf"):
-        out, _, rss = run([sys.executable, "-c", LLAMA_CPP, path, str(args.tokens), str(args.threads), PROMPT])
+        out, _, rss = run([sys.executable, "-c", LLAMA_CPP, path, str(args.tokens), str(args.threads), prompt])
         r = json.loads(out)
-        return "llama.cpp", r["load"], r["prompt_tokens"] / r["prompt_s"], r["tokens"] / r["gen_s"], rss
-    _, err, rss = run([args.mmf_run, "-m", path, "-p", PROMPT, "-n", str(args.tokens)])
+        return "llama.cpp", r["load"], r["prompt_tokens"] / r["prompt_s"], r["tokens"] / r["gen_s"], rss, r["prompt_tokens"]
+    _, err, rss = run([args.mmf_run, "-m", path, "-p", prompt, "-n", str(args.tokens)])
     m = MMF_RUN.search(err)
     if not m:
         sys.exit(f"cannot parse mmf-run output: {err}")
     load, np_, pt, ng, gt = seconds(m[1]), int(m[2]), seconds(m[3]), int(m[4]), seconds(m[5])
-    return "mmf-run", load, np_ / pt, max(ng - 1, 0) / gt, rss
+    return "mmf-run", load, np_ / pt, max(ng - 1, 0) / gt, rss, np_
 
 
 def main():
@@ -85,16 +87,17 @@ def main():
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--tokens", type=int, default=64)
     ap.add_argument("--threads", type=int, default=os.cpu_count())
+    ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("files", nargs="+")
     args = ap.parse_args()
     print(f"median of {args.runs} runs, {args.tokens} generated tokens, {args.threads} threads\n")
-    print("| file | runtime | load | prompt | generation | peak RSS |")
-    print("| --- | --- | ---: | ---: | ---: | ---: |")
+    print("| file | runtime | load | prompt | generation | peak RSS | prompt tokens |")
+    print("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
     for f in args.files:
         rs = [measure(f, args) for _ in range(args.runs)]
         med = [statistics.median(r[i] for r in rs) for i in range(1, 5)]
         print(f"| {os.path.basename(f)} | {rs[0][0]} | {med[0]*1000:.0f} ms | {med[1]:.1f} tok/s "
-              f"| {med[2]:.1f} tok/s | {med[3]/2**20:.0f} MiB |")
+              f"| {med[2]:.1f} tok/s | {med[3]/2**20:.0f} MiB | {rs[0][5]} |")
 
 
 if __name__ == "__main__":

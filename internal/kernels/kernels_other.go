@@ -27,6 +27,10 @@ func dotQ8_0AVX2(q *byte, x, tab *float32, nb int) float32 { panic("no assembly"
 func dotF16AVX2(w *byte, x *float32, n int) float32        { panic("no assembly") }
 func dotBF16AVX2(w *byte, x *float32, n int) float32       { panic("no assembly") }
 
+func scoresF32AVX2(q, k *float32, d, n int, scale float32, out *float32) { panic("no assembly") }
+func expSumF32AVX2(x *float32, n int, m float32) float32                 { panic("no assembly") }
+func wsumF32AVX2(p, v *float32, n, d int, acc *float32)                  { panic("no assembly") }
+
 func dotQ4KQ8AVX2(q *byte, xq *int8, xd, xdbs *float32, nb int) (float32, bool) { panic("no assembly") }
 func dotQ6KQ8AVX2(q *byte, xq *int8, xd *float32, m32 *int16, nb int) (float32, bool) {
 	panic("no assembly")

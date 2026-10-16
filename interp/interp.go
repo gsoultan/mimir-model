@@ -51,6 +51,7 @@ type Program struct {
 	zeroVars   map[uint32]zeroVar     // variables that start as zeros
 	composites map[string]uint32      // "name.vN" to subgraph index
 	inplace    map[*mmf.Op]uint32     // scatters that may run in place, to their variable
+	frees      [][]uint32             // values each op of the main graph is the last to need
 }
 
 // Load decodes f's graph and resolves its weight, const and variable values
@@ -123,6 +124,7 @@ func New(g *mmf.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 		}
 	}
 	p.inplace = inplaceScatters(g)
+	p.frees = lastUses(g)
 	for _, c := range g.Composites {
 		key := fmt.Sprintf("%s.v%d", c.Name, c.Version)
 		if _, dup := p.composites[key]; dup {
@@ -131,6 +133,57 @@ func New(g *mmf.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 		p.composites[key] = c.Subgraph
 	}
 	return p, nil
+}
+
+// lastUses returns, for each op of the main graph, the values computed in
+// a run that nothing needs after that op: no later op of the main graph
+// reads them and they are not outputs or variable updates. A run drops
+// them once the op has run, so that it holds only the values still to be
+// read rather than every value of every layer. Values read by an op of
+// another subgraph, which may see its parent's values, are kept.
+func lastUses(g *mmf.Graph) [][]uint32 {
+	if len(g.Subgraphs) == 0 {
+		return nil
+	}
+	main := g.Main()
+	keep := map[uint32]bool{}
+	for _, id := range main.Outputs {
+		keep[id] = true
+	}
+	for _, u := range g.Updates {
+		keep[u.Value] = true
+	}
+	for si := 1; si < len(g.Subgraphs); si++ {
+		sg := &g.Subgraphs[si]
+		for _, op := range sg.Ops {
+			for _, id := range op.Inputs {
+				keep[id] = true
+			}
+		}
+		for _, id := range sg.Outputs {
+			keep[id] = true
+		}
+	}
+	last := map[uint32]int{}
+	for oi, op := range main.Ops {
+		for _, id := range op.Outputs {
+			last[id] = oi // a value nothing reads is dropped at once
+		}
+		for _, id := range op.Inputs {
+			last[id] = oi
+		}
+	}
+	frees := make([][]uint32, len(main.Ops))
+	for id, oi := range last {
+		switch g.Values[id].Kind {
+		case mmf.KindWeight, mmf.KindConst, mmf.KindVariable:
+			continue
+		}
+		if !keep[id] {
+			frees[oi] = append(frees[oi], id)
+		}
+	}
+	return frees
 }
 
 // Graph returns the program's graph.
@@ -403,6 +456,11 @@ func (r *run) exec(si int, sc *scope) error {
 				return fmt.Errorf("subgraph %d op %d (%s): %w", si, oi, op.Opcode, err)
 			}
 			sc.vals[id] = outs[k]
+		}
+		if si == 0 {
+			for _, id := range r.p.frees[oi] {
+				delete(sc.vals, id)
+			}
 		}
 	}
 	return nil
