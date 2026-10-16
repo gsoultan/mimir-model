@@ -205,13 +205,19 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 			quantized[i] = acts.Row(i).QuantizeBlocks(x[i*k:(i+1)*k], block)
 		}
 	})
+	y := make([]float32, rows*n)
+	// tiled[j/16] reports whether the AMX kernels computed weight rows j to
+	// j+15 for the quantized rows of x.
+	var tiled []bool
+	if block == 256 && rows >= tileMinRows && kernels.TileQ8(w.t.DType) {
+		tiled = linearA8Tiles(&acts, quantized, w, bias, y)
+	}
 	// four[i] reports whether rows i to i+3 are all quantized.
 	x4 := kernels.FusedQ8x4(w.t.DType) || block == 256
 	four := make([]bool, rows)
 	for i := 0; x4 && i+4 <= rows; i++ {
 		four[i] = quantized[i] && quantized[i+1] && quantized[i+2] && quantized[i+3]
 	}
-	y := make([]float32, rows*n)
 	parallel(n, func(lo, hi int) {
 		rd := kernels.NewRowDot(w.t.DType, k)
 		var out [4]float32
@@ -219,7 +225,12 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 			row := w.rowBytesOf(j)
 			rd.LoadQ8(row)
 			q8, loaded := true, false
+			done := j/kernels.TileRows < len(tiled) && tiled[j/kernels.TileRows]
 			for i := 0; i < rows; {
+				if done && quantized[i] {
+					i++
+					continue
+				}
 				if q8 && four[i] {
 					if q8 = rd.DotQ8x4(&acts, i, &out); q8 {
 						for r, s := range out {
@@ -252,6 +263,36 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 		}
 	})
 	return y
+}
+
+// tileMinRows is the number of rows of activations from which linearA8
+// multiplies with the AMX kernels: with fewer, the four-row kernels are as
+// fast, since a tile product costs the same for 1 row as for 16.
+const tileMinRows = 8
+
+// linearA8Tiles computes y for the quantized rows of x with the AMX
+// kernels, 16 weight rows at a time, and reports for each run of 16 weight
+// rows whether it did. Its results are those of the other 8-bit kernels,
+// bit for bit; a run with a block scale that is not finite, and the weight
+// rows after the last whole run, are left to the caller.
+func linearA8Tiles(acts *kernels.Q8Batch, quantized []bool, w *matrixRows, bias, y []float32) []bool {
+	n, k := w.t.Shape[0], w.k
+	var ta kernels.TileActs
+	ta.Set(acts, quantized)
+	tiled := make([]bool, n/kernels.TileRows)
+	parallel(len(tiled), func(lo, hi int) {
+		td := kernels.NewTileDot(w.t.DType, k)
+		for t := lo; t < hi; t++ {
+			j0 := t * kernels.TileRows
+			wt := w.t.Data[j0*w.rowBytes : (j0+kernels.TileRows)*w.rowBytes]
+			var b []float32
+			if bias != nil {
+				b = bias[j0 : j0+kernels.TileRows]
+			}
+			tiled[t] = td.Dot(wt, &ta, y[j0:], n, b)
+		}
+	})
+	return tiled
 }
 
 func fastRMSNorm(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]*ref.Tensor, bool, error) {

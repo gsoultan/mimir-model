@@ -230,6 +230,58 @@ func kquant(rng *rand.Rand, dt mmf.DType, n, k int) *ref.Tensor {
 	return &ref.Tensor{DType: dt, Shape: []int{n, k}, Data: b}
 }
 
+// TestDequantMatmulA8RowsTogether checks that each row of a
+// dequant_matmul_a8.v2 call with activation blocks of 256 comes out the
+// same, bit for bit, whether it is multiplied alone or with 20 others: on
+// CPUs with AMX the 21 rows take the tile kernels, elsewhere the four-row
+// kernels. The weights have 40 rows, so the last 8 are not a whole tile,
+// and one weight row and one activation row are not finite.
+func TestDequantMatmulA8RowsTogether(t *testing.T) {
+	rng := rand.New(rand.NewSource(4))
+	const k, rows, n = 512, 21, 40
+	attrs := []mmf.Attr{intAttr("block", 256)}
+	for _, dt := range []mmf.DType{mmf.Q4_K, mmf.Q6_K} {
+		x := randF32(rng, []int{rows, k}, 1)
+		x.SetBits(9*k+3, uint64(math.Float32bits(float32(math.Inf(1)))))
+		w := kquant(rng, dt, n, k)
+		rb := len(w.Data) / n
+		bad := 20*rb + rb/2 // a block of weight row 20
+		bad -= bad % int(dt.BlockBytes())
+		if dt == mmf.Q6_K {
+			bad += 208
+		}
+		w.Data[bad], w.Data[bad+1] = 0x00, 0x7C // +inf
+		in := []*ref.Tensor{x, w, randF32(rng, []int{n}, 1)}
+		all, handled, err := fastPaths["dequant_matmul_a8.v2"](attrs, in, []mmf.DType{mmf.F32}, nil)
+		if err != nil || !handled {
+			t.Fatalf("%s: handled %v, %v", dt, handled, err)
+		}
+		got := f32Values(all[0])
+		xv := f32Values(x)
+		for i := range rows {
+			xi := f32Tensor([]int{1, k}, xv[i*k:(i+1)*k])
+			one, _, err := fastPaths["dequant_matmul_a8.v2"](attrs, []*ref.Tensor{xi, w, in[2]}, []mmf.DType{mmf.F32}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for j, want := range f32Values(one[0]) {
+				g := got[i*n+j]
+				if math.IsNaN(float64(want)) || math.IsInf(float64(want), 0) {
+					// The float32 path of a row or weight that is not finite
+					// may sum in another order; the result is not finite either way.
+					if !math.IsNaN(float64(g)) && !math.IsInf(float64(g), 0) {
+						t.Errorf("%s [%d,%d]: got %g, alone %g", dt, i, j, g, want)
+					}
+					continue
+				}
+				if math.Float32bits(g) != math.Float32bits(want) {
+					t.Errorf("%s [%d,%d]: got %g, alone %g", dt, i, j, g, want)
+				}
+			}
+		}
+	}
+}
+
 // TestDequantMatmulA8 checks the 8-bit activation fast paths of
 // dequant_matmul_a8.v1 and v2 against the exact canonical body with their
 // tolerance: one quantization step of each activation block per weight,
