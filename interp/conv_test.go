@@ -1,0 +1,90 @@
+package interp
+
+import (
+	"math/rand"
+	"testing"
+
+	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mmf/ref"
+)
+
+func intsAttr(k string, v ...int64) mmf.Attr { return mmf.Attr{Key: k, Type: mmf.AttrInts, Ints: v} }
+
+// naiveConv is the definition of a grouped 2-D convolution, in float64.
+func naiveConv(x, w, bias []float32, nb, c, h, wd, f, kh, kw, g, sh, sw, dh, dw, top, left, ho, wo int) []float64 {
+	cg, fg := c/g, f/g
+	y := make([]float64, nb*f*ho*wo)
+	for n := 0; n < nb; n++ {
+		for o := 0; o < f; o++ {
+			for oy := 0; oy < ho; oy++ {
+				for ox := 0; ox < wo; ox++ {
+					s := 0.0
+					if bias != nil {
+						s = float64(bias[o])
+					}
+					for ci := 0; ci < cg; ci++ {
+						for i := 0; i < kh; i++ {
+							for j := 0; j < kw; j++ {
+								iy, ix := oy*sh+i*dh-top, ox*sw+j*dw-left
+								if iy < 0 || iy >= h || ix < 0 || ix >= wd {
+									continue
+								}
+								s += float64(x[((n*c+o/fg*cg+ci)*h+iy)*wd+ix]) * float64(w[((o*cg+ci)*kh+i)*kw+j])
+							}
+						}
+					}
+					y[((n*f+o)*ho+oy)*wo+ox] = s
+				}
+			}
+		}
+	}
+	return y
+}
+
+func TestConv2d(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	cases := []struct {
+		nb, c, h, w, f, kh, kw, g, sh, sw, dh, dw, top, bottom, left, right int
+		bias                                                                bool
+	}{
+		{1, 3, 6, 5, 4, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, true},
+		{2, 4, 7, 8, 6, 3, 2, 2, 2, 3, 1, 1, 0, 1, 2, 0, false},
+		{1, 4, 9, 9, 4, 3, 3, 4, 1, 2, 2, 1, 2, 2, 1, 1, true},
+		{1, 2, 5, 5, 2, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, false},
+	}
+	for ci, tc := range cases {
+		x := randF32(rng, []int{tc.nb, tc.c, tc.h, tc.w}, 1)
+		w := randF32(rng, []int{tc.f, tc.c / tc.g, tc.kh, tc.kw}, 1)
+		in := []*ref.Tensor{x, w}
+		var bias []float32
+		if tc.bias {
+			b := randF32(rng, []int{tc.f}, 1)
+			in = append(in, b)
+			bias = f32View(b)
+		}
+		attrs := []mmf.Attr{
+			intsAttr("strides", int64(tc.sh), int64(tc.sw)),
+			intsAttr("dilations", int64(tc.dh), int64(tc.dw)),
+			intsAttr("pads", int64(tc.top), int64(tc.bottom), int64(tc.left), int64(tc.right)),
+			iAttr("groups", int64(tc.g)),
+		}
+		body := checkFast(t, "conv2d.v1", attrs, in, 1e-5)
+		ho := (tc.h+tc.top+tc.bottom-tc.dh*(tc.kh-1)-1)/tc.sh + 1
+		wo := (tc.w+tc.left+tc.right-tc.dw*(tc.kw-1)-1)/tc.sw + 1
+		if !sameInts(body.Shape, []int{tc.nb, tc.f, ho, wo}) {
+			t.Fatalf("case %d: shape %v", ci, body.Shape)
+		}
+		want := naiveConv(f32View(x), f32View(w), bias, tc.nb, tc.c, tc.h, tc.w, tc.f, tc.kh, tc.kw, tc.g,
+			tc.sh, tc.sw, tc.dh, tc.dw, tc.top, tc.left, ho, wo)
+		got := f32View(body)
+		for i := range want {
+			if d := float64(got[i]) - want[i]; d > 1e-5 || d < -1e-5 {
+				t.Fatalf("case %d element %d: body %g, definition %g", ci, i, got[i], want[i])
+			}
+		}
+	}
+	if _, err := stdlib["conv2d.v1"]([]mmf.Attr{iAttr("groups", 2)},
+		[]*ref.Tensor{randF32(rng, []int{1, 3, 4, 4}, 1), randF32(rng, []int{2, 1, 1, 1}, 1)}, []mmf.DType{mmf.F32}, nil); err == nil {
+		t.Fatal("3 channels in 2 groups were accepted")
+	}
+}

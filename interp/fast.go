@@ -36,6 +36,7 @@ var fastPaths = map[string]fastFunc{
 	"rope.v1":              fastRope,
 	"attention.v1":         fastAttention,
 	"embedding.v1":         fastEmbedding,
+	"conv2d.v1":            fastConv2d,
 }
 
 // parallel runs f(lo, hi) over [0, n) on the available CPUs. The range is

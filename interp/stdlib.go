@@ -21,6 +21,7 @@ var stdlib = map[string]compositeFunc{
 	"rms_norm.v1":  rmsNormV1,
 	"exp.v1":       unaryComposite(expBody),
 	"sigmoid.v1":   unaryComposite(sigmoidBody),
+	"conv2d.v1":    conv2dV1,
 	"silu.v1":      unaryComposite(siluBody),
 	"embedding.v1": embeddingV1,
 }
