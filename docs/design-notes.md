@@ -202,7 +202,9 @@ llama.cpp's 123, and its memory grew to 4.5 GB.
    products into 16 int32 sums. Kernels for 16 activation rows at a time,
    on the activation layout of the AMX kernels, with each block's integer
    sums and float operations those of the other kernels, so results stay
-   bit for bit the same.
+   bit for bit the same. Done: 117 tokens per second at 741 tokens, level
+   with llama.cpp on the same machine, and 87 at 38 tokens against
+   llama.cpp's 105 (docs/benchmarks.md, 'VNNI kernels').
 3. **A key-value cache in f16.** The cache variables in f16 instead of
    f32: half the memory (46 MiB instead of 92 at a context of 2048 for
    TinyLlama, and proportionally more at long contexts), and half the
