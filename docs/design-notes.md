@@ -172,8 +172,13 @@ memory more slowly than the machine allows.
    1.4 times slower than llama.cpp instead of 2.1 (docs/benchmarks.md,
    'AMX tiles').
 6. **ARM.** 8-bit Q4_K and Q6_K kernels for arm64 (NEON with the dot
-   product instructions), for Apple Silicon and ARM servers, which run the
-   plain Go loops today.
+   product instructions), for Apple Silicon and ARM servers, which ran
+   the plain Go loops. Done for activation blocks of 256, one row and four
+   rows: SDOT sums the products four at a time, and the kernels return
+   what the AVX2 ones return, bit for bit, which a plain Go version of the
+   numerics checks on both (internal/kernels/q8k_test.go). Linux reports
+   the instructions in the auxiliary vector; every Apple Silicon CPU has
+   them. Not yet measured on ARM hardware against llama.cpp.
 
 Each step is measured end to end with tools/bench_generate.py against
 llama.cpp on the same machine, and recorded in docs/benchmarks.md.

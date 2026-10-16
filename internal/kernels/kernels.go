@@ -20,7 +20,8 @@
 // exactly as mmf.Dequantize does, so the only difference between them is
 // the order in which the products are summed, and both stay within the
 // dequant_matmul.v1 tolerance (spec/stdlib.md section 3.3). Activations
-// are never quantized.
+// are never quantized, except by the 8-bit kernels of q8.go, which also
+// have NEON versions on arm64 and AMX ones on amd64.
 package kernels
 
 import (
