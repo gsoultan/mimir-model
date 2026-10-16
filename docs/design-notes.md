@@ -160,6 +160,20 @@ memory more slowly than the machine allows.
    (docs/benchmarks.md, 'Activation blocks of 256'). The prompt is still
    2.1 times slower than llama.cpp, whose build on that machine has AMX
    int8 tiles and repacked weights.
+5. **AMX tiles for the prompt.** On CPUs with AMX (Intel Xeon since
+   Sapphire Rapids), the Q4_K and Q6_K products of 16 or more prompt rows
+   run on int8 tile multiplies: each weight quant times its sub-block scale
+   is split into a low and a high byte, two tile products per 64 elements
+   give the block's integer sums for 16 weight rows by 32 activation rows,
+   and the float32 work stays once per block. The block-256 AVX2 kernels
+   now sum each block in integers the same way, so a row's result is bit
+   for bit the same whichever kernel ran it and however many tokens were
+   run together. Done: the prompt went from 66 to 113 tokens per second,
+   1.4 times slower than llama.cpp instead of 2.1 (docs/benchmarks.md,
+   'AMX tiles').
+6. **ARM.** 8-bit Q4_K and Q6_K kernels for arm64 (NEON with the dot
+   product instructions), for Apple Silicon and ARM servers, which run the
+   plain Go loops today.
 
 Each step is measured end to end with tools/bench_generate.py against
 llama.cpp on the same machine, and recorded in docs/benchmarks.md.

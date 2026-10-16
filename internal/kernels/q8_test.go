@@ -41,6 +41,20 @@ func TestQuantizeQ8(t *testing.T) {
 			t.Errorf("x[%d] = %g quantized to %d*%g", i, v, a.q[i], d)
 		}
 	}
+	for r := 0; r < 3; r++ {
+		var sum int16
+		for i := 0; i < 32; i++ {
+			sum += int16(a.q[32*r+i])
+		}
+		if a.xs[r] != sum {
+			t.Errorf("xs[%d] = %d, want %d", r, a.xs[r], sum)
+		}
+		for i := 0; i < 16; i++ {
+			if want := 32 * (int16(a.q[32*r+2*i]) + int16(a.q[32*r+2*i+1])); a.m32[16*r+i] != want {
+				t.Errorf("m32[%d] = %d, want %d", 16*r+i, a.m32[16*r+i], want)
+			}
+		}
+	}
 	// Ties go to even: with max|x| = 254, x = 1 is 0.5 steps and x = 3 is 1.5.
 	y := make([]float32, 32)
 	y[0], y[1], y[2] = 254, 1, 3
@@ -73,6 +87,35 @@ func TestQuantizeQ8(t *testing.T) {
 	}
 	if a.Quantize(make([]float32, 48)) {
 		t.Error("Quantize accepted a length that is not a multiple of 32")
+	}
+}
+
+// TestQuantQ8 checks the assembly rounding of QuantizeBlocks against the
+// float64 formula, on values near the half-integers where it matters.
+func TestQuantQ8(t *testing.T) {
+	if !useAVX2 {
+		t.Skip("no 8-bit kernels on this machine")
+	}
+	rng := rand.New(rand.NewSource(13))
+	x := make([]float32, 4096)
+	for trial := 0; trial < 20; trial++ {
+		amax := float32(rng.ExpFloat64() * 10)
+		for i := range x {
+			// Half-integer steps of amax/127, nudged by a few ulps.
+			h := float64(rng.Intn(255)-127) / 2
+			v := float32(h * float64(amax) / 127)
+			for range rng.Intn(3) {
+				v = math.Nextafter32(v, float32(rng.NormFloat64()))
+			}
+			x[i] = max(-amax, min(amax, v))
+		}
+		q := make([]int8, len(x))
+		quantQ8AVX2(&x[0], &q[0], len(x), amax)
+		for i, v := range x {
+			if want := int8(math.RoundToEven(127 * float64(v) / float64(amax))); q[i] != want {
+				t.Fatalf("x = %g, amax = %g: got %d, want %d", v, amax, q[i], want)
+			}
+		}
 	}
 }
 
