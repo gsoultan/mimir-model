@@ -38,3 +38,15 @@ func dotQ4KQ8x4AVX2(q *byte, xq *int8, xd, xdbs *float32, xstride, dstride, nb i
 func dotQ6KQ8x4AVX2(q *byte, xq *int8, xd *float32, m32 *int16, xstride, dstride, nb int, out *[4]float32) bool {
 	panic("no assembly")
 }
+func dotQ4KQ8KAVX2(q *byte, xq *int8, xd, xdbs *float32, nb int) (float32, bool) {
+	panic("no assembly")
+}
+func dotQ6KQ8KAVX2(q *byte, xq *int8, xd *float32, m32 *int16, nb int) (float32, bool) {
+	panic("no assembly")
+}
+func dotQ4KQ8Kx4AVX2(q *byte, xq *int8, xd, xdbs *float32, xstride, dstride, nb int, out *[4]float32) bool {
+	panic("no assembly")
+}
+func dotQ6KQ8Kx4AVX2(q *byte, xq *int8, xd *float32, m32 *int16, xstride, dstride, nb int, out *[4]float32) bool {
+	panic("no assembly")
+}

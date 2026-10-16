@@ -22,6 +22,7 @@ import (
 )
 
 func intsAttr(k string, v ...int64) mmf.Attr { return mmf.Attr{Key: k, Type: mmf.AttrInts, Ints: v} }
+func intAttr(k string, v int64) mmf.Attr     { return mmf.Attr{Key: k, Type: mmf.AttrInt, Int: v} }
 
 // naiveConv is the definition of a grouped 2-D convolution, in float64.
 func naiveConv(x, w, bias []float32, nb, c, h, wd, f, kh, kw, g, sh, sw, dh, dw, top, left, ho, wo int) []float64 {

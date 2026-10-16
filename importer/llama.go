@@ -177,9 +177,14 @@ func (b *llamaBuilder) op(opc mmf.Opcode, in []uint32, out uint32, attrs ...mmf.
 }
 
 func (b *llamaBuilder) call(name string, in []uint32, out uint32, attrs ...mmf.Attr) uint32 {
+	return b.callVersion(name, 1, in, out, attrs...)
+}
+
+// callVersion is call for version v of the composite.
+func (b *llamaBuilder) callVersion(name string, v int64, in []uint32, out uint32, attrs ...mmf.Attr) uint32 {
 	a := append([]mmf.Attr{
 		{Key: "name", Type: mmf.AttrString, String: name},
-		{Key: "version", Type: mmf.AttrInt, Int: 1},
+		{Key: "version", Type: mmf.AttrInt, Int: v},
 	}, attrs...)
 	return b.op(mmf.OpCall, in, out, a...)
 }
@@ -238,16 +243,22 @@ func ints(v ...int64) mmf.Attr            { return mmf.Attr{Type: mmf.AttrInts, 
 func named(k string, a mmf.Attr) mmf.Attr { a.Key = k; return a }
 
 // matmulOp emits x times w^T, with linear.v1 for f32 weights and
-// dequant_matmul.v1 or dequant_matmul_a8.v1 for every other dtype.
+// dequant_matmul.v1 or dequant_matmul_a8 for every other dtype. With 8-bit
+// activations, the K-quant weights get dequant_matmul_a8.v2 with blocks of
+// 256, the Q8_K activations llama.cpp pairs with them, and the other
+// dtypes dequant_matmul_a8.v1, the blocks of 32 of its Q8_0 activations.
 func (b *llamaBuilder) matmulOp(name string, x, w uint32, shape ...mmf.Dim) uint32 {
-	comp := "dequant_matmul"
-	switch {
-	case b.g.Values[w].DType == mmf.F32:
-		comp = "linear"
+	out := b.val(name, mmf.F32, shape...)
+	switch dt := b.g.Values[w].DType; {
+	case dt == mmf.F32:
+		return b.call("linear", []uint32{x, w}, out)
+	case b.a8 && (dt == mmf.Q4_K || dt == mmf.Q6_K):
+		return b.callVersion("dequant_matmul_a8", 2, []uint32{x, w}, out,
+			mmf.Attr{Key: "block", Type: mmf.AttrInt, Int: 256})
 	case b.a8:
-		comp = "dequant_matmul_a8"
+		return b.call("dequant_matmul_a8", []uint32{x, w}, out)
 	}
-	return b.call(comp, []uint32{x, w}, b.val(name, mmf.F32, shape...))
+	return b.call("dequant_matmul", []uint32{x, w}, out)
 }
 
 // f32Of casts a weight such as a norm scale to f32 when it is stored in
@@ -266,8 +277,9 @@ type LlamaOptions struct {
 	// Context is the key-value cache length; 0 means the model's own.
 	Context int
 	// A8 writes the matrix products with quantized weights as
-	// dequant_matmul_a8.v1, which lets a runtime round the activations to
-	// 8-bit blocks as llama.cpp does, instead of dequant_matmul.v1.
+	// dequant_matmul_a8 (v2 with blocks of 256 for K-quant weights, v1
+	// otherwise), which lets a runtime round the activations to 8-bit
+	// blocks as llama.cpp does, instead of dequant_matmul.v1.
 	A8 bool
 }
 

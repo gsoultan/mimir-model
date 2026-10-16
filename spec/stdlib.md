@@ -26,6 +26,7 @@ in this document; fast paths change speed, never meaning.
 | linear.v1 | x times transposed weight, plus bias | abs (K+1) u (sum abs(x w) + abs(bias)) |
 | dequant_matmul.v1 | linear with a quantized weight | as linear.v1 |
 | dequant_matmul_a8.v1 | dequant_matmul, activations may be rounded to 8 bits | section 3.4 |
+| dequant_matmul_a8.v2 | dequant_matmul_a8 with a choice of activation block | section 3.4 |
 | sigmoid.v1 | logistic function | rel (16 + 2 abs(x)) u |
 | tanh.v1 | hyperbolic tangent | abs 16 u |
 | erf.v1 | error function | abs 1.6e-7 + 16 u |
@@ -243,7 +244,7 @@ Tolerance: as linear.v1, with w replaced by its reference decode. A kernel
 that also quantizes the activations x (for example to 8-bit blocks) does not
 meet this tolerance; dequant_matmul_a8.v1 (section 3.4) allows it.
 
-### 3.4 dequant_matmul_a8.v1
+### 3.4 dequant_matmul_a8.v1 and v2
 
 Signature and canonical body: those of dequant_matmul.v1. A runtime
 without a kernel for this composite therefore computes the exact product.
@@ -272,6 +273,25 @@ and the offsets of q4_k and affine4_g64. Infinities and NaN in the
 reference MUST still be matched exactly (section 2.3), so a kernel computes
 rows of x, or blocks of w, whose values or scales are not finite without
 rounding the activations.
+
+dequant_matmul_a8.v2 has the signature and canonical body of v1, and one
+attribute:
+
+| attribute | type | default | meaning |
+|---|---|---|---|
+| block | int | 32 | length of the activation blocks: 32 or 256 |
+
+Its tolerance is v1's, with the blocks that define `s_ik` of `block`
+elements instead of 32. A runtime MUST reject a call with another value of
+`block`. With `block` = 32, v2 is v1.
+
+With `block` = 256 one scale covers 256 activations, as in the Q8_K
+activations of llama.cpp's K-quant matrix products: a kernel can then sum
+the integer products of a whole q4_k or q6_k block before it converts to
+float32. Where the activations of a block differ in size, `s_ik` and so the
+tolerance are larger than with blocks of 32. An importer SHOULD write
+`block` = 256 only for a model that was quantized for, and evaluated with,
+such kernels, for example a GGUF file with K-quant weights.
 
 ### 3.5 conv2d.v1
 
