@@ -26,7 +26,7 @@ class TestPyTorchFiles(unittest.TestCase):
     def test_matches_pytorch(self):
         with open(os.path.join(DIR, "expected.json"), encoding="utf-8") as fh:
             e = json.load(fh)
-        self.assertEqual({m["name"] for m in e["models"]}, {"tiny-cnn", "audio", "tiny-gpt", "tiny-llama"})
+        self.assertEqual({m["name"] for m in e["models"]}, {"tiny-cnn", "audio", "tiny-gpt", "tiny-llama", "tiny-llama-kv"})
         for m in e["models"]:
             with self.subTest(model=m["name"]), File.open(os.path.join(DIR, m["mmf"])) as f:
                 f.verify_hashes()
