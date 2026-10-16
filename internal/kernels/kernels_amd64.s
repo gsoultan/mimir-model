@@ -1046,11 +1046,11 @@ q80q8bad:
 // QuantizeBlocks(x, 256)). A weight block and an activation block then
 // cover the same 256 elements, so the integer dot products of the whole
 // block, already weighted by the integer sub-block scales, add up exactly
-// in int32 and are converted and scaled once per block, by d*dx. The
-// activation scale dx is repeated for each run of 32, as for blocks of 32,
-// and read at the first. The one-row and four-row kernels do the same
-// float operations in the same order, so their results are equal bit for
-// bit.
+// in int32 to one sum per block, which is converted and scaled once, by
+// d*dx. The activation scale dx is repeated for each run of 32, as for
+// blocks of 32, and read at the first. The one-row, four-row and AMX
+// kernels (amx_amd64.s) do the same float operations in the same order on
+// the same integer sums, so their results are equal bit for bit.
 
 // Q4KSCALES unpacks the 6-bit scales and offsets of the Q4_K block at SI
 // as in dotQ4KQ8x4AVX2: the offsets m 0..7 as bytes in AX, the scales in
@@ -1080,19 +1080,6 @@ q80q8bad:
 	SHLQ $32, R8; \
 	ORQ  BX, R8
 
-// Q4KPREP leaves dmin*m in Y8 and the scales as int16 pairs in X11 (0..3)
-// and X10 (4..7), from AX and R8 as Q4KSCALES sets them and dmin in Y12.
-// The callers store the pairs at 0(SP).
-#define Q4KPREP \
-	VMOVQ      AX, X8; \
-	VPMOVZXBD  X8, Y8; \
-	VCVTDQ2PS  Y8, Y8; \
-	VMULPS     Y12, Y8, Y8; \
-	VMOVQ      R8, X10; \
-	VPMOVZXBW  X10, X10; \
-	VPUNPCKLWD X10, X10, X11; \
-	VPUNPCKHWD X10, X10, X10
-
 // Q4KCHUNK splits the nibbles of chunk R8 into Y9 and Y10 and loads their
 // scale pairs from R10 into Y11 and Y12.
 #define Q4KCHUNK \
@@ -1113,24 +1100,62 @@ q80q8bad:
 	VPADDD     Y14, Y13, Y13; \
 	VPADDD     Y13, acc, acc
 
-// Q8KEND adds the block's integer sums acc, converted, times d*dx to tot,
-// with the weight scale d in the low lane of the X register d and the
-// activation scale at dx. It uses Y13.
-#define Q8KEND(d, dx, acc, tot) \
-	VMULSS       dx, d, X13; \
-	VBROADCASTSS X13, Y13; \
-	VCVTDQ2PS    acc, acc; \
-	VFMADD231PS  Y13, acc, tot
+// ISUM8 leaves the sum of the eight int32 lanes of y in every lane of x,
+// its low half. It uses t.
+#define ISUM8(y, x, t) \
+	VEXTRACTI128 $1, y, t; \
+	VPADDD       t, x, x; \
+	VPSHUFD      $0x4E, x, t; \
+	VPADDD       t, x, x; \
+	VPSHUFD      $0xB1, x, t; \
+	VPADDD       t, x, x
 
-// func dotQ4KQ8KAVX2(q *byte, xq *int8, xd, xdbs *float32, nb int) (float32, bool)
+// ISUMX4 leaves the sums of the eight int32 lanes of each of Y0..Y3 in the
+// four lanes of X0, in order. It uses Y1 and Y2.
+#define ISUMX4 \
+	VPHADDD      Y1, Y0, Y0; \
+	VPHADDD      Y3, Y2, Y2; \
+	VPHADDD      Y2, Y0, Y0; \
+	VEXTRACTI128 $1, Y0, X1; \
+	VPADDD       X1, X0, X0
+
+// DX4 loads the activation scales of the four rows, at R13 and DX bytes
+// apart (R9 = 3*DX), into the lanes of x.
+#define DX4(x) \
+	VMOVSS    (R13), x; \
+	VINSERTPS $0x10, (R13)(DX*1), x, x; \
+	VINSERTPS $0x20, (R13)(DX*2), x, x; \
+	VINSERTPS $0x30, (R13)(R9*1), x, x
+
+// Q4KPAIRS stores the scales in R8, as Q4KSCALES sets them, at lo and hi
+// (16 bytes after lo) as int16 pairs for VPMADDWD, sub-block 2c at 8c and
+// 2c+1 at 8c+4. It uses X10 and X11.
+#define Q4KPAIRS(lo, hi) \
+	VMOVQ      R8, X10; \
+	VPMOVZXBW  X10, X10; \
+	VPUNPCKLWD X10, X10, X11; \
+	VPUNPCKHWD X10, X10, X10; \
+	VMOVDQU    X11, lo; \
+	VMOVDQU    X10, hi
+
+// func dotQ4KQ8KAVX2(q *byte, xq *int8, xd *float32, xs *int16, nb int) (float32, bool)
+//
+// For each block, with sub-block scales sc_s and offsets m_s, activation
+// quants y and the sums xs_s of y over each sub-block, the integer sums
+//
+//	S = sum_s sc_s * sum q*y,  M = sum_s m_s * xs_s
+//
+// are exact in int32. The block adds float32(S) * (d*dx) to the total and
+// float32(M) * (dmin*dx) to the offsets, each with one fused multiply-add;
+// the result is the total minus the offsets.
 TEXT ·dotQ4KQ8KAVX2(SB), NOSPLIT, $32-45
 	MOVQ   q+0(FP), SI
 	MOVQ   xq+8(FP), DI
 	MOVQ   xd+16(FP), R13
-	MOVQ   xdbs+24(FP), R14
+	MOVQ   xs+24(FP), R14
 	MOVQ   nb+32(FP), CX
-	VXORPS Y4, Y4, Y4 // totals
-	VXORPS Y5, Y5, Y5 // offsets
+	VXORPS X4, X4, X4 // total
+	VXORPS X5, X5, X5 // offsets
 	BYTES0F(Y15)
 
 k1block:
@@ -1140,13 +1165,12 @@ k1block:
 	F16FINITE(0(SI), k1bad)
 	F16FINITE(2(SI), k1bad)
 	F16SCALAR(0(SI), X6) // d
-	F16SCALAR(2(SI), X12)
-	VBROADCASTSS X12, Y12 // dmin
+	F16SCALAR(2(SI), X7) // dmin
 	Q4KSCALES
-	Q4KPREP
-	VMOVDQU     X11, 0(SP)
-	VMOVDQU     X10, 16(SP)
-	VFMADD231PS (R14), Y8, Y5
+	VMOVQ     AX, X3
+	VPMOVZXBW X3, X3
+	VPMADDWD  (R14), X3, X3 // M in four parts
+	Q4KPAIRS(0(SP), 16(SP))
 
 	VPXOR Y0, Y0, Y0
 	LEAQ  16(SI), R8
@@ -1162,17 +1186,28 @@ k1chunk:
 	DECQ BX
 	JNZ  k1chunk
 
-	Q8KEND(X6, (R13), Y0, Y4)
-	ADDQ $144, SI
-	ADDQ $32, R13
-	ADDQ $32, R14
-	DECQ CX
-	JNZ  k1block
+	ISUM8(Y0, X0, X1)
+	VPSHUFD     $0x4E, X3, X1
+	VPADDD      X1, X3, X3
+	VPSHUFD     $0xB1, X3, X1
+	VPADDD      X1, X3, X3
+	VCVTDQ2PS   X0, X0
+	VCVTDQ2PS   X3, X3
+	VMOVSS      (R13), X1
+	VMULSS      X1, X6, X2
+	VFMADD231SS X2, X0, X4
+	VMULSS      X1, X7, X2
+	VFMADD231SS X2, X3, X5
+	ADDQ        $144, SI
+	ADDQ        $32, R13
+	ADDQ        $16, R14
+	DECQ        CX
+	JNZ         k1block
 
-	VSUBPS Y5, Y4, Y0
-	HSUM1
-	MOVSS  X0, ret+40(FP)
-	MOVB   $1, ret1+44(FP)
+	VSUBSS     X5, X4, X0
+	VZEROUPPER
+	MOVSS      X0, ret+40(FP)
+	MOVB       $1, ret1+44(FP)
 	RET
 
 k1bad:
@@ -1180,30 +1215,25 @@ k1bad:
 	MOVB $0, ret1+44(FP)
 	RET
 
-// func dotQ4KQ8Kx4AVX2(q *byte, xq *int8, xd, xdbs *float32, xstride, dstride, nb int, out *[4]float32) bool
+// func dotQ4KQ8Kx4AVX2(q *byte, xq *int8, xd *float32, xs *int16, xstride, dstride, nb int, out *[4]float32) bool
 //
-// dotQ4KQ8KAVX2 for four rows of activations, laid out as for
-// dotQ4KQ8x4AVX2. The integer sums are in Y0..Y3 and the totals in
-// Y4..Y7; the offsets live on the stack at 64(SP), 32 bytes per row, d at
-// 32(SP) and the scale pairs at 0(SP).
-TEXT ·dotQ4KQ8Kx4AVX2(SB), NOSPLIT, $192-65
-	MOVQ    q+0(FP), SI
-	MOVQ    xq+8(FP), DI
-	MOVQ    xd+16(FP), R13
-	MOVQ    xdbs+24(FP), R14
-	MOVQ    xstride+32(FP), R11
-	MOVQ    dstride+40(FP), DX
-	MOVQ    nb+48(FP), CX
-	LEAQ    (R11)(R11*2), R12
-	LEAQ    (DX)(DX*2), R9
-	VXORPS  Y4, Y4, Y4
-	VXORPS  Y5, Y5, Y5
-	VXORPS  Y6, Y6, Y6
-	VXORPS  Y7, Y7, Y7
-	VMOVUPS Y4, 64(SP)
-	VMOVUPS Y4, 96(SP)
-	VMOVUPS Y4, 128(SP)
-	VMOVUPS Y4, 160(SP)
+// dotQ4KQ8KAVX2 for four rows of activations, the quants xstride bytes
+// apart, the scales dstride bytes apart and the sums dstride/2. The
+// integer sums are in Y0..Y3; the totals and offsets of the four rows are
+// the lanes of X4 and X5, and get the float operations of the one-row
+// kernel lane by lane. d is at 32(SP), dmin at 36(SP).
+TEXT ·dotQ4KQ8Kx4AVX2(SB), NOSPLIT, $64-65
+	MOVQ   q+0(FP), SI
+	MOVQ   xq+8(FP), DI
+	MOVQ   xd+16(FP), R13
+	MOVQ   xs+24(FP), R14
+	MOVQ   xstride+32(FP), R11
+	MOVQ   dstride+40(FP), DX
+	MOVQ   nb+48(FP), CX
+	LEAQ   (R11)(R11*2), R12
+	LEAQ   (DX)(DX*2), R9
+	VXORPS X4, X4, X4
+	VXORPS X5, X5, X5
 	BYTES0F(Y15)
 
 k4block:
@@ -1212,18 +1242,24 @@ k4block:
 	PREFETCHT0 2432(SI)
 	F16FINITE(0(SI), k4bad)
 	F16FINITE(2(SI), k4bad)
-	F16SCALAR(0(SI), X13)
-	VMOVSS X13, 32(SP) // d
-	F16SCALAR(2(SI), X12)
-	VBROADCASTSS X12, Y12 // dmin
+	F16SCALAR(0(SI), X6)
+	VMOVSS    X6, 32(SP) // d
+	F16SCALAR(2(SI), X6)
+	VMOVSS    X6, 36(SP) // dmin
 	Q4KSCALES
-	Q4KPREP
-	VMOVDQU X11, 0(SP)
-	VMOVDQU X10, 16(SP)
-	Q4Q8OFF((R14), 64)
-	Q4Q8OFF((R14)(DX*1), 96)
-	Q4Q8OFF((R14)(DX*2), 128)
-	Q4Q8OFF((R14)(R9*1), 160)
+	VMOVQ     AX, X7
+	VPMOVZXBW X7, X7
+	MOVQ      DX, AX
+	SHRQ      $1, AX
+	VPMADDWD  (R14), X7, X0
+	VPMADDWD  (R14)(AX*1), X7, X1
+	VPMADDWD  (R14)(AX*2), X7, X2
+	LEAQ      (AX)(AX*2), AX
+	VPMADDWD  (R14)(AX*1), X7, X3
+	VPHADDD   X1, X0, X0
+	VPHADDD   X3, X2, X2
+	VPHADDD   X2, X0, X6 // M of the four rows
+	Q4KPAIRS(0(SP), 16(SP))
 
 	VPXOR Y0, Y0, Y0
 	VPXOR Y1, Y1, Y1
@@ -1245,39 +1281,27 @@ k4chunk:
 	DECQ BX
 	JNZ  k4chunk
 
-	VMOVSS 32(SP), X8
-	Q8KEND(X8, (R13), Y0, Y4)
-	Q8KEND(X8, (R13)(DX*1), Y1, Y5)
-	Q8KEND(X8, (R13)(DX*2), Y2, Y6)
-	Q8KEND(X8, (R13)(R9*1), Y3, Y7)
-	ADDQ $144, SI
-	ADDQ $32, R13
-	ADDQ $32, R14
-	DECQ CX
-	JNZ  k4block
+	ISUMX4
+	VCVTDQ2PS    X0, X0
+	VCVTDQ2PS    X6, X6
+	DX4(X1)
+	VBROADCASTSS 32(SP), X2
+	VMULPS       X1, X2, X2
+	VFMADD231PS  X2, X0, X4
+	VBROADCASTSS 36(SP), X2
+	VMULPS       X1, X2, X2
+	VFMADD231PS  X2, X6, X5
+	ADDQ         $144, SI
+	ADDQ         $32, R13
+	ADDQ         $16, R14
+	DECQ         CX
+	JNZ          k4block
 
-	// HSUM1 clears the upper lanes, so the rows go to the stack first.
-	VSUBPS  64(SP), Y4, Y4
-	VSUBPS  96(SP), Y5, Y5
-	VSUBPS  128(SP), Y6, Y6
-	VSUBPS  160(SP), Y7, Y7
-	VMOVUPS Y5, 96(SP)
-	VMOVUPS Y6, 128(SP)
-	VMOVUPS Y7, 160(SP)
-	MOVQ    out+56(FP), AX
-	VMOVAPS Y4, Y0
-	HSUM1
-	MOVSS   X0, 0(AX)
-	VMOVUPS 96(SP), Y0
-	HSUM1
-	MOVSS   X0, 4(AX)
-	VMOVUPS 128(SP), Y0
-	HSUM1
-	MOVSS   X0, 8(AX)
-	VMOVUPS 160(SP), Y0
-	HSUM1
-	MOVSS   X0, 12(AX)
-	MOVB    $1, ret+64(FP)
+	VSUBPS     X5, X4, X4
+	MOVQ       out+56(FP), AX
+	VMOVUPS    X4, (AX)
+	VZEROUPPER
+	MOVB       $1, ret+64(FP)
 	RET
 
 k4bad:
@@ -1348,7 +1372,7 @@ TEXT ·dotQ6KQ8KAVX2(SB), NOSPLIT, $0-45
 	MOVQ   xd+16(FP), R13
 	MOVQ   m32+24(FP), R14
 	MOVQ   nb+32(FP), CX
-	VXORPS Y4, Y4, Y4
+	VXORPS X4, X4, X4 // total
 	BYTES0F(Y15)
 	BYTES03(Y14)
 	VPSLLW $4, Y14, Y14 // 0x30
@@ -1385,16 +1409,18 @@ k61half:
 	DECQ BX
 	JNZ  k61half
 
-	Q8KEND(X12, (R13), Y0, Y4)
-	ADDQ $210, SI
-	ADDQ $32, R13
-	DECQ CX
-	JNZ  k61block
+	ISUM8(Y0, X0, X1)
+	VCVTDQ2PS   X0, X0
+	VMULSS      (R13), X12, X2
+	VFMADD231SS X2, X0, X4
+	ADDQ        $210, SI
+	ADDQ        $32, R13
+	DECQ        CX
+	JNZ         k61block
 
-	VMOVAPS Y4, Y0
-	HSUM1
-	MOVSS   X0, ret+40(FP)
-	MOVB    $1, ret1+44(FP)
+	VZEROUPPER
+	MOVSS X4, ret+40(FP)
+	MOVB  $1, ret1+44(FP)
 	RET
 
 k61bad:
@@ -1405,9 +1431,9 @@ k61bad:
 // func dotQ6KQ8Kx4AVX2(q *byte, xq *int8, xd *float32, m32 *int16, xstride, dstride, nb int, out *[4]float32) bool
 //
 // dotQ6KQ8KAVX2 for four rows of activations, laid out as for
-// dotQ6KQ8x4AVX2. The integer sums are in Y0..Y3 and the totals in Y4,
-// Y5, Y6 and Y11.
-TEXT ·dotQ6KQ8Kx4AVX2(SB), NOSPLIT, $128-65
+// dotQ6KQ8x4AVX2. The integer sums are in Y0..Y3 and the totals of the
+// four rows in the lanes of X4.
+TEXT ·dotQ6KQ8Kx4AVX2(SB), NOSPLIT, $0-65
 	MOVQ   q+0(FP), SI
 	MOVQ   xq+8(FP), DI
 	MOVQ   xd+16(FP), R13
@@ -1417,10 +1443,7 @@ TEXT ·dotQ6KQ8Kx4AVX2(SB), NOSPLIT, $128-65
 	MOVQ   nb+48(FP), CX
 	LEAQ   (R11)(R11*2), R12
 	LEAQ   (DX)(DX*2), R9
-	VXORPS Y4, Y4, Y4
-	VXORPS Y5, Y5, Y5
-	VXORPS Y6, Y6, Y6
-	VXORPS Y11, Y11, Y11
+	VXORPS X4, X4, X4 // totals of the four rows
 	BYTES0F(Y15)
 	BYTES03(Y14)
 	VPSLLW $4, Y14, Y14 // 0x30
@@ -1460,35 +1483,134 @@ k64half:
 	DECQ BX
 	JNZ  k64half
 
-	Q8KEND(X12, (R13), Y0, Y4)
-	Q8KEND(X12, (R13)(DX*1), Y1, Y5)
-	Q8KEND(X12, (R13)(DX*2), Y2, Y6)
-	Q8KEND(X12, (R13)(R9*1), Y3, Y11)
-	ADDQ $210, SI
-	ADDQ $32, R13
-	DECQ CX
-	JNZ  k64block
+	ISUMX4
+	VCVTDQ2PS    X0, X0
+	DX4(X1)
+	VBROADCASTSS X12, X2
+	VMULPS       X1, X2, X2
+	VFMADD231PS  X2, X0, X4
+	ADDQ         $210, SI
+	ADDQ         $32, R13
+	DECQ         CX
+	JNZ          k64block
 
-	VMOVUPS Y5, 32(SP)
-	VMOVUPS Y6, 64(SP)
-	VMOVUPS Y11, 96(SP)
-	MOVQ    out+56(FP), AX
-	VMOVAPS Y4, Y0
-	HSUM1
-	MOVSS   X0, 0(AX)
-	VMOVUPS 32(SP), Y0
-	HSUM1
-	MOVSS   X0, 4(AX)
-	VMOVUPS 64(SP), Y0
-	HSUM1
-	MOVSS   X0, 8(AX)
-	VMOVUPS 96(SP), Y0
-	HSUM1
-	MOVSS   X0, 12(AX)
-	MOVB    $1, ret+64(FP)
+	MOVQ       out+56(FP), AX
+	VMOVUPS    X4, (AX)
+	VZEROUPPER
+	MOVB       $1, ret+64(FP)
 	RET
 
 k64bad:
 	VZEROUPPER
 	MOVB $0, ret+64(FP)
+	RET
+
+// func quantQ8AVX2(x *float32, q *int8, n int, amax float32)
+//
+// Sets q[i] = round(127*x[i]/amax), ties to even, for n a multiple of 8,
+// as QuantizeBlocks does in float64: the product is exact, the quotient
+// correctly rounded, and the rounding to an integer exact.
+TEXT ·quantQ8AVX2(SB), NOSPLIT, $0-28
+	MOVQ         x+0(FP), SI
+	MOVQ         q+8(FP), DI
+	MOVQ         n+16(FP), CX
+	VMOVSS       amax+24(FP), X0
+	VCVTSS2SD    X0, X0, X0
+	VBROADCASTSD X0, Y15 // amax
+	MOVQ         $0x405FC00000000000, AX // 127.0
+	VMOVQ        AX, X0
+	VBROADCASTSD X0, Y14
+
+quantloop:
+	VCVTPS2PD    (SI), Y0
+	VCVTPS2PD    16(SI), Y1
+	VMULPD       Y14, Y0, Y0
+	VMULPD       Y14, Y1, Y1
+	VDIVPD       Y15, Y0, Y0
+	VDIVPD       Y15, Y1, Y1
+	VROUNDPD     $0, Y0, Y0
+	VROUNDPD     $0, Y1, Y1
+	VCVTPD2DQY   Y0, X0
+	VCVTPD2DQY   Y1, X1
+	VPACKSSDW    X1, X0, X0
+	VPACKSSWB    X0, X0, X0
+	VMOVQ        X0, (DI)
+	ADDQ         $32, SI
+	ADDQ         $8, DI
+	SUBQ         $8, CX
+	JNZ          quantloop
+	VZEROUPPER
+	RET
+
+// func amaxAVX2(x *float32, n int) (amax float32, ok bool)
+//
+// Returns the largest |x[i]| for n a multiple of 8, and false if one of
+// them is NaN or above maxQ8 (q8.go).
+TEXT ·amaxAVX2(SB), NOSPLIT, $0-21
+	MOVQ         x+0(FP), SI
+	MOVQ         n+8(FP), CX
+	MOVL         $0x7FFFFFFF, AX
+	VMOVD        AX, X0
+	VPBROADCASTD X0, Y15 // |.| mask
+	MOVL         $0x5D800000, AX // 0x1p60
+	VMOVD        AX, X0
+	VPBROADCASTD X0, Y14
+	VXORPS       Y0, Y0, Y0      // max
+	VPCMPEQD     Y1, Y1, Y1      // all lanes in range so far
+
+amaxloop:
+	VANDPS   (SI), Y15, Y2
+	VCMPPS   $2, Y14, Y2, Y3 // |x| <= maxQ8, false for NaN
+	VANDPS   Y3, Y1, Y1
+	VMAXPS   Y2, Y0, Y0
+	ADDQ     $32, SI
+	SUBQ     $8, CX
+	JNZ      amaxloop
+
+	VEXTRACTF128 $1, Y0, X2
+	VMAXPS       X2, X0, X0
+	VPERMILPS    $0x4E, X0, X2
+	VMAXPS       X2, X0, X0
+	VPERMILPS    $0xB1, X0, X2
+	VMAXPS       X2, X0, X0
+	VMOVSS       X0, amax+16(FP)
+	VMOVMSKPS    Y1, AX
+	CMPL         AX, $0xFF
+	SETEQ        ok+20(FP)
+	VZEROUPPER
+	RET
+
+// func sumsQ8AVX2(q *int8, m32 *int16, xs *int16, n int)
+//
+// For each run of 32 quants, n a multiple of 32, sets the 16 pair sums
+// times 32 in m32 and the sum in xs.
+TEXT ·sumsQ8AVX2(SB), NOSPLIT, $0-32
+	MOVQ         q+0(FP), SI
+	MOVQ         m32+8(FP), DI
+	MOVQ         xs+16(FP), DX
+	MOVQ         n+24(FP), CX
+	VPCMPEQW     Y15, Y15, Y15
+	VPABSW       Y15, Y15        // 1 in each word
+	VPACKUSWB    Y15, Y15, Y14   // 1 in each byte
+
+sumsloop:
+	VMOVDQU      (SI), Y0
+	VPMADDUBSW   Y0, Y14, Y1     // pair sums
+	VPSLLW       $5, Y1, Y2
+	VMOVDQU      Y2, (DI)
+	VPMADDWD     Y15, Y1, Y1
+	VEXTRACTI128 $1, Y1, X2
+	VPADDD       X2, X1, X1
+	VPSHUFD      $0x4E, X1, X2
+	VPADDD       X2, X1, X1
+	VPSHUFD      $0xB1, X1, X2
+	VPADDD       X2, X1, X1
+	VMOVD        X1, AX
+	MOVW         AX, (DX)
+	ADDQ         $32, SI
+	ADDQ         $32, DI
+	ADDQ         $2, DX
+	SUBQ         $32, CX
+	JNZ          sumsloop
+	VZEROUPPER
 	RET

@@ -15,7 +15,7 @@
 
 package kernels
 
-const useAVX2, hasF16C = false, false
+const useAVX2, hasF16C, useAMX = false, false, false
 
 // The assembly kernels are never called when useAVX2 is false.
 
@@ -38,15 +38,21 @@ func dotQ4KQ8x4AVX2(q *byte, xq *int8, xd, xdbs *float32, xstride, dstride, nb i
 func dotQ6KQ8x4AVX2(q *byte, xq *int8, xd *float32, m32 *int16, xstride, dstride, nb int, out *[4]float32) bool {
 	panic("no assembly")
 }
-func dotQ4KQ8KAVX2(q *byte, xq *int8, xd, xdbs *float32, nb int) (float32, bool) {
+func dotQ4KQ8KAVX2(q *byte, xq *int8, xd *float32, xs *int16, nb int) (float32, bool) {
 	panic("no assembly")
 }
 func dotQ6KQ8KAVX2(q *byte, xq *int8, xd *float32, m32 *int16, nb int) (float32, bool) {
 	panic("no assembly")
 }
-func dotQ4KQ8Kx4AVX2(q *byte, xq *int8, xd, xdbs *float32, xstride, dstride, nb int, out *[4]float32) bool {
+func dotQ4KQ8Kx4AVX2(q *byte, xq *int8, xd *float32, xs *int16, xstride, dstride, nb int, out *[4]float32) bool {
 	panic("no assembly")
 }
 func dotQ6KQ8Kx4AVX2(q *byte, xq *int8, xd *float32, m32 *int16, xstride, dstride, nb int, out *[4]float32) bool {
 	panic("no assembly")
 }
+
+func amxQ4K(a *tileArgs) bool                              { panic("no assembly") }
+func amxQ6K(a *tileArgs) bool                              { panic("no assembly") }
+func quantQ8AVX2(x *float32, q *int8, n int, amax float32) { panic("no assembly") }
+func amaxAVX2(x *float32, n int) (amax float32, ok bool)   { panic("no assembly") }
+func sumsQ8AVX2(q *int8, m32 *int16, xs *int16, n int)     { panic("no assembly") }
