@@ -1,3 +1,16 @@
+// Copyright (c) 2026 Gembit Soultan Shirazi
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// It is licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License in the LICENSE file at the root
+// of this repository or at http://www.apache.org/licenses/LICENSE-2.0.
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+
 // Command mmf-inspect prints the index, metadata and graph of an mmf file.
 //
 //	mmf-inspect [-verify] [-graph] [-meta] model.mmf
@@ -15,10 +28,16 @@ import (
 )
 
 func main() {
+	flag.Usage = usage
 	verify := flag.Bool("verify", false, "verify section hashes")
 	graph := flag.Bool("graph", false, "print the graph")
 	meta := flag.Bool("meta", false, "print metadata")
+	gembit := flag.Bool("gembit", false, "")
 	flag.Parse()
+	if *gembit {
+		fmt.Print(banner)
+		return
+	}
 	if flag.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: mmf-inspect [-verify] [-graph] [-meta] file.mmf")
 		os.Exit(2)
@@ -28,6 +47,25 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// usage prints the visible flags only, so -gembit stays a secret.
+func usage() {
+	fmt.Fprintln(flag.CommandLine.Output(), "usage: mmf-inspect [-verify] [-graph] [-meta] file.mmf")
+	flag.VisitAll(func(f *flag.Flag) {
+		if f.Name == "gembit" {
+			return
+		}
+		fmt.Fprintf(flag.CommandLine.Output(), "  -%s\n    \t%s\n", f.Name, f.Usage)
+	})
+}
+
+// banner is printed by the hidden -gembit flag.
+const banner = `
+  ╔══════════════════════════════╗
+  ║  mmf — crafted with care by  ║
+  ║    Gembit Soultan Shirazi    ║
+  ╚══════════════════════════════╝
+`
 
 func inspect(w io.Writer, path string, verify, graph, meta bool) error {
 	f, err := mmf.Open(path)
