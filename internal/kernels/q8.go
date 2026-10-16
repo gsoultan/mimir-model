@@ -103,7 +103,9 @@ func FusedQ8(dt mmf.DType) bool {
 }
 
 // FusedQ8Blocks reports whether rows of dt have an 8-bit activation kernel
-// for blocks of block elements, one-row and four-row.
+// for blocks of block elements, one-row and four-row. Blocks of 256 have
+// kernels for AVX2 on amd64 and for NEON with the dot product
+// instructions on arm64; blocks of 32 only for AVX2.
 func FusedQ8Blocks(dt mmf.DType, block int) bool {
 	switch block {
 	case 32:
