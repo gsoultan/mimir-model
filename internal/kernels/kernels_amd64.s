@@ -134,6 +134,12 @@ TEXT ·dotQ4KAVX2(SB), NOSPLIT, $0-36
 	VPSRLD   $28, Y15, Y15 // 0x0000000F
 
 q4block:
+	// Prefetch the weights two rows of K = 2048 ahead (16 blocks of 144
+	// bytes): the hardware prefetcher alone leaves each core well short of
+	// the memory bandwidth when every core streams its own rows.
+	PREFETCHT0 2304(SI)
+	PREFETCHT0 2368(SI)
+	PREFETCHT0 2432(SI)
 	LEAQ 16(SI), R8 // the nibbles of chunk 0
 	MOVQ DI, R9     // x of chunk 0
 	MOVQ DX, R10    // the scales of chunk 0
@@ -231,6 +237,11 @@ TEXT ·dotQ6KAVX2(SB), NOSPLIT, $0-36
 	VPSLLD   $5, Y13, Y13  // 32
 
 q6block:
+	// Prefetch two rows of K = 2048 ahead (16 blocks of 210 bytes).
+	PREFETCHT0 3360(SI)
+	PREFETCHT0 3424(SI)
+	PREFETCHT0 3488(SI)
+	PREFETCHT0 3552(SI)
 	MOVQ SI, R8      // ql of half 0
 	LEAQ 128(SI), R11 // qh of half 0
 	MOVQ DI, R9      // x of half 0
@@ -438,6 +449,12 @@ TEXT ·dotQ4KQ8AVX2(SB), NOSPLIT, $32-45
 	BYTES0F(Y15)
 
 q4q8block:
+	// Prefetch the weights two rows of K = 2048 ahead (16 blocks of 144
+	// bytes): the hardware prefetcher alone leaves each core well short of
+	// the memory bandwidth when every core streams its own rows.
+	PREFETCHT0 2304(SI)
+	PREFETCHT0 2368(SI)
+	PREFETCHT0 2432(SI)
 	F16FINITE(0(SI), q4q8bad)
 	F16FINITE(2(SI), q4q8bad)
 	F16SCALAR(0(SI), X13)
@@ -580,6 +597,11 @@ TEXT ·dotQ6KQ8AVX2(SB), NOSPLIT, $0-45
 	VPSLLW $4, Y14, Y14 // 0x30
 
 q6q8block:
+	// Prefetch two rows of K = 2048 ahead (16 blocks of 210 bytes).
+	PREFETCHT0 3360(SI)
+	PREFETCHT0 3424(SI)
+	PREFETCHT0 3488(SI)
+	PREFETCHT0 3552(SI)
 	F16FINITE(208(SI), q6q8bad)
 	F16SCALAR(208(SI), X13)
 	VBROADCASTSS X13, Y13 // d

@@ -117,3 +117,35 @@ on servers and at the edge.
 Write spec v0: the primitive set with exact semantics, the header schema, the
 dtype list, and a first conformance corpus generated from mimir's golden
 tests.
+
+## Speed plan after v0.1
+
+Every step of the adoption plan above has landed, and v0.1 is tagged. The
+gap that is left is speed on a CPU against llama.cpp on the same Q4_K_M
+model (docs/benchmarks.md): generation was 1.7 times slower and the prompt
+4 to 5 times slower. A profile of mmf-run showed where the time goes: the
+8-bit matrix product kernels took 65% of the CPU, the cores sat idle or
+woke up threads for another 20%, and the kernels read the weights from
+memory more slowly than the machine allows.
+
+1. **Keep the cores busy and the weights streaming.** A pool of workers
+   kept between the few hundred parallel calls of each token, instead of
+   new goroutines for each; software prefetch of the weight rows in the
+   block kernels; the activations quantized in parallel. Target: match
+   llama.cpp at generation, which is bound by memory.
+2. **Matrix by matrix for the prompt.** Kernels that multiply one weight
+   row by several activation rows at once, decoding each block of weights
+   and its scales once for all of them. Target: halve the prompt gap.
+3. **AVX-512 and VNNI.** On CPUs that have them (Intel Xeon since Cascade
+   Lake, AMD Zen 4), 512-bit kernels whose integer dot products take one
+   instruction. Detected at run time, like AVX2 today.
+
+Each step is measured end to end with tools/bench_generate.py against
+llama.cpp on the same machine, and recorded in docs/benchmarks.md.
+
+Not in this plan, and open for a decision: dequant_matmul_a8.v1 fixes the
+activation blocks at 32 elements (spec/stdlib.md section 3.4), where
+llama.cpp's K-quant kernels use blocks of 256 with one scale each. Blocks
+of 256 would let a kernel stay in integers across a whole Q4_K block and
+convert once instead of eight times, at the cost of a looser tolerance,
+so it would be a spec change.
