@@ -16,9 +16,6 @@ package interp
 import (
 	"encoding/binary"
 	"math"
-	"runtime"
-	"sync"
-	"sync/atomic"
 
 	"github.com/gsoultan/mmf"
 	"github.com/gsoultan/mmf/internal/kernels"
@@ -51,37 +48,6 @@ var fastPaths = map[string]fastFunc{
 	"embedding.v1":         fastEmbedding,
 	"conv2d.v1":            fastConv2d,
 }
-
-// parallel runs f(lo, hi) over [0, n) on the available CPUs. The range is
-// cut into many more pieces than there are CPUs and the workers take them
-// in turn, so a slow or busy CPU does not hold the others up.
-func parallel(n int, f func(lo, hi int)) {
-	w := min(runtime.GOMAXPROCS(0), n)
-	if w <= 1 {
-		f(0, n)
-		return
-	}
-	chunk := max(1, n/(w*parallelPieces))
-	var next atomic.Int64
-	var wg sync.WaitGroup
-	for range w {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				lo := int(next.Add(int64(chunk))) - chunk
-				if lo >= n {
-					return
-				}
-				f(lo, min(lo+chunk, n))
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-// parallelPieces is the number of pieces per CPU.
-const parallelPieces = 8
 
 // matrixRows decodes rows of a [N, K] matrix of any decodable dtype.
 type matrixRows struct {
@@ -211,9 +177,11 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
 	n, k := w.t.Shape[0], w.k
 	acts := make([]kernels.Q8, rows)
 	quantized := make([]bool, rows)
-	for i := range acts {
-		quantized[i] = acts[i].Quantize(x[i*k : (i+1)*k])
-	}
+	parallel(rows, func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			quantized[i] = acts[i].Quantize(x[i*k : (i+1)*k])
+		}
+	})
 	y := make([]float32, rows*n)
 	parallel(n, func(lo, hi int) {
 		rd := kernels.NewRowDot(w.t.DType, k)

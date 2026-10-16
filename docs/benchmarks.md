@@ -140,3 +140,28 @@ tokens per second. llama.cpp is still about 1.8 times faster at generation
 and 5 times faster on the prompt, where it multiplies matrices by matrices
 rather than row by row. mmf-run's load is fast because nothing is read
 until the first step.
+
+### After the worker pool and prefetch
+
+Measured on a different machine from the tables above: 4 cores of an
+Intel Xeon at 2.1 GHz (a cloud VM with AVX-512, which none of the kernels
+use yet), 15 GiB of memory, Linux, Go 1.24, llama-cpp-python 0.3.16 built
+on the machine. Same models, same script, median of 3 runs.
+
+| file | runtime | prompt | generation | peak RSS |
+| --- | --- | ---: | ---: | ---: |
+| `tinyllama-rand-q4km.gguf` | llama.cpp | 132.9 tok/s | 25.0 tok/s | 1297 MiB |
+| `q4km-graph.mmf` | mmf-run before | 21.8 tok/s | 11.1 tok/s | 843 MiB |
+| `q4km-graph.mmf` | mmf-run after | 27.5 tok/s | 16.5 tok/s | 911 MiB |
+| `q4km-a8.mmf` | mmf-run before | 31.3 tok/s | 15.1 tok/s | 932 MiB |
+| `q4km-a8.mmf` | mmf-run after | 32.8 tok/s | 26.7 tok/s | 862 MiB |
+
+Two changes made the difference (docs/design-notes.md, "Speed plan after
+v0.1", step 1). The executor keeps its worker goroutines between parallel
+calls, spinning for 0.2 ms before they sleep, instead of starting new ones
+for each of the few hundred calls of a token; that took the CPU use of a
+generation step from 2.6 to 3.4 of the 4 cores. And the Q4_K and Q6_K
+kernels prefetch the weights two rows ahead, which let each core read them
+at nearly twice the rate. Generation is now as fast as llama.cpp's on this
+machine. The prompt is still 4 times slower: llama.cpp multiplies the
+prompt's activations as a matrix, mmf-run still row by row.
