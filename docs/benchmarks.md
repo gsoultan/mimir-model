@@ -266,3 +266,28 @@ four causes:
 mmf-run also converts only the last position's logits to pick the next
 token, instead of all of them. The prompt is still 1.3 to 1.4 times slower
 than llama.cpp's here; the matrix products are now 80% of its time.
+
+### VNNI kernels
+
+Same machine as 'Long prompts', median of 5 runs. "before" is mmf-run at
+the previous step; both run the same `q4km-a8k.mmf`.
+
+| prompt | runtime | prompt | generation | peak RSS |
+| ---: | --- | ---: | ---: | ---: |
+| 38 tokens | llama.cpp | 105.2 tok/s | 23.7 tok/s | 1184 MiB |
+| 38 tokens | mmf-run before | 77.6 tok/s | 29.9 tok/s | 739 MiB |
+| 38 tokens | mmf-run with VNNI | 87.0 tok/s | 30.3 tok/s | 742 MiB |
+| 741 tokens | llama.cpp | 117.2 tok/s | 21.0 tok/s | 1248 MiB |
+| 741 tokens | mmf-run before | 82.9 tok/s | 25.1 tok/s | 984 MiB |
+| 741 tokens | mmf-run with VNNI | 117.1 tok/s | 24.7 tok/s | 1014 MiB |
+
+llama.cpp's prompt speed at 741 tokens ranged from 117 to 123 tokens per
+second between sets of runs, and mmf-run's with VNNI from 117 to 125. On
+CPUs with AVX-512 VNNI and without AMX, the Q4_K and Q6_K products of 12 or
+more prompt rows now go to kernels that take 16 activation rows at once:
+one VPDPBUSD multiplies four weight quants by four quants of each of the
+16 rows. On one core of this Xeon (`go test -bench 'TileDot|dot4x256'
+./internal/kernels`), with 64 activation rows, they take 13 picoseconds
+per multiply-add for Q4_K and 14 for Q6_K, against 25 and 31 for the
+four-row AVX2 kernels. The 38-token prompt has only two full groups of
+16 rows and is still bound by the serial steps between the products.

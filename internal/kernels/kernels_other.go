@@ -15,7 +15,7 @@
 
 package kernels
 
-const useAVX2, hasF16C, useAMX = false, false, false
+const useAVX2, hasF16C, useAMX, useVNNI = false, false, false, false
 
 // The assembly kernels are never called when useAVX2 is false.
 
@@ -45,3 +45,5 @@ func dotQ6KQ8x4AVX2(q *byte, xq *int8, xd *float32, m32 *int16, xstride, dstride
 
 func amxQ4K(a *tileArgs) bool { panic("no assembly") }
 func amxQ6K(a *tileArgs) bool { panic("no assembly") }
+func vnniQ4K(a *vnniArgs)     { panic("no assembly") }
+func vnniQ6K(a *vnniArgs)     { panic("no assembly") }
