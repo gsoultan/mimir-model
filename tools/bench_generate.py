@@ -64,7 +64,8 @@ def run(cmd):
         o, e = out.read().decode(errors="replace"), err.read().decode(errors="replace")
     if p.returncode != 0:
         sys.exit(f"{cmd[0]} failed: {e}")
-    return o, e, usage.ru_maxrss * 1024
+    # ru_maxrss is in KiB on Linux and in bytes on macOS.
+    return o, e, usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)
 
 
 def measure(path, args):
