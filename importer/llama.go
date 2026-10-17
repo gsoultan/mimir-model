@@ -64,8 +64,9 @@ type LlamaConfig struct {
 	RopeTheta  float64
 	NormEps    float64
 	Vocab      int
-	Context    int // C, the cache length
+	Context    int // C, the cache length of each sequence
 	MaxContext int // the model's trained context length
+	Slots      int // sequences the cache holds at once
 }
 
 func metaInt(md mmf.Metadata, key string) (int64, bool) {
@@ -302,6 +303,11 @@ type LlamaOptions struct {
 	// memory and has the graph call attention.v2, or F32 (also the zero
 	// value), with attention.v1.
 	Cache mmf.DType
+	// Slots is the number of sequences the key-value cache holds at once,
+	// so that a runtime can serve several requests in one run; 0 or 1
+	// means one. With more than one, the graph has a third input, slots,
+	// and its cache holds Slots times Context positions.
+	Slots int
 }
 
 // BuildLlama adds a forward-pass graph for a llama-architecture source,
@@ -340,8 +346,13 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 	}
 	c.Vocab = int(s.Tensors[emb].Shape[0])
 
-	E, F, H, Hkv, D, C, V := mmf.Dim(c.Embed), mmf.Dim(c.FFN), mmf.Dim(c.Heads), mmf.Dim(c.KVHeads), mmf.Dim(c.HeadDim), mmf.Dim(c.Context), mmf.Dim(c.Vocab)
-	b.g.SymDims = []mmf.SymDim{{Name: "T", Bound: int64(c.Context)}}
+	c.Slots = max(1, o.Slots)
+	if c.Slots > 1<<10 || c.Slots*c.Context > maxLlamaContext {
+		return nil, fmt.Errorf("%d slots of %d positions: the cache would exceed %d", c.Slots, c.Context, maxLlamaContext)
+	}
+	cacheLen := c.Slots * c.Context
+	E, F, H, Hkv, D, C, V := mmf.Dim(c.Embed), mmf.Dim(c.FFN), mmf.Dim(c.Heads), mmf.Dim(c.KVHeads), mmf.Dim(c.HeadDim), mmf.Dim(cacheLen), mmf.Dim(c.Vocab)
+	b.g.SymDims = []mmf.SymDim{{Name: "T", Bound: int64(cacheLen)}}
 	T := mmf.Dim(-1)
 	sym := int64(-1) // the -1 sentinel of reshape for a symbolic dimension
 
@@ -353,20 +364,38 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 	main.Inputs = []uint32{tokens, positions}
 
 	// Attention mask, shared by every layer: key j is visible from the
-	// query at position p when j <= p, that is when not p < j.
-	kposData := make([]byte, 8*c.Context)
-	for j := 0; j < c.Context; j++ {
+	// query at position p when j <= p, that is when not p < j. With
+	// several slots, the token at position p of the sequence in slot s
+	// goes to cache position s*C+p, and sees keys s*C to s*C+p: the mask
+	// also hides the keys j < s*C of the slots before.
+	kposData := make([]byte, 8*cacheLen)
+	for j := 0; j < cacheLen; j++ {
 		binary.LittleEndian.PutUint64(kposData[8*j:], uint64(j))
 	}
-	kpos, err := b.addTensor("mmf.kv_positions", mmf.I64, []uint64{1, 1, 1, uint64(c.Context)}, kposData, mmf.KindConst)
+	kpos, err := b.addTensor("mmf.kv_positions", mmf.I64, []uint64{1, 1, 1, uint64(cacheLen)}, kposData, mmf.KindConst)
 	if err != nil {
 		return nil, err
 	}
-	qpos := b.op(mmf.OpReshape, []uint32{positions}, b.val("query_positions", mmf.I64, 1, 1, T, 1), named("shape", ints(1, 1, sym, 1)))
-	after := b.op(mmf.OpCmplt, []uint32{qpos, kpos}, b.val("mask.future", mmf.Bool, 1, 1, T, C))
+	at := positions
+	var start uint32
+	if c.Slots > 1 {
+		slots := b.val("slots", mmf.I64, 1, T)
+		b.g.Values[slots].Kind = mmf.KindInput
+		main.Inputs = append(main.Inputs, slots)
+		size := b.op(mmf.OpConst, nil, b.val("slot_size", mmf.I64, 1, 1), mmf.Attr{Key: "value", Type: mmf.AttrInt, Int: int64(c.Context)})
+		start = b.op(mmf.OpMul, []uint32{slots, size}, b.val("slot_start", mmf.I64, 1, T))
+		at = b.op(mmf.OpAdd, []uint32{start, positions}, b.val("slot_positions", mmf.I64, 1, T))
+	}
+	qpos := b.op(mmf.OpReshape, []uint32{at}, b.val("query_positions", mmf.I64, 1, 1, T, 1), named("shape", ints(1, 1, sym, 1)))
+	hidden := b.op(mmf.OpCmplt, []uint32{qpos, kpos}, b.val("mask.future", mmf.Bool, 1, 1, T, C))
+	if c.Slots > 1 {
+		qstart := b.op(mmf.OpReshape, []uint32{start}, b.val("query_slot_start", mmf.I64, 1, 1, T, 1), named("shape", ints(1, 1, sym, 1)))
+		before := b.op(mmf.OpCmplt, []uint32{kpos, qstart}, b.val("mask.other_slots", mmf.Bool, 1, 1, T, C))
+		hidden = b.op(mmf.OpOr, []uint32{hidden, before}, b.val("mask.hidden", mmf.Bool, 1, 1, T, C))
+	}
 	truth := b.op(mmf.OpConst, nil, b.val("true", mmf.Bool, 1, 1, 1, 1), mmf.Attr{Key: "value", Type: mmf.AttrInt, Int: 1})
-	mask := b.op(mmf.OpXor, []uint32{after, truth}, b.val("mask", mmf.Bool, 1, 1, T, C))
-	cacheIdx := b.op(mmf.OpReshape, []uint32{positions}, b.val("cache_index", mmf.I64, T), named("shape", ints(sym)))
+	mask := b.op(mmf.OpXor, []uint32{hidden, truth}, b.val("mask", mmf.Bool, 1, 1, T, C))
+	cacheIdx := b.op(mmf.OpReshape, []uint32{at}, b.val("cache_index", mmf.I64, T), named("shape", ints(sym)))
 
 	table := b.stored(emb, mmf.KindWeight)
 	edt := s.Tensors[emb].DType
@@ -390,7 +419,7 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		{Key: "interleaved", Type: mmf.AttrInt, Int: interleaved},
 		{Key: "rotary_dims", Type: mmf.AttrInt, Int: int64(c.RopeDims)},
 	}
-	cacheShape := []mmf.Dim{1, mmf.Dim(c.KVHeads), mmf.Dim(c.Context), mmf.Dim(c.HeadDim)}
+	cacheShape := []mmf.Dim{1, mmf.Dim(c.KVHeads), C, mmf.Dim(c.HeadDim)}
 	for l := 0; l < c.Layers; l++ {
 		p := fmt.Sprintf("blk.%d.", l)
 		w := func(name string, shape ...int) (uint32, error) { return b.weight(p+name, shape...) }
@@ -511,5 +540,8 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 	}
 	s.Graph = b.g
 	s.Metadata["mmf.context_length"] = int64(c.Context)
+	if c.Slots > 1 {
+		s.Metadata["mmf.slots"] = int64(c.Slots)
+	}
 	return c, nil
 }
