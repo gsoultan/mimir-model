@@ -455,3 +455,73 @@ wh8k:
 whdone:
 	VZEROUPPER
 	RET
+
+// halff is one half, and signf masks the sign bit of a float32 in.
+DATA halff<>+0(SB)/4, $0x3f000000
+GLOBL halff<>(SB), RODATA, $4
+DATA signf<>+0(SB)/4, $0x80000000
+GLOBL signf<>(SB), RODATA, $4
+
+// func siluMulF32AVX2(a, b, out *float32, n int)
+//
+// Sets out[i] to silu(a[i]) * b[i] for n a positive multiple of 8, with
+// silu(x) = x / (1+e) for x >= 0 and (x*h)*h / (1+e) below, where
+// h = exp(-|x|/2) is computed as in expSumF32AVX2 and e = h*h. Halving the
+// exponent keeps h normal for any x whose silu is a normal float, so the
+// result is as accurate down to the smallest normals; h is at most 1, so
+// nothing overflows.
+TEXT ·siluMulF32AVX2(SB), NOSPLIT, $0-32
+	MOVQ         a+0(FP), SI
+	MOVQ         b+8(FP), DI
+	MOVQ         out+16(FP), DX
+	MOVQ         n+24(FP), CX
+	VMOVUPS      expc<>+320(SB), Y13
+	VMOVUPS      expc<>+0(SB), Y12
+	VMOVUPS      expc<>+32(SB), Y11
+	VMOVUPS      expc<>+64(SB), Y10
+	VMOVUPS      expc<>+288(SB), Y9
+	VMOVUPS      expc<>+352(SB), Y8
+	VBROADCASTSS signf<>(SB), Y7
+	VXORPS       Y6, Y6, Y6
+	VBROADCASTSS halff<>(SB), Y15
+
+siluloop:
+	VMOVUPS      (SI), Y4         // x
+	VORPS        Y7, Y4, Y0
+	VMULPS       Y15, Y0, Y0      // t = -|x|/2
+	VCMPPS       $0x1D, Y13, Y0, Y5 // t >= lo
+	VMAXPS       Y13, Y0, Y0
+	VMULPS       Y12, Y0, Y1
+	VROUNDPS     $0, Y1, Y1       // f
+	VFNMADD231PS Y11, Y1, Y0
+	VFNMADD231PS Y10, Y1, Y0      // r
+	VMULPS       Y0, Y0, Y3       // r*r
+	VMOVUPS      expc<>+96(SB), Y2
+	VFMADD213PS  expc<>+128(SB), Y0, Y2
+	VFMADD213PS  expc<>+160(SB), Y0, Y2
+	VFMADD213PS  expc<>+192(SB), Y0, Y2
+	VFMADD213PS  expc<>+224(SB), Y0, Y2
+	VFMADD213PS  expc<>+256(SB), Y0, Y2
+	VFMADD213PS  Y0, Y3, Y2
+	VADDPS       Y9, Y2, Y2       // exp(r)
+	VCVTPS2DQ    Y1, Y1
+	VPADDD       Y8, Y1, Y1
+	VPSLLD       $23, Y1, Y1      // 2^f
+	VMULPS       Y1, Y2, Y2
+	VANDPS       Y5, Y2, Y2       // h
+	VMULPS       Y2, Y2, Y3
+	VADDPS       Y9, Y3, Y3       // 1+e
+	VMULPS       Y4, Y2, Y1
+	VMULPS       Y2, Y1, Y1       // (x*h)*h
+	VCMPPS       $0x1D, Y6, Y4, Y5 // x >= 0
+	VBLENDVPS    Y5, Y4, Y1, Y1   // x or (x*h)*h
+	VDIVPS       Y3, Y1, Y1
+	VMULPS       (DI), Y1, Y1
+	VMOVUPS      Y1, (DX)
+	ADDQ         $32, SI
+	ADDQ         $32, DI
+	ADDQ         $32, DX
+	SUBQ         $8, CX
+	JNZ          siluloop
+	VZEROUPPER
+	RET

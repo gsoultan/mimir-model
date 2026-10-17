@@ -166,18 +166,19 @@ type Q8Batch struct {
 
 // Reset prepares b for n rows of k activations. The rows are then set with
 // b.Row(i).Quantize or QuantizeBlocks, which may run concurrently for
-// different rows.
+// different rows. It keeps b's buffers when they are large enough.
 func (b *Q8Batch) Reset(k, n int) {
 	b.k = k
-	b.rows = make([]Q8, n)
+	b.rows = grow(b.rows, n)
+	clear(b.rows)
 	if k%32 != 0 {
 		return // Quantize refuses such rows
 	}
-	b.q = make([]int8, n*k)
-	b.m32 = make([]int16, n*k/2)
-	b.d = make([]float32, n*k/32)
-	b.dbs = make([]float32, n*k/32)
-	b.xs = make([]int16, n*k/32)
+	b.q = grow(b.q, n*k)
+	b.m32 = grow(b.m32, n*k/2)
+	b.d = grow(b.d, n*k/32)
+	b.dbs = grow(b.dbs, n*k/32)
+	b.xs = grow(b.xs, n*k/32)
 	for i := range b.rows {
 		r := &b.rows[i]
 		r.q = b.q[i*k : (i+1)*k : (i+1)*k]

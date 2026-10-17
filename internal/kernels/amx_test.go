@@ -146,3 +146,63 @@ func itoa(n int) string {
 	}
 	return itoa(n/10) + string(rune('0'+n%10))
 }
+
+func BenchmarkTileActs(b *testing.B) {
+	rng := rand.New(rand.NewSource(13))
+	const k, rows = 2048, 38
+	var batch Q8Batch
+	batch.Reset(k, rows)
+	use := make([]bool, rows)
+	for i := range rows {
+		batch.Row(i).QuantizeBlocks(randomVec(rng, k), 256)
+		use[i] = true
+	}
+	var a TileActs
+	b.SetBytes(k * rows)
+	for i := 0; i < b.N; i++ {
+		a.Set(&batch, use)
+	}
+}
+
+// streamK is the row length of BenchmarkTileDotStream.
+var streamK = 4096
+
+// BenchmarkTileDotStream runs the tile kernels over a weight matrix larger
+// than the caches, 16 rows at a time, as a prompt's matrix product does.
+func BenchmarkTileDotStream(b *testing.B) {
+	if !TileQ8(mmf.Q4_K) {
+		b.Skip("no AMX or VNNI kernels on this machine")
+	}
+	rng := rand.New(rand.NewSource(14))
+	k, n := streamK, 8192*4096/streamK
+	for _, dt := range []mmf.DType{mmf.Q4_K, mmf.Q6_K} {
+		w := randomRows(rng, dt, TileRows, k)
+		rb := len(w) / TileRows
+		big := make([]byte, n*rb)
+		for o := 0; o < len(big); o += len(w) {
+			copy(big[o:], w)
+		}
+		for _, rows := range []int{19, 64} {
+			var batch Q8Batch
+			batch.Reset(k, rows)
+			use := make([]bool, rows)
+			for i := range rows {
+				batch.Row(i).QuantizeBlocks(randomVec(rng, k), 256)
+				use[i] = true
+			}
+			var a TileActs
+			a.Set(&batch, use)
+			d := NewTileDot(dt, k)
+			out := make([]float32, TileRows*rows)
+			b.Run(dt.String()+"/"+itoa(rows), func(b *testing.B) {
+				b.SetBytes(int64(len(big)))
+				for i := 0; i < b.N; i++ {
+					for j := 0; j < n; j += TileRows {
+						d.Dot(big[j*rb:(j+TileRows)*rb], &a, out, TileRows, nil)
+					}
+				}
+				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(n*rows*k)*1e3, "ps/mac")
+			})
+		}
+	}
+}
