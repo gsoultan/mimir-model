@@ -26,6 +26,8 @@ import (
 
 	"github.com/gsoultan/mmf"
 	"github.com/gsoultan/mmf/importer"
+	"github.com/gsoultan/mmf/interp"
+	"github.com/gsoultan/mmf/ref"
 )
 
 // The fixtures in testdata/llama and testdata/qwen2 are two-layer models
@@ -327,5 +329,69 @@ func TestRun(t *testing.T) {
 	}
 	if err := run(&out, &log, path, config{prompt: e.Prompt, tokens: 3, temp: 0.8, seed: 3}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSlots imports the fixtures with a cache of three sequences, as
+// `mmf-import -graph -slots 3` does, and runs the prompt in slots 2 and 0
+// as one block, then the greedy continuation of both, one token each per
+// block: every logit must match the oracle, so no sequence sees another's
+// keys.
+func TestSlots(t *testing.T) { eachFixture(t, testSlots) }
+
+func testSlots(t *testing.T, e *expected) {
+	f, err := mmf.Open(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, Slots: 3}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	prog, err := interp.Load(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog.FastPaths = true
+	s := prog.NewSession()
+	run := func(ids []int32, positions, slots []int64) []float32 {
+		t.Helper()
+		n := len(ids)
+		tokens, _ := ref.New(mmf.I32, []int{1, n})
+		pos, _ := ref.New(mmf.I64, []int{1, n})
+		sl, _ := ref.New(mmf.I64, []int{1, n})
+		for i := range ids {
+			tokens.SetBits(i, uint64(uint32(ids[i])))
+			pos.SetBits(i, uint64(positions[i]))
+			sl.SetBits(i, uint64(slots[i]))
+		}
+		out, err := s.Run(map[string]*ref.Tensor{"tokens": tokens, "positions": pos, "slots": sl})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range out {
+			return f32s(v, 0, v.NumElems())
+		}
+		t.Fatal("no output")
+		return nil
+	}
+
+	p := len(e.PromptIDs)
+	var ids []int32
+	var positions, slots []int64
+	for _, slot := range []int64{2, 0} {
+		for i, id := range e.PromptIDs {
+			ids = append(ids, id)
+			positions = append(positions, int64(i))
+			slots = append(slots, slot)
+		}
+	}
+	all := run(ids, positions, slots)
+	want := f32b64(t, e.PromptLogits)
+	near(t, "prompt in slot 2", all[:p*e.Vocab], want, 2e-5)
+	near(t, "prompt in slot 0", all[p*e.Vocab:], want, 2e-5)
+
+	for i, next := range e.Greedy[:len(e.Greedy)-1] {
+		all = run([]int32{next, next}, []int64{int64(p + i), int64(p + i)}, []int64{0, 2})
+		want := f32b64(t, e.GreedyLogits[i+1])
+		near(t, "step in slot 0", all[:e.Vocab], want, 2e-5)
+		near(t, "step in slot 2", all[e.Vocab:], want, 2e-5)
 	}
 }

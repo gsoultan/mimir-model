@@ -31,8 +31,8 @@
 // key-value cache is f16, as llama.cpp's is by default, and the graph's
 // attention is attention.v2, which reads it as it is; -kv f32 keeps the
 // cache in float32, with attention.v1, for twice the memory. -slots N
-// makes the cache hold N sequences of -ctx positions each, which
-// mmf-serve runs together.
+// makes the cache hold N sequences of -ctx positions each, so that a
+// server can run several requests in one step.
 // An ONNX model (a file ending in .onnx) of the convolutional subset that
 // package importer documents is converted with its graph, so the output
 // runs as it is.
@@ -61,7 +61,7 @@ func main() {
 	ctx := flag.Int("ctx", 0, "with -graph, the key-value cache length (default: the model's context length)")
 	a8 := flag.Bool("a8", true, "with -graph, let runtimes round activations to 8 bits in quantized matrix products (dequant_matmul_a8), as llama.cpp does")
 	kv := flag.String("kv", "f16", "with -graph, the key-value cache dtype: f16 or f32")
-	slots := flag.Int("slots", 1, "with -graph, the number of sequences the cache holds at once, for mmf-serve")
+	slots := flag.Int("slots", 1, "with -graph, the number of sequences the cache holds at once, for a server running several requests")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: mmf-import [-o out.mmf] [-bench] [-nohash] input...")
