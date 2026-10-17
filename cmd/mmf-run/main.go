@@ -88,7 +88,7 @@ type config struct {
 type model struct {
 	f       *mmf.File
 	prog    *interp.Program
-	tok     *tokenizer.SPM
+	tok     tokenizer.Tokenizer
 	context int
 }
 
@@ -110,7 +110,7 @@ func newModel(f *mmf.File, useRef bool) (*model, error) {
 	if err != nil {
 		return nil, err
 	}
-	tok, err := tokenizer.FromMetadata(md)
+	tok, err := tokenizer.New(md)
 	if err != nil {
 		return nil, err
 	}

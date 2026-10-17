@@ -313,3 +313,74 @@ differences are run to run noise on this shared machine: alternating eight
 profile puts the extra time in the matrix products, which the cache does
 not touch. Attention reads half the bytes per token, but at these lengths
 it is under 3% of a step; the gain grows with the context.
+
+## 7 to 8B models
+
+Llama 3 8B, Mistral 7B v0.1 and Qwen2.5 7B, made by
+`tools/gen_big_models.py` with the shapes, hyperparameters and
+tokenizers of the released models and random weights, quantized to
+Q4_K_M by llama.cpp. As for TinyLlama, the machine cannot download the
+real weights; the tokenizers come from the Python packages that ship
+them (llama-models, mistral-common and dashscope). Llama 3 and Qwen use
+byte-level BPE tokenizers, which `tokenizer` now reads (`tokenizer.BPE`),
+and Qwen the qwen2 architecture, with biases on the query, key and value
+projections and rope over the two halves of each head, which
+`mmf-import -graph` now builds.
+
+```
+pip download --no-deps -d /tmp/wheels llama-models mistral-common dashscope
+python3 -P tools/gen_big_models.py /tmp/wheels /tmp/big
+go run ./cmd/mmf-import -graph -ctx 2048 -o /tmp/big/llama3.mmf /tmp/big/llama3-rand-q4km.gguf
+python3 -I tools/bench_generate.py --tokens 32 --mmf-run /tmp/mmf-run /tmp/big/llama3-rand-q4km.gguf /tmp/big/llama3.mmf
+```
+
+Each model was checked against llama.cpp before it was timed: for
+prompts of 10 to 20 tokens, the logits of every position correlate with
+llama.cpp's at 0.9993 or more, the largest difference is 0.18 for logits
+with a standard deviation of 1.0, and the most likely token is the same
+at all but one of 48 positions. With random weights the top logits are
+often close, so greedy continuations part after a few tokens. The byte-level
+BPE tokenizer gives llama.cpp's token ids for all of 424 test strings
+with each of the two vocabularies (code, digits, whitespace runs,
+contractions, CJK, emoji, invalid UTF-8 aside).
+
+Machine: 4 cores of an Intel Xeon at 2.1 GHz with AMX (a cloud VM), 15
+GiB of memory, Linux, Go 1.24, llama-cpp-python 0.3.16 built on the
+machine. Median of 3 runs, 32 generated tokens; the short prompt is the
+script's sentence (18 or 19 tokens with these vocabularies), the long one
+the sentence 10 times (`--repeat 10`, 180 or 181 tokens).
+
+| model | prompt | runtime | load | prompt | generation | peak RSS |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| Mistral 7B | 19 | llama.cpp | 1431 ms | 27.2 tok/s | 4.7 tok/s | 8527 MiB |
+| Mistral 7B | 19 | mmf-run | 10 ms | 22.0 tok/s | 7.0 tok/s | 4382 MiB |
+| Mistral 7B | 181 | llama.cpp | 2018 ms | 36.2 tok/s | 4.9 tok/s | 8568 MiB |
+| Mistral 7B | 181 | mmf-run | 9 ms | 43.8 tok/s | 6.5 tok/s | 4501 MiB |
+| Llama 3 8B | 19 | llama.cpp | 2893 ms | 26.3 tok/s | 4.4 tok/s | 7944 MiB |
+| Llama 3 8B | 19 | mmf-run | 78 ms | 15.7 tok/s | 6.1 tok/s | 4721 MiB |
+| Llama 3 8B | 181 | llama.cpp | 2561 ms | 41.8 tok/s | 4.4 tok/s | 9265 MiB |
+| Llama 3 8B | 181 | mmf-run | 70 ms | 39.1 tok/s | 6.7 tok/s | 4903 MiB |
+| Qwen2.5 7B | 18 | llama.cpp | 2025 ms | 30.1 tok/s | 4.5 tok/s | 8805 MiB |
+| Qwen2.5 7B | 18 | mmf-run | 69 ms | 21.2 tok/s | 6.8 tok/s | 4356 MiB |
+| Qwen2.5 7B | 180 | llama.cpp | 1276 ms | 38.1 tok/s | 4.8 tok/s | 8805 MiB |
+| Qwen2.5 7B | 180 | mmf-run | 78 ms | 45.7 tok/s | 6.4 tok/s | 4569 MiB |
+
+The runs of the long prompts generated 16 tokens.
+
+- **Generation is 1.3 to 1.5 times faster than llama.cpp's** on all three.
+  At this size a step reads 4.4 to 4.9 GB of weights, and both runtimes
+  are bound by memory; mmf-run reads each weight row once per step from
+  the mapped file.
+- **mmf-run uses half the memory.** llama.cpp's peak is about twice the
+  file: it repacks the weights at load into a second copy laid out for its
+  AMX and AVX-512 kernels (llama-cpp-python reports `REPACK`). mmf-run
+  uses the weights where they lie in the mapped file, and starts in
+  milliseconds where llama.cpp takes one to three seconds.
+- **Short prompts are 1.2 to 1.7 times slower**, long ones as fast or
+  faster. A profile puts 70% of a 19-token prompt in the AMX kernels,
+  which decode each block of 16 weight rows to bytes for only two groups
+  of activation rows; llama.cpp lays its weights out once, at load, at the
+  cost of the second copy. Llama 3 and Qwen also compute logits for every
+  prompt position over vocabularies of 128,256 and 152,064 tokens, where
+  llama.cpp computes only the last one's: 7% of the prompt's
+  multiply-adds.

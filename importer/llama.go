@@ -27,7 +27,10 @@ import (
 // wants a runnable file writes the architecture's forward pass itself, from
 // the hyperparameters in the metadata. BuildLlama does this for GGUF files
 // whose general.architecture is "llama" (Llama 1 to 3, TinyLlama, Mistral
-// without sliding windows, and others using llama.cpp's llama layout).
+// without sliding windows, and others using llama.cpp's llama layout) or
+// "qwen2" (Qwen 2 and 2.5), which adds biases to the query, key and value
+// projections and rotates the two halves of each head instead of adjacent
+// pairs.
 //
 // The graph takes one block of tokens per run:
 //
@@ -50,6 +53,7 @@ const maxLlamaContext = 1 << 20
 
 // LlamaConfig holds the hyperparameters BuildLlama reads from the metadata.
 type LlamaConfig struct {
+	Arch       string // general.architecture: "llama" or "qwen2"
 	Layers     int
 	Embed      int // E
 	FFN        int
@@ -89,21 +93,22 @@ func metaFloat(md mmf.Metadata, key string) (float64, bool) {
 	return 0, false
 }
 
-// LlamaConfigOf reads the hyperparameters of a llama-architecture source.
-// context is the cache length to build for; 0 means the model's own.
+// LlamaConfigOf reads the hyperparameters of a llama- or qwen2-architecture
+// source. context is the cache length to build for; 0 means the model's own.
 func LlamaConfigOf(s *Source, context int) (*LlamaConfig, error) {
 	md := s.Metadata
-	if arch, _ := md["general.architecture"].(string); arch != "llama" {
-		return nil, fmt.Errorf("architecture %q: only \"llama\" graphs can be built", arch)
+	arch, _ := md["general.architecture"].(string)
+	if arch != "llama" && arch != "qwen2" {
+		return nil, fmt.Errorf("architecture %q: only \"llama\" and \"qwen2\" graphs can be built", arch)
 	}
 	req := func(key string) (int, error) {
-		v, ok := metaInt(md, "llama."+key)
+		v, ok := metaInt(md, arch+"."+key)
 		if !ok || v <= 0 || v > 1<<24 {
-			return 0, fmt.Errorf("metadata llama.%s is missing or invalid", key)
+			return 0, fmt.Errorf("metadata %s.%s is missing or invalid", arch, key)
 		}
 		return int(v), nil
 	}
-	c := &LlamaConfig{}
+	c := &LlamaConfig{Arch: arch}
 	var err error
 	for _, f := range []struct {
 		key string
@@ -117,7 +122,7 @@ func LlamaConfigOf(s *Source, context int) (*LlamaConfig, error) {
 		}
 	}
 	c.KVHeads = c.Heads
-	if _, ok := md["llama.attention.head_count_kv"]; ok {
+	if _, ok := md[arch+".attention.head_count_kv"]; ok {
 		if c.KVHeads, err = req("attention.head_count_kv"); err != nil {
 			return nil, err
 		}
@@ -127,7 +132,7 @@ func LlamaConfigOf(s *Source, context int) (*LlamaConfig, error) {
 	}
 	c.HeadDim = c.Embed / c.Heads
 	c.RopeDims = c.HeadDim
-	if _, ok := md["llama.rope.dimension_count"]; ok {
+	if _, ok := md[arch+".rope.dimension_count"]; ok {
 		if c.RopeDims, err = req("rope.dimension_count"); err != nil {
 			return nil, err
 		}
@@ -136,15 +141,15 @@ func LlamaConfigOf(s *Source, context int) (*LlamaConfig, error) {
 		}
 	}
 	c.RopeTheta = 10000
-	if v, ok := metaFloat(md, "llama.rope.freq_base"); ok {
+	if v, ok := metaFloat(md, arch+".rope.freq_base"); ok {
 		c.RopeTheta = v
 	}
-	if t, ok := md["llama.rope.scaling.type"].(string); ok && t != "none" {
+	if t, ok := md[arch+".rope.scaling.type"].(string); ok && t != "none" {
 		return nil, fmt.Errorf("rope scaling %q is not supported yet", t)
 	}
 	var ok bool
-	if c.NormEps, ok = metaFloat(md, "llama.attention.layer_norm_rms_epsilon"); !ok || c.NormEps <= 0 {
-		return nil, fmt.Errorf("metadata llama.attention.layer_norm_rms_epsilon is missing or invalid")
+	if c.NormEps, ok = metaFloat(md, arch+".attention.layer_norm_rms_epsilon"); !ok || c.NormEps <= 0 {
+		return nil, fmt.Errorf("metadata %s.attention.layer_norm_rms_epsilon is missing or invalid", arch)
 	}
 	c.Context = c.MaxContext
 	if context > 0 {
@@ -250,17 +255,27 @@ func named(k string, a mmf.Attr) mmf.Attr { a.Key = k; return a }
 // 256, the Q8_K activations llama.cpp pairs with them, and the other
 // dtypes dequant_matmul_a8.v1, the blocks of 32 of its Q8_0 activations.
 func (b *llamaBuilder) matmulOp(name string, x, w uint32, shape ...mmf.Dim) uint32 {
+	return b.matmulBias(name, x, w, nil, shape...)
+}
+
+// matmulBias is matmulOp plus a bias, the optional third input of the
+// composites, when bias is not nil.
+func (b *llamaBuilder) matmulBias(name string, x, w uint32, bias *uint32, shape ...mmf.Dim) uint32 {
 	out := b.val(name, mmf.F32, shape...)
+	in := []uint32{x, w}
+	if bias != nil {
+		in = append(in, *bias)
+	}
 	switch dt := b.g.Values[w].DType; {
 	case dt == mmf.F32:
-		return b.call("linear", []uint32{x, w}, out)
+		return b.call("linear", in, out)
 	case b.a8 && (dt == mmf.Q4_K || dt == mmf.Q6_K):
-		return b.callVersion("dequant_matmul_a8", 2, []uint32{x, w}, out,
+		return b.callVersion("dequant_matmul_a8", 2, in, out,
 			mmf.Attr{Key: "block", Type: mmf.AttrInt, Int: 256})
 	case b.a8:
-		return b.call("dequant_matmul_a8", []uint32{x, w}, out)
+		return b.call("dequant_matmul_a8", in, out)
 	}
-	return b.call("dequant_matmul", []uint32{x, w}, out)
+	return b.call("dequant_matmul", in, out)
 }
 
 // f32Of casts a weight such as a norm scale to f32 when it is stored in
@@ -364,9 +379,15 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 	}
 
 	eps := mmf.Attr{Key: "epsilon", Type: mmf.AttrFloat, Float: c.NormEps}
+	// llama.cpp's NORM rope rotates adjacent pairs; qwen2 uses NEOX, which
+	// rotates the first half of each head against the second.
+	interleaved := int64(1)
+	if c.Arch == "qwen2" {
+		interleaved = 0
+	}
 	rope := []mmf.Attr{
 		{Key: "theta", Type: mmf.AttrFloat, Float: c.RopeTheta},
-		{Key: "interleaved", Type: mmf.AttrInt, Int: 1}, // llama.cpp's NORM rope: adjacent pairs
+		{Key: "interleaved", Type: mmf.AttrInt, Int: interleaved},
 		{Key: "rotary_dims", Type: mmf.AttrInt, Int: int64(c.RopeDims)},
 	}
 	cacheShape := []mmf.Dim{1, mmf.Dim(c.KVHeads), mmf.Dim(c.Context), mmf.Dim(c.HeadDim)}
@@ -414,14 +435,32 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		cacheV := b.zeros(p+"cache_v", b.cache, cacheShape...)
 
 		h := b.call("rms_norm", []uint32{x, b.f32Of(attnNorm)}, b.val(p+"attn_in", mmf.F32, 1, T, E), eps)
-		heads := func(name string, w uint32, n mmf.Dim) uint32 {
-			y := b.matmulOp(p+name, h, w, 1, T, n*D)
+		heads := func(name string, wt uint32, n mmf.Dim) (uint32, error) {
+			var bias *uint32
+			if c.Arch == "qwen2" {
+				bv, err := w("attn_"+name+".bias", int(n*D))
+				if err != nil {
+					return 0, err
+				}
+				bv = b.f32Of(bv)
+				bias = &bv
+			}
+			y := b.matmulBias(p+name, h, wt, bias, 1, T, n*D)
 			y = b.op(mmf.OpReshape, []uint32{y}, b.val(p+name+".heads", mmf.F32, 1, T, n, D), named("shape", ints(1, sym, int64(n), int64(D))))
-			return b.op(mmf.OpPermute, []uint32{y}, b.val(p+name+".bhtd", mmf.F32, 1, n, T, D), named("perm", ints(0, 2, 1, 3)))
+			return b.op(mmf.OpPermute, []uint32{y}, b.val(p+name+".bhtd", mmf.F32, 1, n, T, D), named("perm", ints(0, 2, 1, 3))), nil
 		}
-		q := heads("q", wq, H)
-		k := heads("k", wk, Hkv)
-		v := heads("v", wv, Hkv)
+		q, err := heads("q", wq, H)
+		if err != nil {
+			return nil, err
+		}
+		k, err := heads("k", wk, Hkv)
+		if err != nil {
+			return nil, err
+		}
+		v, err := heads("v", wv, Hkv)
+		if err != nil {
+			return nil, err
+		}
 		q = b.call("rope", []uint32{q, positions}, b.val(p+"q.rope", mmf.F32, 1, H, T, D), rope...)
 		k = b.call("rope", []uint32{k, positions}, b.val(p+"k.rope", mmf.F32, 1, Hkv, T, D), rope...)
 		attnVersion := int64(1)
