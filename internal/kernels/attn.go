@@ -28,8 +28,8 @@ import (
 func ScoresF32(q, k []float32, scale float32, out []float32) {
 	d := len(q)
 	k = k[:len(out)*d]
-	if useAVX2 && d >= 8 && d%8 == 0 && len(out) > 0 {
-		scoresF32AVX2(&q[0], &k[0], d, len(out), scale, &out[0])
+	if vecF32 && d >= 8 && d%8 == 0 && len(out) > 0 {
+		scoresF32Vec(&q[0], &k[0], d, len(out), scale, &out[0])
 		return
 	}
 	for j := range out {
@@ -38,15 +38,15 @@ func ScoresF32(q, k []float32, scale float32, out []float32) {
 }
 
 // ExpSumF32 sets each x[i] to exp(x[i]-m) and returns their sum. m must be
-// finite and no less than any x[i]; an x[i] of -inf gives 0. With AVX2 the
-// exponentials are computed in float32, within a few units in the last
+// finite and no less than any x[i]; an x[i] of -inf gives 0. With AVX2 or NEON
+// the exponentials are computed in float32, within a few units in the last
 // place.
 func ExpSumF32(x []float32, m float32) float32 {
 	var s float32
 	i := 0
-	if useAVX2 && len(x) >= 8 {
+	if vecF32 && len(x) >= 8 {
 		i = len(x) &^ 7
-		s = expSumF32AVX2(&x[0], i, m)
+		s = expSumF32Vec(&x[0], i, m)
 	}
 	for ; i < len(x); i++ {
 		e := float32(math.Exp(float64(x[i] - m)))
@@ -57,15 +57,15 @@ func ExpSumF32(x []float32, m float32) float32 {
 }
 
 // SiluMulF32 sets out[i] to silu(a[i]) * b[i], silu(x) = x/(1+exp(-x)),
-// for the elements of out; a and b must be at least as long. With AVX2 the
-// exponentials are computed in float32 as in ExpSumF32, within a few units
+// for the elements of out; a and b must be at least as long. With AVX2 or
+// NEON the exponentials are computed in float32 as in ExpSumF32, within a few units
 // in the last place, and so is the rest; otherwise in float64.
 func SiluMulF32(a, b, out []float32) {
 	a, b = a[:len(out)], b[:len(out)]
 	i := 0
-	if useAVX2 && len(out) >= 8 {
+	if vecF32 && len(out) >= 8 {
 		i = len(out) &^ 7
-		siluMulF32AVX2(&a[0], &b[0], &out[0], i)
+		siluMulF32Vec(&a[0], &b[0], &out[0], i)
 	}
 	for ; i < len(out); i++ {
 		out[i] = float32(float64(a[i]) / (1 + math.Exp(-float64(a[i]))) * float64(b[i]))
@@ -78,8 +78,8 @@ func SiluMulF32(a, b, out []float32) {
 func WeightedSumF32(p, v, acc []float32) {
 	d := len(acc)
 	v = v[:len(p)*d]
-	if useAVX2 && d >= 8 && d%8 == 0 && len(p) > 0 {
-		wsumF32AVX2(&p[0], &v[0], len(p), d, &acc[0])
+	if vecF32 && d >= 8 && d%8 == 0 && len(p) > 0 {
+		wsumF32Vec(&p[0], &v[0], len(p), d, &acc[0])
 		return
 	}
 	for j, e := range p {
@@ -93,8 +93,8 @@ func WeightedSumF32(p, v, acc []float32) {
 func ScoresF16(q []float32, k []byte, scale float32, out []float32) {
 	d := len(q)
 	k = k[:2*len(out)*d]
-	if useAVX2 && hasF16C && d >= 8 && d%8 == 0 && len(out) > 0 {
-		scoresF16AVX2(&q[0], &k[0], d, len(out), scale, &out[0])
+	if vecF16 && d >= 8 && d%8 == 0 && len(out) > 0 {
+		scoresF16Vec(&q[0], &k[0], d, len(out), scale, &out[0])
 		return
 	}
 	row := make([]float32, d)
@@ -109,8 +109,8 @@ func ScoresF16(q []float32, k []byte, scale float32, out []float32) {
 func WeightedSumF16(p []float32, v []byte, acc []float32) {
 	d := len(acc)
 	v = v[:2*len(p)*d]
-	if useAVX2 && hasF16C && d >= 8 && d%8 == 0 && len(p) > 0 {
-		wsumF16AVX2(&p[0], &v[0], len(p), d, &acc[0])
+	if vecF16 && d >= 8 && d%8 == 0 && len(p) > 0 {
+		wsumF16Vec(&p[0], &v[0], len(p), d, &acc[0])
 		return
 	}
 	row := make([]float32, d)
