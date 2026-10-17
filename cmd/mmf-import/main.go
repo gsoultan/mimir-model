@@ -15,7 +15,7 @@
 //
 //	mmf-import [-o out.mmf] [-bench] [-nohash] input.gguf
 //	mmf-import model.onnx
-//	mmf-import -graph [-ctx 2048] [-a8=false] tinyllama.gguf
+//	mmf-import -graph [-ctx 2048] [-a8=false] [-kv f32] tinyllama.gguf
 //	mmf-import -o model.mmf model-00001-of-00002.safetensors model-00002-of-00002.safetensors
 //
 // Several safetensors shards are merged into one file. Tensors are copied
@@ -26,7 +26,10 @@
 // matrix products with quantized weights are dequant_matmul_a8, which
 // lets a runtime round the activations to 8-bit blocks as llama.cpp does:
 // blocks of 256 for K-quant weights (v2) and of 32 for the others (v1).
-// -a8=false writes dequant_matmul.v1, which keeps them in float32.
+// -a8=false writes dequant_matmul.v1, which keeps them in float32. The
+// key-value cache is f16, as llama.cpp's is by default, and the graph's
+// attention is attention.v2, which reads it as it is; -kv f32 keeps the
+// cache in float32, with attention.v1, for twice the memory.
 // An ONNX model (a file ending in .onnx) of the convolutional subset that
 // package importer documents is converted with its graph, so the output
 // runs as it is.
@@ -54,12 +57,18 @@ func main() {
 	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama architecture)")
 	ctx := flag.Int("ctx", 0, "with -graph, the key-value cache length (default: the model's context length)")
 	a8 := flag.Bool("a8", true, "with -graph, let runtimes round activations to 8 bits in quantized matrix products (dequant_matmul_a8), as llama.cpp does")
+	kv := flag.String("kv", "f16", "with -graph, the key-value cache dtype: f16 or f32")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: mmf-import [-o out.mmf] [-bench] [-nohash] input...")
 		os.Exit(2)
 	}
-	o := options{out: *out, bench: *bench, hash: !*nohash, graph: *graph, ctx: *ctx, a8: *a8}
+	cache, ok := mmf.ParseDType(*kv)
+	if !ok || (cache != mmf.F16 && cache != mmf.F32) {
+		fmt.Fprintf(os.Stderr, "mmf-import: -kv %s: want f16 or f32\n", *kv)
+		os.Exit(2)
+	}
+	o := options{out: *out, bench: *bench, hash: !*nohash, graph: *graph, ctx: *ctx, a8: *a8, cache: cache}
 	if err := run(os.Stdout, flag.Args(), o); err != nil {
 		fmt.Fprintln(os.Stderr, "mmf-import:", err)
 		os.Exit(1)
@@ -89,6 +98,7 @@ type options struct {
 	graph       bool
 	ctx         int
 	a8          bool
+	cache       mmf.DType // the key-value cache's dtype
 }
 
 func run(w io.Writer, inputs []string, o options) (err error) {
@@ -131,7 +141,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 		if src.Format != "gguf" {
 			return fmt.Errorf("-graph needs a GGUF input")
 		}
-		c, err := importer.BuildLlama(src, importer.LlamaOptions{Context: o.ctx, A8: o.a8})
+		c, err := importer.BuildLlama(src, importer.LlamaOptions{Context: o.ctx, A8: o.a8, Cache: o.cache})
 		if err != nil {
 			return err
 		}

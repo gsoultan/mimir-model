@@ -15,6 +15,7 @@ package interp
 
 import (
 	"bytes"
+	"math/rand"
 	"testing"
 
 	"github.com/gsoultan/mmf"
@@ -172,5 +173,34 @@ func TestFastPermute(t *testing.T) {
 	}
 	if _, ok := fastPermute(perm(1, 0), []*ref.Tensor{q}, mmf.Q8_0, []int{32, 2}); ok {
 		t.Error("handled a block dtype")
+	}
+}
+
+// TestFastCastF16 checks the cast from f32 to f16 against the reference,
+// bit for bit, NaNs and halfway cases included.
+func TestFastCastF16(t *testing.T) {
+	bits := []uint32{0, 0x80000000, 0x7F800000, 0xFF800000, 0x7FC00000, 0x7F800001, 0xFFC12345, 0x7F802015,
+		0x477FEFFF, 0x477FF000, 0x47800000, 0x33000000, 0x33000001, 0x387FC000, 0x38800000, 0x3F801000, 0x3F803000}
+	rng := rand.New(rand.NewSource(5))
+	for len(bits) < 10000 {
+		bits = append(bits, rng.Uint32())
+	}
+	x, _ := ref.New(mmf.F32, []int{len(bits)})
+	for i, b := range bits {
+		x.SetBits(i, uint64(b))
+	}
+	attrs := []mmf.Attr{{Key: "to", Type: mmf.AttrDType, DType: mmf.F16}}
+	want, err := ref.Eval(mmf.OpCast, attrs, []*ref.Tensor{x}, mmf.F16, x.Shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := fastCastF16([]*ref.Tensor{x}, mmf.F16, x.Shape)
+	if !ok {
+		t.Fatal("fastCastF16 refused f32 to f16")
+	}
+	for i := range bits {
+		if got.Bits(i) != want.Bits(i) {
+			t.Errorf("%08x: got %04x, reference %04x", bits[i], got.Bits(i), want.Bits(i))
+		}
 	}
 }

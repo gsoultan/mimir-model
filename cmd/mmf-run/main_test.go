@@ -202,34 +202,71 @@ func TestGenerateMatchesOracle(t *testing.T) {
 
 // TestGenerateA8 runs the prompt and the oracle's continuation through a
 // graph whose matrix products allow 8-bit activations, as llama.cpp
-// computes them. The logits must stay as close to the float64 oracle as
-// llama.cpp's own.
+// computes them, with the key-value cache in f32 and in f16. The logits
+// must stay as close to the float64 oracle as llama.cpp's own, within 10%
+// with the cache in f16.
 func TestGenerateA8(t *testing.T) {
 	e := loadExpected(t)
-	m, err := load(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, A8: true}), false)
-	if err != nil {
-		t.Fatal(err)
+	for _, cache := range []mmf.DType{mmf.F32, mmf.F16} {
+		t.Run(cache.String(), func(t *testing.T) {
+			m, err := load(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, A8: true, Cache: cache}), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer m.f.Close()
+			s := m.prog.NewSession()
+			all, err := stepAll(s, e.PromptIDs, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			worst := maxDiff(all, f32b64(t, e.PromptLogits))
+			logits := all[len(all)-e.Vocab:]
+			pos := len(e.PromptIDs)
+			for i, next := range e.Greedy {
+				worst = math.Max(worst, maxDiff(logits, f32b64(t, e.GreedyLogits[i])))
+				if logits, err = step(s, []int32{next}, pos); err != nil {
+					t.Fatal(err)
+				}
+				pos++
+			}
+			t.Logf("max |logit difference| from the oracle: %.4f (llama.cpp: %.4f)", worst, e.LlamaCppError)
+			// With the cache in f16, as llama.cpp's is, the keys and values
+			// are rounded to 11 bits as well: on this model that moves the
+			// largest difference from 0.41 to 0.55, against llama.cpp's
+			// 0.53, which rounds them too and also the queries.
+			bound := e.LlamaCppError
+			if cache == mmf.F16 {
+				bound *= 1.1
+			}
+			if worst > bound || math.IsNaN(worst) {
+				t.Fatalf("max |logit difference| %g, more than %g (llama.cpp's is %g)", worst, bound, e.LlamaCppError)
+			}
+		})
 	}
-	defer m.f.Close()
-	s := m.prog.NewSession()
-	all, err := stepAll(s, e.PromptIDs, 0)
-	if err != nil {
-		t.Fatal(err)
+}
+
+// TestCacheF16 runs the prompt through a graph with the key-value cache
+// in f16 with the fast paths and with every composite on its canonical
+// body: the two must agree as closely as they do with a cache in f32.
+func TestCacheF16(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow")
 	}
-	worst := maxDiff(all, f32b64(t, e.PromptLogits))
-	logits := all[len(all)-e.Vocab:]
-	pos := len(e.PromptIDs)
-	for i, next := range e.Greedy {
-		worst = math.Max(worst, maxDiff(logits, f32b64(t, e.GreedyLogits[i])))
-		if logits, err = step(s, []int32{next}, pos); err != nil {
+	e := loadExpected(t)
+	path := importFixtureWith(t, e, importer.LlamaOptions{Context: 64, Cache: mmf.F16})
+	ids := e.PromptIDs[:3]
+	var out [2][]float32
+	for i, useRef := range []bool{false, true} {
+		m, err := load(path, useRef)
+		if err != nil {
 			t.Fatal(err)
 		}
-		pos++
+		if out[i], err = stepAll(m.prog.NewSession(), ids, 0); err != nil {
+			t.Fatal(err)
+		}
+		m.f.Close()
 	}
-	t.Logf("max |logit difference| from the oracle: %.4f (llama.cpp: %.4f)", worst, e.LlamaCppError)
-	if worst > e.LlamaCppError || math.IsNaN(worst) {
-		t.Fatalf("max |logit difference| %g, llama.cpp's is %g", worst, e.LlamaCppError)
-	}
+	near(t, "f16 cache, fast against reference", out[0], out[1], 2e-5)
 }
 
 func maxDiff(got, want []float32) float64 {

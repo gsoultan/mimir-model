@@ -48,6 +48,7 @@ in this document; fast paths change speed, never meaning.
 | cumsum.v1 | inclusive or exclusive prefix sum | abs L u sum_prefix abs(x) |
 | rope.v1 | rotary position embedding, with YaRN | section 6.1 |
 | attention.v1 | scaled dot-product attention, GQA | section 6.2 |
+| attention.v2 | attention.v1 with keys and values of any float dtype | section 6.2 |
 | embedding.v1 | table lookup | exact |
 | top_k.v1 | k largest or smallest values and indices | exact |
 | argsort.v1 | stable sort indices | exact |
@@ -701,6 +702,14 @@ result for such rows is unspecified and a fast path MAY return NaN or 0.
 Tolerance: let `S = scale * max_ij sum_d |q_id k_jd|` and
 `V = max_j |v_j|` over the row. For each output element,
 `abs (4 D S + 2 Tk + 64) u V`.
+
+attention.v2 has the signature, attributes and tolerance of v1, except
+that k and v may each have any float dtype, independently of q and of each
+other. Its canonical body is v1's with `kf = rep(cast[dtype of q](k))` and
+`vf = rep(cast[dtype of q](v))`. With q in f32 or f64 the casts are exact,
+so a runtime may keep a key and value cache in f16 or bf16 and read it
+directly. A runtime that converts k or v to f32 on
+the fly computes the same values.
 
 ### 6.3 embedding.v1
 

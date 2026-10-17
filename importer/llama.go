@@ -34,14 +34,15 @@ import (
 //	inputs:    tokens    i32[1, T]   token ids
 //	           positions i64[1, T]   their positions in the sequence
 //	outputs:   logits    f32[1, T, V]
-//	variables: blk.N.cache_k, blk.N.cache_v  f32[1, Hkv, C, D]
+//	variables: blk.N.cache_k, blk.N.cache_v  f16 or f32 [1, Hkv, C, D]
 //
 // T is a symbolic dimension bounded by the context length C. The key-value
 // cache follows ADR 0003: each layer scatters its new keys and values into
 // the cache variables at the given positions and attends over the whole
 // cache, with a mask that admits key position j for the query at position
 // p when j <= p. A prompt is one run with positions 0..T-1; each generated
-// token is a run with T = 1.
+// token is a run with T = 1. A cache in f16 holds the keys and values
+// rounded to f16, which attention.v2 reads as they are.
 
 // Context lengths beyond this are refused, so a typo cannot ask for an
 // enormous zero-filled cache.
@@ -163,6 +164,7 @@ type llamaBuilder struct {
 	byName  map[string]int
 	weights map[string]uint32
 	a8      bool
+	cache   mmf.DType // the key-value cache's dtype, F32 or F16
 }
 
 func (b *llamaBuilder) val(name string, dt mmf.DType, shape ...mmf.Dim) uint32 {
@@ -281,6 +283,10 @@ type LlamaOptions struct {
 	// otherwise), which lets a runtime round the activations to 8-bit
 	// blocks as llama.cpp does, instead of dequant_matmul.v1.
 	A8 bool
+	// Cache is the dtype of the key-value cache: F16, which halves its
+	// memory and has the graph call attention.v2, or F32 (also the zero
+	// value), with attention.v1.
+	Cache mmf.DType
 }
 
 // BuildLlama adds a forward-pass graph for a llama-architecture source,
@@ -301,6 +307,14 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		byName:  map[string]int{},
 		weights: map[string]uint32{},
 		a8:      o.A8,
+		cache:   mmf.F32,
+	}
+	switch o.Cache {
+	case 0, mmf.F32:
+	case mmf.F16:
+		b.cache = mmf.F16
+	default:
+		return nil, fmt.Errorf("key-value cache dtype %s: want f32 or f16", o.Cache)
 	}
 	for i, t := range s.Tensors {
 		b.byName[t.Name] = i
@@ -396,8 +410,8 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 			return nil, err
 		}
 		// The caches start as zeros and take no space in the file.
-		cacheK := b.zeros(p+"cache_k", mmf.F32, cacheShape...)
-		cacheV := b.zeros(p+"cache_v", mmf.F32, cacheShape...)
+		cacheK := b.zeros(p+"cache_k", b.cache, cacheShape...)
+		cacheV := b.zeros(p+"cache_v", b.cache, cacheShape...)
 
 		h := b.call("rms_norm", []uint32{x, b.f32Of(attnNorm)}, b.val(p+"attn_in", mmf.F32, 1, T, E), eps)
 		heads := func(name string, w uint32, n mmf.Dim) uint32 {
@@ -410,12 +424,21 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		v := heads("v", wv, Hkv)
 		q = b.call("rope", []uint32{q, positions}, b.val(p+"q.rope", mmf.F32, 1, H, T, D), rope...)
 		k = b.call("rope", []uint32{k, positions}, b.val(p+"k.rope", mmf.F32, 1, Hkv, T, D), rope...)
+		attnVersion := int64(1)
+		if b.cache == mmf.F16 {
+			// The new keys and values are rounded to f16 as they go into the
+			// cache, and attention.v2 reads them from it as they are.
+			to := mmf.Attr{Key: "to", Type: mmf.AttrDType, DType: mmf.F16}
+			k = b.op(mmf.OpCast, []uint32{k}, b.val(p+"k.f16", mmf.F16, 1, Hkv, T, D), to)
+			v = b.op(mmf.OpCast, []uint32{v}, b.val(p+"v.f16", mmf.F16, 1, Hkv, T, D), to)
+			attnVersion = 2
+		}
 		scatter := mmf.Attr{Key: "axis", Type: mmf.AttrInt, Int: 2}
-		newK := b.op(mmf.OpScatter, []uint32{cacheK, cacheIdx, k}, b.val(p+"cache_k.next", mmf.F32, 1, Hkv, C, D), scatter)
-		newV := b.op(mmf.OpScatter, []uint32{cacheV, cacheIdx, v}, b.val(p+"cache_v.next", mmf.F32, 1, Hkv, C, D), scatter)
+		newK := b.op(mmf.OpScatter, []uint32{cacheK, cacheIdx, k}, b.val(p+"cache_k.next", b.cache, 1, Hkv, C, D), scatter)
+		newV := b.op(mmf.OpScatter, []uint32{cacheV, cacheIdx, v}, b.val(p+"cache_v.next", b.cache, 1, Hkv, C, D), scatter)
 		b.g.Updates = append(b.g.Updates, mmf.Update{Variable: cacheK, Value: newK}, mmf.Update{Variable: cacheV, Value: newV})
 
-		o := b.call("attention", []uint32{q, newK, newV, mask}, b.val(p+"attn", mmf.F32, 1, H, T, D),
+		o := b.callVersion("attention", attnVersion, []uint32{q, newK, newV, mask}, b.val(p+"attn", mmf.F32, 1, H, T, D),
 			mmf.Attr{Key: "num_kv_heads", Type: mmf.AttrInt, Int: int64(c.KVHeads)})
 		o = b.op(mmf.OpPermute, []uint32{o}, b.val(p+"attn.bthd", mmf.F32, 1, T, H, D), named("perm", ints(0, 2, 1, 3)))
 		o = b.op(mmf.OpReshape, []uint32{o}, b.val(p+"attn.merged", mmf.F32, 1, T, E), named("shape", ints(1, sym, int64(E))))
