@@ -203,6 +203,7 @@ func (g *Graph) Main() *Subgraph { return &g.Subgraphs[0] }
 const (
 	graphMagic       = "MIMG"
 	graphMagicLegacy = "MMFG" // before the rename from mmf
+	graphMinor       = 1      // the graph encoding's own minor version, spec/graph.md
 	graphHeaderSize  = 16
 	graphTables      = 11
 	graphDirSize     = graphHeaderSize + graphTables*16
@@ -358,7 +359,7 @@ func (g *Graph) Encode() ([]byte, error) {
 	out := make([]byte, graphDirSize)
 	copy(out, graphMagic)
 	le.PutUint16(out[4:], FormatMajor)
-	le.PutUint16(out[6:], FormatMinor)
+	le.PutUint16(out[6:], graphMinor)
 	le.PutUint32(out[8:], g.PrimitiveVersion)
 	le.PutUint32(out[12:], g.StdlibVersion)
 	for i, t := range tabs {

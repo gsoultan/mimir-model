@@ -67,7 +67,7 @@ func run(dir, llamaDir string) error {
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("%s exists; a released corpus directory is never rewritten", dir)
 	}
-	samples := []func() (*sample, error){dtypesSample, graphSample, func() (*sample, error) { return llamaSample(llamaDir) }}
+	samples := []func() (*sample, error){dtypesSample, graphSample, func() (*sample, error) { return llamaSample(llamaDir) }, trainingSample}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -506,4 +506,67 @@ func llamaSample(dir string) (*sample, error) {
 		},
 		notes: "The Q4_K_M Llama of testdata/llama with its graph and a 64-position key-value cache. The first run is the prompt, the second one decode step at position 7. Logits are those of the Go executor; a runtime matches them within 2e-5 of the largest logit.",
 	}, nil
+}
+
+// trainingSample is a checkpoint of a small linear layer mid-training:
+// its weights, AdamW's moments for each, the random generator's state and
+// the training section that ties them together (spec/training.md).
+func trainingSample() (*sample, error) {
+	w := mim.NewWriter()
+	f32 := func(n int, seed uint32) []byte {
+		b := make([]byte, 4*n)
+		for i := 0; i < n; i++ {
+			binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(float32(int(seed)*31+i)/64-1))
+		}
+		return b
+	}
+	tensors := []struct {
+		name  string
+		dt    mim.DType
+		shape []uint64
+		data  []byte
+	}{
+		{"linear.weight", mim.F32, []uint64{4, 3}, f32(12, 1)},
+		{"linear.bias", mim.F32, []uint64{3}, f32(3, 2)},
+		{"linear.weight@m", mim.F32, []uint64{4, 3}, f32(12, 3)},
+		{"linear.weight@v", mim.F32, []uint64{4, 3}, f32(12, 4)},
+		{"linear.bias@m", mim.F32, []uint64{3}, f32(3, 5)},
+		{"linear.bias@v", mim.F32, []uint64{3}, f32(3, 6)},
+		{"train.rng", mim.U8, []uint64{16}, pattern(16, 7)},
+	}
+	for _, t := range tensors {
+		if err := w.AddTensor(t.name, t.dt, t.shape, t.data); err != nil {
+			return nil, err
+		}
+	}
+	tr := &mim.Training{
+		Optimizer: "adamw",
+		Counters:  []mim.TrainCounter{{Name: "step", Value: 1200}, {Name: "epoch", Value: 3}},
+		Hyper: []mim.TrainHyper{
+			{Name: "lr", Value: 3e-4}, {Name: "beta1", Value: 0.9}, {Name: "beta2", Value: 0.999},
+			{Name: "eps", Value: 1e-8}, {Name: "weight_decay", Value: 0.1},
+			{Name: "weight_decay", Group: 1, Value: 0},
+		},
+		Params: []mim.TrainParam{
+			{Tensor: "linear.weight", States: []mim.TrainState{{Slot: "m", Tensor: "linear.weight@m"}, {Slot: "v", Tensor: "linear.weight@v"}}},
+			{Tensor: "linear.bias", Group: 1, States: []mim.TrainState{{Slot: "m", Tensor: "linear.bias@m"}, {Slot: "v", Tensor: "linear.bias@v"}}},
+		},
+		Extras: []mim.TrainExtra{{Name: "rng", Tensor: "train.rng"}},
+	}
+	b, err := tr.Encode()
+	if err != nil {
+		return nil, err
+	}
+	if err := w.AddSection(mim.SectionTraining, false, b); err != nil {
+		return nil, err
+	}
+	meta, err := mim.Metadata{mim.KeyName: "compat training checkpoint"}.Encode()
+	if err != nil {
+		return nil, err
+	}
+	if err := w.AddSection(mim.SectionMetadata, false, meta); err != nil {
+		return nil, err
+	}
+	return &sample{name: "training", w: w,
+		notes: "A linear layer mid-training with AdamW: two parameter groups, m and v per parameter, and the random generator's state as an extra."}, nil
 }
