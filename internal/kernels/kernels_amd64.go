@@ -113,6 +113,9 @@ func scoresF32AVX2(q, k *float32, d, n int, scale float32, out *float32)
 func expSumF32AVX2(x *float32, n int, m float32) float32
 
 //go:noescape
+func siluMulF32AVX2(a, b, out *float32, n int)
+
+//go:noescape
 func wsumF32AVX2(p, v *float32, n, d int, acc *float32)
 
 //go:noescape

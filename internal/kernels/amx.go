@@ -81,7 +81,7 @@ type TileActs struct {
 	xs              []int16   // [group][block][pair][16][2], sums of each run of 32
 	dx              []float32 // [group][block][16], the block scales
 	x32             []int32   // [group][k/16][16], 32 times the sum of each run of 16 (VNNI, Q6_K)
-	b               *Q8Batch  // the rows, between Reset and SetRows
+	b               *Q8Batch  // the rows, between Reset and SetGroups
 	use             []bool
 }
 
@@ -90,10 +90,12 @@ type TileActs struct {
 // caller computes them some other way.
 func (t *TileActs) Set(b *Q8Batch, use []bool) {
 	t.Reset(b, use)
-	t.SetRows(0, len(use))
+	t.SetGroups(0, t.groups)
 }
 
-// Reset prepares t for the rows of b, which Set or SetRows then lays out.
+// Reset prepares t for the rows of b, which Set or SetGroups then lays
+// out. It keeps t's buffers when they are large enough, so a TileActs can
+// be reused for calls of any size.
 func (t *TileActs) Reset(b *Q8Batch, use []bool) {
 	k, rows := b.k, len(b.rows)
 	if k%256 != 0 || len(use) != rows {
@@ -102,44 +104,81 @@ func (t *TileActs) Reset(b *Q8Batch, use []bool) {
 	nb := k / 256
 	t.b, t.use = b, use
 	t.k, t.rows, t.groups = k, rows, (rows+TileRows-1)/TileRows
-	t.q = make([]int8, t.groups*TileRows*k)
-	t.xs = make([]int16, t.groups*nb*4*TileRows*2)
-	t.dx = make([]float32, t.groups*nb*TileRows)
-	t.x32 = make([]int32, t.groups*k/16*TileRows)
+	t.q = grow(t.q, t.groups*TileRows*k)
+	t.xs = grow(t.xs, t.groups*nb*4*TileRows*2)
+	t.dx = grow(t.dx, t.groups*nb*TileRows)
+	// Only the VNNI kernels for Q6_K read the sums of 16.
+	t.x32 = t.x32[:0]
+	if !useAMX || noAMX {
+		t.x32 = grow(t.x32, t.groups*k/16*TileRows)
+	}
 }
 
-// SetRows lays out rows lo to hi-1 as Set does, after Reset. Calls for
-// rows that do not overlap may run concurrently.
-func (t *TileActs) SetRows(lo, hi int) {
+func grow[T any](s []T, n int) []T {
+	if cap(s) < n {
+		return make([]T, n)
+	}
+	return s[:n]
+}
+
+// Groups returns the number of groups of 16 rows, after Reset.
+func (t *TileActs) Groups() int { return t.groups }
+
+// SetGroups lays out the rows of groups lo to hi-1 as Set does, after
+// Reset. Calls for groups that do not overlap may run concurrently; each
+// group's layout interleaves its 16 rows, so splitting a group between
+// goroutines would have them write the same cache lines.
+func (t *TileActs) SetGroups(lo, hi int) {
 	k, nb := t.k, t.k/256
-	for i := lo; i < hi; i++ {
-		if !t.use[i] {
-			continue
-		}
-		r := &t.b.rows[i]
-		if !r.ok || r.block != 256 {
-			panic("kernels: TileActs.Set with a row that is not quantized in blocks of 256")
-		}
-		g, m := i/TileRows, i%TileRows
+	for g := lo; g < hi; g++ {
 		q := unsafe.Slice((*uint32)(unsafe.Pointer(&t.q[g*TileRows*k])), TileRows*k/4)
-		rq := unsafe.Slice((*uint32)(unsafe.Pointer(&r.q[0])), k/4)
-		for k4, v := range rq {
-			q[k4*TileRows+m] = v
-		}
-		for blk := range nb {
-			gb := g*nb + blk
-			for p := range 4 {
-				t.xs[(gb*4+p)*32+2*m] = r.xs[8*blk+2*p]
-				t.xs[(gb*4+p)*32+2*m+1] = r.xs[8*blk+2*p+1]
+		for m := range TileRows {
+			i := g*TileRows + m
+			if i >= t.rows || !t.use[i] {
+				for k4 := m; k4 < len(q); k4 += TileRows {
+					q[k4] = 0
+				}
+				for gb := g * nb; gb < (g+1)*nb; gb++ {
+					for p := range 4 {
+						t.xs[(gb*4+p)*32+2*m] = 0
+						t.xs[(gb*4+p)*32+2*m+1] = 0
+					}
+					t.dx[gb*TileRows+m] = 0
+				}
+				if len(t.x32) > 0 {
+					for s := range k / 16 {
+						t.x32[(g*k/16+s)*TileRows+m] = 0
+					}
+				}
+				continue
 			}
-			t.dx[gb*TileRows+m] = r.d[8*blk]
-		}
-		for s := range k / 16 {
-			var sum int32
-			for _, v := range r.q[16*s : 16*s+16] {
-				sum += int32(v)
+			r := &t.b.rows[i]
+			if !r.ok || r.block != 256 {
+				panic("kernels: TileActs.Set with a row that is not quantized in blocks of 256")
 			}
-			t.x32[(g*k/16+s)*TileRows+m] = 32 * sum
+			rq := unsafe.Slice((*uint32)(unsafe.Pointer(&r.q[0])), k/4)
+			qm := q[m:]
+			for k4, v := range rq {
+				qm[k4*TileRows] = v
+			}
+			for blk := range nb {
+				gb := g*nb + blk
+				for p := range 4 {
+					t.xs[(gb*4+p)*32+2*m] = r.xs[8*blk+2*p]
+					t.xs[(gb*4+p)*32+2*m+1] = r.xs[8*blk+2*p+1]
+				}
+				t.dx[gb*TileRows+m] = r.d[8*blk]
+			}
+			if len(t.x32) > 0 {
+				x32 := t.x32[g*k/16*TileRows:]
+				for s := range k / 16 {
+					var sum int32
+					for _, v := range r.q[16*s : 16*s+16 : 16*s+16] {
+						sum += int32(v)
+					}
+					x32[s*TileRows+m] = 32 * sum
+				}
+			}
 		}
 	}
 }
@@ -167,10 +206,21 @@ type TileDot struct {
 // NewTileDot returns a TileDot for rows of k elements of dt, for which
 // TileQ8 must be true.
 func NewTileDot(dt mmf.DType, k int) *TileDot {
+	d := &TileDot{}
+	d.Reset(dt, k)
+	return d
+}
+
+// Reset makes d a TileDot for rows of k elements of dt, as NewTileDot
+// does, keeping its buffers.
+func (d *TileDot) Reset(dt mmf.DType, k int) {
 	if !TileQ8(dt) || k%256 != 0 {
 		panic("kernels: NewTileDot without a tile kernel")
 	}
-	d := &TileDot{dt: dt, k: k, rowBytes: k / 256 * int(dt.BlockBytes())}
+	d.dt, d.k, d.rowBytes = dt, k, k/256*int(dt.BlockBytes())
+	if d.mem != nil {
+		return
+	}
 	d.mem = make([]byte, tileScratch+64)
 	o := int(-uintptr(unsafe.Pointer(&d.mem[0])) & 63)
 	d.scr = d.mem[o : o+tileScratch]
@@ -181,7 +231,6 @@ func NewTileDot(dt mmf.DType, k int) *TileDot {
 		binary.LittleEndian.PutUint16(cfg[16+2*t:], 64)
 		cfg[48+t] = 16
 	}
-	return d
 }
 
 // Dot sets y[i*stride+r] to the dot product of weight row r of w, which
@@ -222,16 +271,24 @@ func (d *TileDot) Dot(w []byte, a *TileActs, y []float32, stride int, bias []flo
 	if !ok {
 		return false
 	}
-	for i := range a.rows {
-		g, m := i/TileRows, i%TileRows
-		t, f := tot[g*TileRows*TileRows+m:], off[g*TileRows*TileRows+m:]
-		yi := y[i*stride : i*stride+TileRows]
-		for r := range yi {
-			s := t[r*TileRows] - f[r*TileRows]
-			if bias != nil {
-				s += bias[r]
+	// tot and off hold [group][weight row][activation row]: each weight
+	// row's results are read in order and written down a column of y.
+	for g := range a.groups {
+		ms := min(TileRows, a.rows-g*TileRows)
+		yg := y[g*TileRows*stride:]
+		for r := range TileRows {
+			t := tot[(g*TileRows+r)*TileRows:][:ms]
+			f := off[(g*TileRows+r)*TileRows:][:ms]
+			if bias == nil {
+				for m, v := range t {
+					yg[m*stride+r] = v - f[m]
+				}
+				continue
 			}
-			yi[r] = s
+			b := bias[r]
+			for m, v := range t {
+				yg[m*stride+r] = v - f[m] + b
+			}
 		}
 	}
 	return true

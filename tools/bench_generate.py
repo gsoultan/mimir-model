@@ -61,7 +61,7 @@ def run(cmd):
         p.returncode = os.waitstatus_to_exitcode(status)
         out.seek(0)
         err.seek(0)
-        o, e = out.read().decode(), err.read().decode()
+        o, e = out.read().decode(errors="replace"), err.read().decode(errors="replace")
     if p.returncode != 0:
         sys.exit(f"{cmd[0]} failed: {e}")
     return o, e, usage.ru_maxrss * 1024

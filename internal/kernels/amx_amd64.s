@@ -467,6 +467,11 @@ q4kblock:
 	MOVQ $16, CX
 
 q4krow:
+	// The block two ahead in this row, which the hardware prefetchers
+	// miss: 16 rows are read at once, a block from each.
+	PREFETCHT0 288(SI)
+	PREFETCHT0 352(SI)
+	PREFETCHT0 416(SI)
 	F16FINITE(0(SI), q4kbad)
 	F16FINITE(2(SI), q4kbad)
 	F16SCALAR(0(SI), X0)
@@ -1546,6 +1551,11 @@ q6kblock:
 	MOVQ $16, CX
 
 q6krow:
+	// The block two ahead in this row, as in q4krow.
+	PREFETCHT0 420(SI)
+	PREFETCHT0 484(SI)
+	PREFETCHT0 548(SI)
+	PREFETCHT0 612(SI)
 	F16FINITE(208(SI), q6kbad)
 	F16SCALAR(208(SI), X0)
 	VMOVSS    X0, (R12)

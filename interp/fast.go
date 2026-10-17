@@ -16,6 +16,7 @@ package interp
 import (
 	"encoding/binary"
 	"math"
+	"sync"
 
 	"github.com/gsoultan/mmf"
 	"github.com/gsoultan/mmf/internal/kernels"
@@ -198,7 +199,8 @@ func dequantMatmulA8(in []*ref.Tensor, block int) ([]*ref.Tensor, bool, error) {
 // long, and kernels.FusedQ8Blocks must accept the weights' dtype for it.
 func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) []float32 {
 	n, k := w.t.Shape[0], w.k
-	var acts kernels.Q8Batch
+	acts := q8Batches.Get().(*kernels.Q8Batch)
+	defer q8Batches.Put(acts)
 	acts.Reset(k, rows)
 	quantized := make([]bool, rows)
 	parallel(rows, func(lo, hi int) {
@@ -213,7 +215,7 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 	// kernels for it would read every weight row once more.
 	var tiled []bool
 	if block == 256 && kernels.TileQ8(w.t.DType) && rows >= kernels.TileMinRows() {
-		tiled = linearA8Tiles(&acts, quantized, w, bias, y)
+		tiled = linearA8Tiles(acts, quantized, w, bias, y)
 	}
 	// four[i] reports whether rows i to i+3 are all quantized.
 	x4 := kernels.FusedQ8x4(w.t.DType) || block == 256
@@ -246,7 +248,7 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 						continue
 					}
 					if q8 && four[i] && i+4 <= r1 {
-						if q8 = rd.DotQ8x4(&acts, i, &out); q8 {
+						if q8 = rd.DotQ8x4(acts, i, &out); q8 {
 							for r, s := range out {
 								if bias != nil {
 									s += bias[j]
@@ -295,6 +297,16 @@ func a8RowBlock(k int, dt mmf.DType) int {
 // a8CacheBytes is the cache budget of a8RowBlock.
 const a8CacheBytes = 32 << 10
 
+// q8Batches keeps the quantized activations of linearA8 between calls.
+var q8Batches = sync.Pool{New: func() any { return new(kernels.Q8Batch) }}
+
+// tileActs keeps the activation layouts of linearA8Tiles between calls,
+// which would otherwise allocate and clear a few hundred KiB each.
+var tileActs = sync.Pool{New: func() any { return new(kernels.TileActs) }}
+
+// tileDots keeps the scratch space of the tile kernels between calls.
+var tileDots = sync.Pool{New: func() any { return new(kernels.TileDot) }}
+
 // linearA8Tiles computes y for the rows i of x for which quantized[i] is
 // true with the AMX or VNNI kernels, 16 weight rows at a time, and reports for each run of 16 weight
 // rows whether it did. Its results are those of the other 8-bit kernels,
@@ -302,12 +314,15 @@ const a8CacheBytes = 32 << 10
 // rows after the last whole run, are left to the caller.
 func linearA8Tiles(acts *kernels.Q8Batch, quantized []bool, w *matrixRows, bias, y []float32) []bool {
 	n, k := w.t.Shape[0], w.k
-	var ta kernels.TileActs
+	ta := tileActs.Get().(*kernels.TileActs)
+	defer tileActs.Put(ta)
 	ta.Reset(acts, quantized)
-	parallel(len(quantized), ta.SetRows)
+	parallel(ta.Groups(), ta.SetGroups)
 	tiled := make([]bool, n/kernels.TileRows)
 	parallel(len(tiled), func(lo, hi int) {
-		td := kernels.NewTileDot(w.t.DType, k)
+		td := tileDots.Get().(*kernels.TileDot)
+		defer tileDots.Put(td)
+		td.Reset(w.t.DType, k)
 		for t := lo; t < hi; t++ {
 			j0 := t * kernels.TileRows
 			wt := w.t.Data[j0*w.rowBytes : (j0+kernels.TileRows)*w.rowBytes]
@@ -315,7 +330,7 @@ func linearA8Tiles(acts *kernels.Q8Batch, quantized []bool, w *matrixRows, bias,
 			if bias != nil {
 				b = bias[j0 : j0+kernels.TileRows]
 			}
-			tiled[t] = td.Dot(wt, &ta, y[j0:], n, b)
+			tiled[t] = td.Dot(wt, ta, y[j0:], n, b)
 		}
 	})
 	return tiled
@@ -382,9 +397,7 @@ func fastSwiglu(list []mmf.Attr, in []*ref.Tensor, _ []mmf.DType, _ [][]int) ([]
 	x, b := f32View(in[0]), f32View(in[1])
 	a := make([]float32, len(x))
 	parallel(len(a), func(lo, hi int) {
-		for i := lo; i < hi; i++ {
-			a[i] = float32(float64(x[i]) / (1 + math.Exp(-float64(x[i]))) * float64(b[i]))
-		}
+		kernels.SiluMulF32(x[lo:hi], b[lo:hi], a[lo:hi])
 	})
 	return []*ref.Tensor{f32Tensor(in[0].Shape, a)}, true, nil
 }
