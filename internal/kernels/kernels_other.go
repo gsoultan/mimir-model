@@ -19,21 +19,11 @@ const useAVX2, hasF16C, useAMX, useVNNI = false, false, false, false
 
 // The assembly kernels are never called when useAVX2 is false.
 
-func dotF32AVX2(a, b *float32, n int) float32              { panic("no assembly") }
-func axpyF32AVX2(alpha float32, x, y *float32, n int)      { panic("no assembly") }
 func dotQ4KAVX2(q *byte, x, tab *float32, nb int) float32  { panic("no assembly") }
 func dotQ6KAVX2(q *byte, x, tab *float32, nb int) float32  { panic("no assembly") }
 func dotQ8_0AVX2(q *byte, x, tab *float32, nb int) float32 { panic("no assembly") }
 func dotF16AVX2(w *byte, x *float32, n int) float32        { panic("no assembly") }
 func dotBF16AVX2(w *byte, x *float32, n int) float32       { panic("no assembly") }
-
-func scoresF32AVX2(q, k *float32, d, n int, scale float32, out *float32) { panic("no assembly") }
-func expSumF32AVX2(x *float32, n int, m float32) float32                 { panic("no assembly") }
-func siluMulF32AVX2(a, b, out *float32, n int)                           { panic("no assembly") }
-func wsumF32AVX2(p, v *float32, n, d int, acc *float32)                  { panic("no assembly") }
-
-func scoresF16AVX2(q *float32, k *byte, d, n int, scale float32, out *float32) { panic("no assembly") }
-func wsumF16AVX2(p *float32, v *byte, n, d int, acc *float32)                  { panic("no assembly") }
 
 func dotQ4KQ8AVX2(q *byte, xq *int8, xd, xdbs *float32, nb int) (float32, bool) { panic("no assembly") }
 func dotQ6KQ8AVX2(q *byte, xq *int8, xd *float32, m32 *int16, nb int) (float32, bool) {
