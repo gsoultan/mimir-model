@@ -1,0 +1,56 @@
+name: bench-arm
+
+# Measures mmf-run against llama.cpp on the arm64 macOS runner, whose
+# kernels (internal/kernels/q8_arm64.s) the other machines cannot time. It
+# runs by hand, and on pushes that change the arm64 kernels or this file.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/bench-arm.yml"
+      - "internal/kernels/*arm64*"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: machine
+        run: |
+          uname -a
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize || true
+          go version
+
+      - name: install llama-cpp-python, NumPy and gguf
+        # llama.cpp built for the CPU only, as mmf runs on the CPU.
+        env:
+          CMAKE_ARGS: "-DGGML_METAL=OFF -DGGML_BLAS=OFF"
+        run: python -m pip install numpy==2.2.6 gguf==0.19.0 llama-cpp-python==0.3.16
+
+      - name: kernel benchmarks
+        run: go test -run xxx -bench 'RowDot' ./internal/kernels
+
+      - name: models
+        run: |
+          python -P tools/gen_bench_models.py "$RUNNER_TEMP/bench"
+          rm "$RUNNER_TEMP/bench/tinyllama-rand-f16.gguf" "$RUNNER_TEMP/bench/tinyllama-rand-bf16.safetensors"
+          go run ./cmd/mmf-import -graph -ctx 2048 -o "$RUNNER_TEMP/bench/q4km-a8k.mmf" "$RUNNER_TEMP/bench/tinyllama-rand-q4km.gguf"
+          go build -o "$RUNNER_TEMP/mmf-run" ./cmd/mmf-run
+
+      - name: generation, 38-token prompt
+        run: python -I tools/bench_generate.py --runs 5 --mmf-run "$RUNNER_TEMP/mmf-run" "$RUNNER_TEMP/bench/tinyllama-rand-q4km.gguf" "$RUNNER_TEMP/bench/q4km-a8k.mmf"
+
+      - name: generation, 741-token prompt
+        run: python -I tools/bench_generate.py --runs 3 --repeat 20 --mmf-run "$RUNNER_TEMP/mmf-run" "$RUNNER_TEMP/bench/tinyllama-rand-q4km.gguf" "$RUNNER_TEMP/bench/q4km-a8k.mmf"
