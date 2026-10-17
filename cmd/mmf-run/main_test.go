@@ -28,12 +28,17 @@ import (
 	"github.com/gsoultan/mmf/importer"
 )
 
-// The fixture in testdata/llama is a two-layer Llama with random weights,
-// quantized to Q4_K_M by llama.cpp; expected.json holds llama.cpp's token
-// ids for a few strings and the float64 logits of an independent NumPy
-// forward pass (tools/gen_llama_testdata.py).
+// The fixtures in testdata/llama and testdata/qwen2 are two-layer models
+// with random weights, quantized to Q4_K_M by llama.cpp: a Llama with a
+// SentencePiece vocabulary and a Qwen 2 with a byte-level BPE one. Each
+// expected.json holds llama.cpp's token ids for a few strings and the
+// float64 logits of an independent NumPy forward pass
+// (tools/gen_llama_testdata.py, tools/gen_qwen2_testdata.py).
+
+var fixtures = []string{"llama", "qwen2"}
 
 type expected struct {
+	dir      string
 	Model    string `json:"model"`
 	Vocab    int    `json:"vocab"`
 	Tokenize []struct {
@@ -48,17 +53,25 @@ type expected struct {
 	LlamaCppError float64  `json:"llama_cpp_max_diff"`
 }
 
-func loadExpected(t *testing.T) *expected {
+func loadExpected(t *testing.T, fixture string) *expected {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "llama", "expected.json"))
+	dir := filepath.Join("..", "..", "testdata", fixture)
+	b, err := os.ReadFile(filepath.Join(dir, "expected.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var e expected
+	e := expected{dir: dir}
 	if err := json.Unmarshal(b, &e); err != nil {
 		t.Fatal(err)
 	}
 	return &e
+}
+
+// eachFixture runs f as a subtest for every fixture.
+func eachFixture(t *testing.T, f func(t *testing.T, e *expected)) {
+	for _, name := range fixtures {
+		t.Run(name, func(t *testing.T) { f(t, loadExpected(t, name)) })
+	}
 }
 
 func f32b64(t *testing.T, s string) []float32 {
@@ -82,7 +95,7 @@ func importFixture(t *testing.T, e *expected) string {
 
 func importFixtureWith(t *testing.T, e *expected, o importer.LlamaOptions) string {
 	t.Helper()
-	in := filepath.Join("..", "..", "testdata", "llama", e.Model)
+	in := filepath.Join(e.dir, e.Model)
 	b, err := os.ReadFile(in)
 	if err != nil {
 		t.Fatal(err)
@@ -124,8 +137,9 @@ func near(t *testing.T, what string, got, want []float32, tol float64) {
 	}
 }
 
-func TestTokenizerMatchesLlamaCpp(t *testing.T) {
-	e := loadExpected(t)
+func TestTokenizerMatchesLlamaCpp(t *testing.T) { eachFixture(t, testTokenizer) }
+
+func testTokenizer(t *testing.T, e *expected) {
 	m, err := load(importFixture(t, e), false)
 	if err != nil {
 		t.Fatal(err)
@@ -160,8 +174,9 @@ func equalIDs(a, b []int32) bool {
 // TestGenerateMatchesOracle runs the prompt and a greedy continuation with
 // the fast paths, step by step through the key-value cache, and compares
 // every logit with the float64 oracle.
-func TestGenerateMatchesOracle(t *testing.T) {
-	e := loadExpected(t)
+func TestGenerateMatchesOracle(t *testing.T) { eachFixture(t, testGenerate) }
+
+func testGenerate(t *testing.T, e *expected) {
 	m, err := load(importFixture(t, e), false)
 	if err != nil {
 		t.Fatal(err)
@@ -205,8 +220,9 @@ func TestGenerateMatchesOracle(t *testing.T) {
 // computes them, with the key-value cache in f32 and in f16. The logits
 // must stay as close to the float64 oracle as llama.cpp's own, within 10%
 // with the cache in f16.
-func TestGenerateA8(t *testing.T) {
-	e := loadExpected(t)
+func TestGenerateA8(t *testing.T) { eachFixture(t, testGenerateA8) }
+
+func testGenerateA8(t *testing.T, e *expected) {
 	for _, cache := range []mmf.DType{mmf.F32, mmf.F16} {
 		t.Run(cache.String(), func(t *testing.T) {
 			m, err := load(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, A8: true, Cache: cache}), false)
@@ -252,7 +268,7 @@ func TestCacheF16(t *testing.T) {
 	if testing.Short() {
 		t.Skip("slow")
 	}
-	e := loadExpected(t)
+	e := loadExpected(t, "llama")
 	path := importFixtureWith(t, e, importer.LlamaOptions{Context: 64, Cache: mmf.F16})
 	ids := e.PromptIDs[:3]
 	var out [2][]float32
@@ -284,7 +300,7 @@ func TestReferencePath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("slow")
 	}
-	e := loadExpected(t)
+	e := loadExpected(t, "llama")
 	m, err := load(importFixture(t, e), true)
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +316,7 @@ func TestReferencePath(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
-	e := loadExpected(t)
+	e := loadExpected(t, "llama")
 	path := importFixture(t, e)
 	var out, log bytes.Buffer
 	if err := run(&out, &log, path, config{prompt: e.Prompt, tokens: 4}); err != nil {
