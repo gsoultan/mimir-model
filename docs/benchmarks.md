@@ -441,8 +441,8 @@ repacked copy of the weights.
 
 The `bench-arm` workflow (`.github/workflows/bench-arm.yml`) runs on
 GitHub's macOS runner: an Apple M1 (virtual), 3 cores, Go 1.24, and
-llama-cpp-python 0.3.16 built for the CPU only (Metal and BLAS off). It
-ran once, on the random-weight TinyLlama: median of 5 runs at 38 prompt
+llama-cpp-python 0.3.16 built for the CPU only (Metal and BLAS off). Its
+first run was on the random-weight TinyLlama: median of 5 runs at 38 prompt
 tokens and of 3 runs at 741, with 64 generated tokens each.
 
 | prompt | runtime | load | prompt | generation | peak RSS |
@@ -452,16 +452,28 @@ tokens and of 3 runs at 741, with 64 generated tokens each.
 | 741 | llama.cpp | 2823 ms | 60.6 tok/s | 34.6 tok/s | 817 MiB |
 | 741 | mmf-run | 11 ms | 15.7 tok/s | 6.5 tok/s | 913 MiB |
 
-The NEON kernels for the 8-bit matrix products hold their own: a short
-prompt reads as fast as llama.cpp's. The rest is behind: on arm64 only
-those products have SIMD kernels. Attention
-(scores, softmax, the weighted sum of values, and the f16 cache decoded
-one element at a time) and SwiGLU run in plain Go, and attention's cost
-grows with the context, which is why the 741-token prompt, and the
-generation that follows it, are four to five times slower than
-llama.cpp's. Generation is also slower after the short prompt, 27.6
-against 47.8 tok/s; that run has not been profiled on arm64 yet. NEON
-kernels for attention over the f16 cache are the next step.
+That first run had NEON kernels only for the 8-bit matrix products.
+Attention (scores, softmax, the weighted sum of values, and the f16 cache
+decoded one element at a time) and SwiGLU ran in plain Go, and attention's
+cost grows with the context, which is why the 741-token prompt and the
+generation after it were four to five times slower than llama.cpp's.
+
+With NEON kernels for attention, SwiGLU and the float32 dot products
+(`internal/kernels/vec_arm64.s`), a later run gave the table below. That
+runner was faster than the first one, llama.cpp included, so compare the
+rows of one table, not across tables.
+
+| prompt | runtime | load | prompt | generation | peak RSS |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 38 | llama.cpp | 1874 ms | 95.5 tok/s | 63.0 tok/s | 763 MiB |
+| 38 | mmf-run | 4 ms | 123.4 tok/s | 57.7 tok/s | 679 MiB |
+| 741 | llama.cpp | 1581 ms | 88.2 tok/s | 60.3 tok/s | 817 MiB |
+| 741 | mmf-run | 3 ms | 115.6 tok/s | 53.3 tok/s | 927 MiB |
+
+Prompts now read about 30% faster than llama.cpp's at both lengths, and
+generation is 8 to 12% slower instead of 40 to 80%. The CPU profile of
+the 741-token run (printed by the workflow) puts 61% of the time in the
+8-bit matrix product kernels and 10% in attention.
 
 ## Serving several requests at once
 
