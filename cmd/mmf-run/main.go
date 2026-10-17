@@ -131,17 +131,27 @@ func newModel(f *mmf.File, useRef bool) (*model, error) {
 // step runs ids at positions pos, pos+1, ... and returns the logits of the
 // last one.
 func step(s *interp.Session, ids []int32, pos int) ([]float32, error) {
-	all, err := stepAll(s, ids, pos)
+	logits, err := forward(s, ids, pos)
 	if err != nil {
 		return nil, err
 	}
-	v := len(all) / len(ids)
-	return all[len(all)-v:], nil
+	v := logits.Shape[2]
+	return f32s(logits, (len(ids)-1)*v, v), nil
 }
 
 // stepAll runs ids at positions pos, pos+1, ... and returns the logits of
 // every position, row after row.
 func stepAll(s *interp.Session, ids []int32, pos int) ([]float32, error) {
+	logits, err := forward(s, ids, pos)
+	if err != nil {
+		return nil, err
+	}
+	return f32s(logits, 0, logits.NumElems()), nil
+}
+
+// forward runs ids at positions pos, pos+1, ... and returns the logits, a
+// float32 tensor of shape [1, len(ids), V].
+func forward(s *interp.Session, ids []int32, pos int) (*ref.Tensor, error) {
 	tokens, _ := ref.New(mmf.I32, []int{1, len(ids)})
 	positions, _ := ref.New(mmf.I64, []int{1, len(ids)})
 	for i, id := range ids {
@@ -156,14 +166,19 @@ func stepAll(s *interp.Session, ids []int32, pos int) ([]float32, error) {
 	for _, t := range out {
 		logits = t
 	}
-	if logits.DType != mmf.F32 || len(logits.Shape) != 3 {
-		return nil, fmt.Errorf("logits are %s%v, want f32 [1, T, V]", logits.DType, logits.Shape)
+	if logits.DType != mmf.F32 || len(logits.Shape) != 3 || logits.Shape[1] != len(ids) {
+		return nil, fmt.Errorf("logits are %s%v, want f32 [1, %d, V]", logits.DType, logits.Shape, len(ids))
 	}
-	all := make([]float32, logits.NumElems())
-	for i := range all {
-		all[i] = math.Float32frombits(uint32(logits.Bits(i)))
+	return logits, nil
+}
+
+// f32s returns n elements of the float32 tensor t from element i.
+func f32s(t *ref.Tensor, i, n int) []float32 {
+	v := make([]float32, n)
+	for j := range v {
+		v[j] = math.Float32frombits(uint32(t.Bits(i + j)))
 	}
-	return all, nil
+	return v
 }
 
 func argmax(v []float32) int32 {

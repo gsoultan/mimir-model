@@ -222,3 +222,47 @@ Quantizing the activations moved to assembly as well, which a profile
 showed next. Generation still runs one row at a time and does not use
 the tiles.
 
+
+### Long prompts
+
+Measured on another machine: 4 cores of an Intel Xeon at 2.8 GHz (a cloud
+VM with AVX-512 and VNNI but no AMX, so the prompt runs on the four-row
+AVX2 kernels), 15 GiB of memory, Linux, Go 1.24, llama-cpp-python 0.3.16
+built on the machine. Same `q4km-a8k.mmf` and GGUF, median of 5 runs.
+The 38-token prompt is `tools/bench_generate.py`'s sentence; the 741-token
+one is the same sentence 20 times (`--repeat 20`). "before" is mmf-run at
+the previous step.
+
+| prompt | runtime | prompt | generation | peak RSS |
+| ---: | --- | ---: | ---: | ---: |
+| 38 tokens | llama.cpp | 102.9 tok/s | 25.9 tok/s | 1185 MiB |
+| 38 tokens | mmf-run before | 67.7 tok/s | 30.0 tok/s | 922 MiB |
+| 38 tokens | mmf-run after | 79.8 tok/s | 31.3 tok/s | 739 MiB |
+| 741 tokens | llama.cpp | 122.8 tok/s | 22.5 tok/s | 1248 MiB |
+| 741 tokens | mmf-run before | 39.4 tok/s | 11.7 tok/s | 4529 MiB |
+| 741 tokens | mmf-run after | 85.5 tok/s | 25.3 tok/s | 965 MiB |
+
+Before this step mmf-run's prompt speed fell by half as the prompt grew,
+and its memory grew with it; llama.cpp's does neither. A profile showed
+four causes:
+
+- Each weight row of a matrix product read the whole prompt's
+  activations, which for a long prompt do not fit in a core's cache. The
+  products now take the activations in blocks of 32 KiB, and each piece of
+  weight rows runs over one block before the next. Each row's result is
+  bit for bit what it was.
+- Attention called a dot product, a float64 exponential and an axpy per
+  key. Kernels now compute the scores of one query against a run of keys,
+  the softmax in float32 (within 2 units in the last place of exp), and
+  the weighted sum of the values, which is bit for bit what the axpy loop
+  gave. Attention went from 17% of the prompt's time to 5%.
+- RMS norm, RoPE and SwiGLU copied their input on one core before
+  working on it. They now write their output directly, in parallel.
+- The executor kept every value of a run until the run ended: for a
+  741-token prompt, 2.4 GB of activations, which also slowed the
+  generation that followed. It now drops each value after the last op
+  that reads it.
+
+mmf-run also converts only the last position's logits to pick the next
+token, instead of all of them. The prompt is still 1.3 to 1.4 times slower
+than llama.cpp's here; the matrix products are now 80% of its time.
