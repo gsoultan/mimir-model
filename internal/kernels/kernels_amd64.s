@@ -3,7 +3,7 @@
 #include "textflag.h"
 
 // AVX2 and FMA kernels. Each weight is decoded with the same float32
-// operations, in the same order, as mmf.Dequantize, and then multiplied
+// operations, in the same order, as mim.Dequantize, and then multiplied
 // into the activations with fused multiply-adds into four accumulators.
 
 // func cpuid(eax, ecx uint32) (a, b, c, d uint32)

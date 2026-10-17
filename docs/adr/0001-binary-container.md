@@ -42,7 +42,7 @@ validation is arithmetic, not parsing.
 - Files have no size limit other than the 64-bit offsets, and the index
   alone is capped.
 - The format is not human-readable; an inspection tool is required. A
-  `mmf dump` command will ship with the reference implementation.
+  `mim dump` command will ship with the reference implementation.
 - Adding a field means a new minor version with a new reserved-bytes rule,
   rather than adding a JSON key. Extension goes through sections and
   metadata, not the preamble.

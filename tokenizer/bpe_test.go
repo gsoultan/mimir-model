@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,7 +17,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // The expected words are those of the pre-tokenizers' regular expressions
@@ -47,7 +47,7 @@ func TestSplit(t *testing.T) {
 
 // bpeVocab builds a byte-level vocabulary: the 256 byte characters, the
 // merged pieces in merge order, and an end-of-text control token.
-func bpeVocab(pre string, merges ...string) mmf.Metadata {
+func bpeVocab(pre string, merges ...string) mim.Metadata {
 	var tokens []string
 	for b := 0; b < 256; b++ {
 		tokens = append(tokens, string(byteRune[b]))
@@ -68,7 +68,7 @@ func bpeVocab(pre string, merges ...string) mmf.Metadata {
 	tokens = append(tokens, "<|endoftext|>")
 	types = append(types, typeControl)
 	eot := int64(len(tokens) - 1)
-	return mmf.Metadata{
+	return mim.Metadata{
 		"tokenizer.ggml.model":        "gpt2",
 		"tokenizer.ggml.pre":          pre,
 		"tokenizer.ggml.tokens":       tokens,

@@ -18,7 +18,7 @@ The model has random weights: two layers, embedding 256, four query heads
 over two key-value heads, a 400-odd entry SentencePiece vocabulary trained
 on a few sentences. expected.json holds the oracle's float64 logits for a
 prompt and a greedy continuation, which the Go tests compare against the
-mmf executor.
+mim executor.
 """
 
 import base64

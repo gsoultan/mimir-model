@@ -5,7 +5,7 @@ import os
 import unittest
 
 import _paths  # noqa: F401
-from mmf import conformance, prims
+from mim import conformance, prims
 
 
 class TestConformance(unittest.TestCase):

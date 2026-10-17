@@ -51,7 +51,7 @@ def load_dir(path):
     for f in sorted(glob.glob(os.path.join(path, "*.json"))):
         with open(f, encoding="utf-8") as fh:
             j = json.load(fh)
-        if j.get("format") != "mmf-conformance" or j.get("version") != 1:
+        if j.get("format") != "mim-conformance" or j.get("version") != 1:
             raise ValueError(f"{f}: not a version 1 conformance file")
         cases.extend(Case(j["op"], c) for c in j["cases"])
     return cases

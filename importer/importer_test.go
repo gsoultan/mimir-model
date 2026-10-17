@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 type expTensor struct {
@@ -53,10 +53,10 @@ func expected(t *testing.T) map[string]map[string]expTensor {
 	return e
 }
 
-// importAndReopen converts src to mmf in memory and parses the result.
-func importAndReopen(t *testing.T, src *Source) *mmf.File {
+// importAndReopen converts src to mim in memory and parses the result.
+func importAndReopen(t *testing.T, src *Source) *mim.File {
 	t.Helper()
-	w := mmf.NewWriter()
+	w := mim.NewWriter()
 	if err := src.AddTo(w); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func importAndReopen(t *testing.T, src *Source) *mmf.File {
 	if _, err := w.WriteTo(&buf); err != nil {
 		t.Fatal(err)
 	}
-	f, err := mmf.Parse(buf.Bytes())
+	f, err := mim.Parse(buf.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func importAndReopen(t *testing.T, src *Source) *mmf.File {
 	return f
 }
 
-func checkFile(t *testing.T, f *mmf.File, want map[string]expTensor) {
+func checkFile(t *testing.T, f *mim.File, want map[string]expTensor) {
 	t.Helper()
 	if f.NumTensors() != len(want) {
 		t.Errorf("%d tensors, want %d", f.NumTensors(), len(want))
@@ -105,7 +105,7 @@ func checkFile(t *testing.T, f *mmf.File, want map[string]expTensor) {
 		// Block tensors decode to exactly what gguf's dequantizer gives.
 		raw, _ := base64.StdEncoding.DecodeString(e.F32)
 		got := make([]float32, len(raw)/4)
-		if err := mmf.Dequantize(ti.DType, data, got); err != nil {
+		if err := mim.Dequantize(ti.DType, data, got); err != nil {
 			t.Fatal(err)
 		}
 		for i := range got {

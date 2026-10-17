@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,7 +11,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Package conformance loads the mmf conformance corpus (spec/conformance.md)
+// Package conformance loads the mim conformance corpus (spec/conformance.md)
 // and checks a runtime's results against it.
 //
 // The corpus lives in testdata/conformance. Each file holds the cases of one
@@ -32,8 +32,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/ref"
 )
 
 // Mode is a runtime's subnormal handling for float dtypes
@@ -65,9 +65,9 @@ type Expected struct {
 type Case struct {
 	File     string
 	Op       string
-	Opcode   mmf.Opcode
+	Opcode   mim.Opcode
 	Name     string
-	Attrs    []mmf.Attr
+	Attrs    []mim.Attr
 	Inputs   []*ref.Tensor
 	Output   Expected  // IEEE mode
 	FlushOut *Expected // flush mode, when it differs from IEEE mode
@@ -159,10 +159,10 @@ func LoadFile(path string) ([]Case, error) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if f.Format != "mmf-conformance" || f.Version != 1 {
+	if f.Format != "mim-conformance" || f.Version != 1 {
 		return nil, fmt.Errorf("%s: unsupported corpus format %q version %d", path, f.Format, f.Version)
 	}
-	op := mmf.Opcode(f.Opcode)
+	op := mim.Opcode(f.Opcode)
 	if op.String() != f.Op {
 		return nil, fmt.Errorf("%s: opcode %d is not %q", path, f.Opcode, f.Op)
 	}
@@ -227,27 +227,27 @@ func decodeCase(jc jsonCase) (Case, error) {
 	return c, nil
 }
 
-func decodeAttr(key string, ja jsonAttr) (mmf.Attr, error) {
-	a := mmf.Attr{Key: key}
+func decodeAttr(key string, ja jsonAttr) (mim.Attr, error) {
+	a := mim.Attr{Key: key}
 	switch {
 	case ja.Int != nil:
-		a.Type, a.Int = mmf.AttrInt, *ja.Int
+		a.Type, a.Int = mim.AttrInt, *ja.Int
 	case ja.Ints != nil:
-		a.Type, a.Ints = mmf.AttrInts, ja.Ints
+		a.Type, a.Ints = mim.AttrInts, ja.Ints
 	case ja.Float != nil:
 		v, err := decodeF64s(*ja.Float)
 		if err != nil || len(v) != 1 {
 			return a, fmt.Errorf("attribute %q: bad float", key)
 		}
-		a.Type, a.Float = mmf.AttrFloat, v[0]
+		a.Type, a.Float = mim.AttrFloat, v[0]
 	case ja.String != nil:
-		a.Type, a.String = mmf.AttrString, *ja.String
+		a.Type, a.String = mim.AttrString, *ja.String
 	case ja.DType != nil:
-		dt, ok := mmf.ParseDType(*ja.DType)
+		dt, ok := mim.ParseDType(*ja.DType)
 		if !ok {
 			return a, fmt.Errorf("attribute %q: unknown dtype %q", key, *ja.DType)
 		}
-		a.Type, a.DType = mmf.AttrDType, dt
+		a.Type, a.DType = mim.AttrDType, dt
 	default:
 		return a, fmt.Errorf("attribute %q has no value", key)
 	}
@@ -255,7 +255,7 @@ func decodeAttr(key string, ja jsonAttr) (mmf.Attr, error) {
 }
 
 func decodeTensor(jt jsonTensor) (*ref.Tensor, error) {
-	dt, ok := mmf.ParseDType(jt.DType)
+	dt, ok := mim.ParseDType(jt.DType)
 	if !ok {
 		return nil, fmt.Errorf("unknown dtype %q", jt.DType)
 	}

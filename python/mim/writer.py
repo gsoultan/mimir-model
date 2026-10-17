@@ -1,4 +1,4 @@
-"""Writing mmf files: the container of spec/container.md, the metadata
+"""Writing mim files: the container of spec/container.md, the metadata
 section of spec/metadata.md and the graph section of spec/graph.md.
 
 The writer follows spec/container.md section 10: tensors are packed
@@ -14,7 +14,7 @@ import tempfile
 
 from . import container as C
 from . import dtypes as D
-from .errors import MMFError
+from .errors import MIMError
 from .graph import CONST, INPUT, INTERMEDIATE, OUTPUT, PRIMITIVE_VERSION, STDLIB_VERSION, VARIABLE, WEIGHT
 from .prims import OP_BY_NAME
 
@@ -31,7 +31,7 @@ def _align_up(n, a):
 def _check_name(name):
     b = name.encode("utf-8")
     if not 0 < len(b) <= C.MAX_NAME_LENGTH:
-        raise MMFError("bad-name", f"tensor name {name!r}")
+        raise MIMError("bad-name", f"tensor name {name!r}")
     return b
 
 
@@ -40,7 +40,7 @@ class Writer:
 
     def __init__(self, data_alignment=16384, hashes=True):
         if not C._pow2(data_alignment) or not C.MIN_DATA_ALIGNMENT <= data_alignment <= C.MAX_DATA_ALIGNMENT:
-            raise MMFError("bad-alignment", f"data alignment {data_alignment}")
+            raise MIMError("bad-alignment", f"data alignment {data_alignment}")
         self.data_alignment = data_alignment
         self.hashes = hashes
         self._tensors = []  # (name bytes, dtype, shape, data)
@@ -55,15 +55,15 @@ class Writer:
         shape = tuple(int(d) for d in shape)
         b = _check_name(name)
         if b in self._names:
-            raise MMFError("duplicate", f"tensor {name!r}")
+            raise MIMError("duplicate", f"tensor {name!r}")
         if len(shape) > C.MAX_RANK or any(d < 0 for d in shape):
-            raise MMFError("bad-shape", f"tensor {name!r} shape {list(shape)}")
+            raise MIMError("bad-shape", f"tensor {name!r} shape {list(shape)}")
         if dtype.is_block and (not shape or shape[-1] % dtype.block_elems):
-            raise MMFError("bad-shape", f"tensor {name!r}: {dtype.name} needs a last dimension that is a multiple of {dtype.block_elems}")
+            raise MIMError("bad-shape", f"tensor {name!r}: {dtype.name} needs a last dimension that is a multiple of {dtype.block_elems}")
         size = D.byte_size(dtype, shape)
         data = bytes(data)
         if len(data) != size:
-            raise MMFError("size-mismatch", f"tensor {name!r}: {dtype.name}{list(shape)} needs {size} bytes, got {len(data)}")
+            raise MIMError("size-mismatch", f"tensor {name!r}: {dtype.name}{list(shape)} needs {size} bytes, got {len(data)}")
         self._names.add(b)
         self._tensors.append((b, dtype, shape, data))
         return len(self._tensors) - 1
@@ -85,9 +85,9 @@ class Writer:
 
     def add_section(self, kind, data, required=False):
         if kind == C.WEIGHTS:
-            raise MMFError("duplicate", "the weights section is written by the writer")
+            raise MIMError("duplicate", "the weights section is written by the writer")
         if 1 <= kind <= 5 and any(k == kind for k, _, _ in self._sections):
-            raise MMFError("duplicate", f"two sections of kind {kind}")
+            raise MIMError("duplicate", f"two sections of kind {kind}")
         self._sections.append((kind, required, bytes(data)))
 
     def to_bytes(self):
@@ -106,7 +106,7 @@ class Writer:
         ns, nt = 1 + len(self._sections), len(self._tensors)
         index_len = C.INDEX_HEADER_SIZE + C.SECTION_ENTRY_SIZE * ns + C.TENSOR_ENTRY_SIZE * nt + len(pool)
         if index_len > C.MAX_INDEX_LENGTH:
-            raise MMFError("index-too-large", f"index would be {index_len} bytes")
+            raise MIMError("index-too-large", f"index would be {index_len} bytes")
 
         pos = _align_up(C.PREAMBLE_SIZE + index_len, 64)
         placed = []
@@ -154,7 +154,7 @@ def write_file(path, data):
     """Writes data to path atomically: a temporary file in the destination
     directory, flushed and synced, then renamed over path."""
     d = os.path.dirname(os.path.abspath(path))
-    fd, tmp = tempfile.mkstemp(prefix=".mmf-", suffix=".tmp", dir=d)
+    fd, tmp = tempfile.mkstemp(prefix=".mim-", suffix=".tmp", dir=d)
     try:
         umask = os.umask(0)
         os.umask(umask)
@@ -196,7 +196,7 @@ def _meta_type(v):
             return "ints"
         if all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v):
             return "floats"
-    raise MMFError("bad-metadata", f"no metadata type for {type(v).__name__}")
+    raise MIMError("bad-metadata", f"no metadata type for {type(v).__name__}")
 
 
 def encode_metadata(entries):
@@ -208,7 +208,7 @@ def encode_metadata(entries):
     for key, v in entries.items():
         kb = key.encode("utf-8")
         if not 0 < len(kb) <= 1024:
-            raise MMFError("bad-metadata", f"key {key!r}")
+            raise MIMError("bad-metadata", f"key {key!r}")
         if isinstance(v, tuple) and len(v) == 2 and v[0] in _META_TYPES:
             typ, v = v
         else:
@@ -217,7 +217,7 @@ def encode_metadata(entries):
     items.sort(key=lambda e: e[0])
     for a, b in zip(items, items[1:]):
         if a[0] == b[0]:
-            raise MMFError("bad-metadata", f"key {a[0].decode()!r} given twice")
+            raise MIMError("bad-metadata", f"key {a[0].decode()!r} given twice")
     pool = bytearray()
 
     def put(b, align=1):
@@ -254,7 +254,7 @@ def encode_metadata(entries):
                 body += b
             payload = put(bytes(tab) + bytes(body), 8)
         rows.append(struct.pack("<IIB3xIQ8x", koff, len(kb), _META_TYPES[typ], count, payload))
-    return b"MMFM" + struct.pack("<IQ", len(rows), len(pool)) + b"".join(rows) + bytes(pool)
+    return b"MIMM" + struct.pack("<IQ", len(rows), len(pool)) + b"".join(rows) + bytes(pool)
 
 
 # Graph -----------------------------------------------------------------------
@@ -282,7 +282,7 @@ class GraphBuilder:
 
     def symdim(self, name, bound=-1):
         if name in self._sym:
-            raise MMFError("bad-graph", f"symbolic dimension {name!r} declared twice")
+            raise MIMError("bad-graph", f"symbolic dimension {name!r} declared twice")
         self._sym[name] = len(self.symdims)
         self.symdims.append((name, bound))
         return name
@@ -290,15 +290,15 @@ class GraphBuilder:
     def _dim(self, d):
         if isinstance(d, str):
             if d not in self._sym:
-                raise MMFError("bad-graph", f"unknown symbolic dimension {d!r}")
+                raise MIMError("bad-graph", f"unknown symbolic dimension {d!r}")
             return -1 - self._sym[d]
         if d < 0:
-            raise MMFError("bad-graph", f"dimension {d}")
+            raise MIMError("bad-graph", f"dimension {d}")
         return int(d)
 
     def value(self, name, dtype, shape, kind=INTERMEDIATE, ref=0, zero=False):
         if len(shape) > C.MAX_RANK:
-            raise MMFError("bad-shape", f"value {name!r} rank {len(shape)}")
+            raise MIMError("bad-shape", f"value {name!r} rank {len(shape)}")
         for d in shape:
             self._dim(d)
         self.values.append((name, dtype, tuple(shape), kind, ref, zero))
@@ -318,7 +318,7 @@ class GraphBuilder:
 
     def output(self, vid):
         if self.values[vid][3] != OUTPUT:
-            raise MMFError("bad-graph", f"value {vid} is not of kind output")
+            raise MIMError("bad-graph", f"value {vid} is not of kind output")
         self.outputs.append(vid)
 
     def update(self, variable, value):
@@ -332,7 +332,7 @@ class GraphBuilder:
             if i is None:
                 b = x.encode("utf-8")
                 if len(b) > 4096:
-                    raise MMFError("bad-name", f"string {x[:40]!r}... is longer than 4096 bytes")
+                    raise MIMError("bad-name", f"string {x[:40]!r}... is longer than 4096 bytes")
                 i = str_idx[x] = len(strings)
                 strings.append(struct.pack("<II", len(pool), len(b)))
                 pool.extend(b)
@@ -383,7 +383,7 @@ class GraphBuilder:
         ]
         counts = [len(pool), len(strings), len(self.symdims), len(dims), len(self.values), len(self.ops),
                   len(runs), len(attrs) // 24, 1, 0, len(self.updates)]
-        out = bytearray(b"MMFG" + struct.pack("<HHII", 0, 1, PRIMITIVE_VERSION, STDLIB_VERSION))
+        out = bytearray(b"MIMG" + struct.pack("<HHII", 0, 1, PRIMITIVE_VERSION, STDLIB_VERSION))
         out += bytes(176)
         for i, t in enumerate(tables):
             off = _align_up(len(out), 8)

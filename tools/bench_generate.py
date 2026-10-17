@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Measure text generation speed and peak memory, for docs/benchmarks.md.
 
-    go build -o /tmp/mmf-run ./cmd/mmf-run
-    python3 -I tools/bench_generate.py --mmf-run /tmp/mmf-run model.gguf model.mmf ...
+    go build -o /tmp/mim-run ./cmd/mim-run
+    python3 -I tools/bench_generate.py --mim-run /tmp/mim-run model.gguf model.mim ...
 
-An .mmf file is run with mmf-run; a .gguf file with llama.cpp through
+An .mim file is run with mim-run; a .gguf file with llama.cpp through
 llama-cpp-python, as the reference. Every run is a fresh process: the table
 reports the median over the runs of the load time, the prompt and
 generation speed (greedy, one token per step) and the peak resident memory
@@ -41,7 +41,7 @@ gt = time.perf_counter() - t
 print(json.dumps({"load": load, "prompt_tokens": len(ids), "prompt_s": pt, "tokens": n, "gen_s": gt}))
 """
 
-MMF_RUN = re.compile(
+MIM_RUN = re.compile(
     r"load (\S+); prompt (\d+) tokens in (\S+) \(.*\); generated (\d+) tokens in (\S+) \("
 )
 
@@ -74,17 +74,17 @@ def measure(path, args):
         out, _, rss = run([sys.executable, "-c", LLAMA_CPP, path, str(args.tokens), str(args.threads), prompt])
         r = json.loads(out)
         return "llama.cpp", r["load"], r["prompt_tokens"] / r["prompt_s"], r["tokens"] / r["gen_s"], rss, r["prompt_tokens"]
-    _, err, rss = run([args.mmf_run, "-m", path, "-p", prompt, "-n", str(args.tokens)])
-    m = MMF_RUN.search(err)
+    _, err, rss = run([args.mim_run, "-m", path, "-p", prompt, "-n", str(args.tokens)])
+    m = MIM_RUN.search(err)
     if not m:
-        sys.exit(f"cannot parse mmf-run output: {err}")
+        sys.exit(f"cannot parse mim-run output: {err}")
     load, np_, pt, ng, gt = seconds(m[1]), int(m[2]), seconds(m[3]), int(m[4]), seconds(m[5])
-    return "mmf-run", load, np_ / pt, max(ng - 1, 0) / gt, rss, np_
+    return "mim-run", load, np_ / pt, max(ng - 1, 0) / gt, rss, np_
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mmf-run", default="mmf-run")
+    ap.add_argument("--mim-run", default="mim-run")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--tokens", type=int, default=64)
     ap.add_argument("--threads", type=int, default=os.cpu_count())

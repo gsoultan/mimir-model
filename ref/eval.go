@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -16,47 +16,47 @@ package ref
 import (
 	"fmt"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // attrSpec lists the attributes of a primitive: key to type, and whether the
 // attribute is required.
 type attrSpec map[string]struct {
-	typ      []mmf.AttrType
+	typ      []mim.AttrType
 	required bool
 }
 
 var (
-	tInt    = []mmf.AttrType{mmf.AttrInt}
-	tInts   = []mmf.AttrType{mmf.AttrInts}
-	tStr    = []mmf.AttrType{mmf.AttrString}
-	tDType  = []mmf.AttrType{mmf.AttrDType}
-	tScalar = []mmf.AttrType{mmf.AttrFloat, mmf.AttrInt}
+	tInt    = []mim.AttrType{mim.AttrInt}
+	tInts   = []mim.AttrType{mim.AttrInts}
+	tStr    = []mim.AttrType{mim.AttrString}
+	tDType  = []mim.AttrType{mim.AttrDType}
+	tScalar = []mim.AttrType{mim.AttrFloat, mim.AttrInt}
 )
 
-var primAttrs = map[mmf.Opcode]attrSpec{
-	mmf.OpCast:    {"to": {tDType, true}},
-	mmf.OpBitcast: {"to": {tDType, true}},
-	mmf.OpReduce:  {"mode": {tStr, true}, "axes": {tInts, true}},
-	mmf.OpReshape: {"shape": {tInts, true}},
-	mmf.OpPermute: {"perm": {tInts, true}},
-	mmf.OpPad:     {"pads": {tInts, true}, "value": {tScalar, false}},
-	mmf.OpShrink:  {"begin": {tInts, true}, "end": {tInts, true}},
-	mmf.OpGather:  {"axis": {tInt, true}},
-	mmf.OpScatter: {"axis": {tInt, true}},
-	mmf.OpConst:   {"value": {tScalar, true}},
+var primAttrs = map[mim.Opcode]attrSpec{
+	mim.OpCast:    {"to": {tDType, true}},
+	mim.OpBitcast: {"to": {tDType, true}},
+	mim.OpReduce:  {"mode": {tStr, true}, "axes": {tInts, true}},
+	mim.OpReshape: {"shape": {tInts, true}},
+	mim.OpPermute: {"perm": {tInts, true}},
+	mim.OpPad:     {"pads": {tInts, true}, "value": {tScalar, false}},
+	mim.OpShrink:  {"begin": {tInts, true}, "end": {tInts, true}},
+	mim.OpGather:  {"axis": {tInt, true}},
+	mim.OpScatter: {"axis": {tInt, true}},
+	mim.OpConst:   {"value": {tScalar, true}},
 }
 
 // inputCount is the number of inputs of each primitive.
-var inputCount = map[mmf.Opcode]int{
-	mmf.OpWhere: 3, mmf.OpScatter: 3, mmf.OpConst: 0, mmf.OpGather: 2,
+var inputCount = map[mim.Opcode]int{
+	mim.OpWhere: 3, mim.OpScatter: 3, mim.OpConst: 0, mim.OpGather: 2,
 }
 
-func numInputs(op mmf.Opcode) int {
+func numInputs(op mim.Opcode) int {
 	if n, ok := inputCount[op]; ok {
 		return n
 	}
-	if op >= mmf.OpAdd && op <= mmf.OpCmpeq {
+	if op >= mim.OpAdd && op <= mim.OpCmpeq {
 		return 2
 	}
 	return 1
@@ -64,9 +64,9 @@ func numInputs(op mmf.Opcode) int {
 
 // checkAttrs rejects unknown, duplicate, mistyped and missing attributes
 // (spec/primitives.md section 4) and returns them by key.
-func checkAttrs(op mmf.Opcode, attrs []mmf.Attr) (map[string]*mmf.Attr, error) {
+func checkAttrs(op mim.Opcode, attrs []mim.Attr) (map[string]*mim.Attr, error) {
 	spec := primAttrs[op]
-	got := make(map[string]*mmf.Attr, len(attrs))
+	got := make(map[string]*mim.Attr, len(attrs))
 	for i := range attrs {
 		a := &attrs[i]
 		s, ok := spec[a.Key]
@@ -97,8 +97,8 @@ func checkAttrs(op mmf.Opcode, attrs []mmf.Attr) (map[string]*mmf.Attr, error) {
 // outShape are the declared type of the output value; Eval checks them
 // against the type and shape rules of spec/primitives.md and returns an
 // error on any violation instead of computing a result.
-func Eval(op mmf.Opcode, attrs []mmf.Attr, in []*Tensor, outDType mmf.DType, outShape []int) (*Tensor, error) {
-	if op < mmf.OpNeg || op > mmf.OpDequantize {
+func Eval(op mim.Opcode, attrs []mim.Attr, in []*Tensor, outDType mim.DType, outShape []int) (*Tensor, error) {
+	if op < mim.OpNeg || op > mim.OpDequantize {
 		return nil, fmt.Errorf("opcode %d is not a primitive", op)
 	}
 	if len(in) != numInputs(op) {
@@ -111,7 +111,7 @@ func Eval(op mmf.Opcode, attrs []mmf.Attr, in []*Tensor, outDType mmf.DType, out
 		if err := t.Validate(); err != nil {
 			return nil, fmt.Errorf("%s: input %d: %w", op, i, err)
 		}
-		if t.DType.IsBlock() && op != mmf.OpDequantize {
+		if t.DType.IsBlock() && op != mim.OpDequantize {
 			return nil, fmt.Errorf("%s: block dtype %s is only valid as the input of dequantize", op, t.DType)
 		}
 		if isStorage(t.DType) && !storageOK(op, i) {
@@ -142,25 +142,25 @@ func Eval(op mmf.Opcode, attrs []mmf.Attr, in []*Tensor, outDType mmf.DType, out
 
 // storageOK reports whether input i of op may be a storage float
 // (spec/primitives.md section 2.2).
-func storageOK(op mmf.Opcode, i int) bool {
+func storageOK(op mim.Opcode, i int) bool {
 	switch op {
-	case mmf.OpCast, mmf.OpDequantize, mmf.OpReshape, mmf.OpExpand, mmf.OpPermute, mmf.OpPad, mmf.OpShrink:
+	case mim.OpCast, mim.OpDequantize, mim.OpReshape, mim.OpExpand, mim.OpPermute, mim.OpPad, mim.OpShrink:
 		return true
-	case mmf.OpBitcast:
+	case mim.OpBitcast:
 		return true
-	case mmf.OpWhere:
+	case mim.OpWhere:
 		return i != 0
-	case mmf.OpGather:
+	case mim.OpGather:
 		return i == 0
-	case mmf.OpScatter:
+	case mim.OpScatter:
 		return i == 0 || i == 2
 	}
 	return false
 }
 
-func isFloatOnly(op mmf.Opcode) bool {
+func isFloatOnly(op mim.Opcode) bool {
 	switch op {
-	case mmf.OpRecip, mmf.OpSqrt, mmf.OpExp2, mmf.OpLog2, mmf.OpSin, mmf.OpPow:
+	case mim.OpRecip, mim.OpSqrt, mim.OpExp2, mim.OpLog2, mim.OpSin, mim.OpPow:
 		return true
 	}
 	return false
@@ -174,16 +174,16 @@ func intsOf(v []int64) []int {
 	return r
 }
 
-func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DType, outShape []int) (*Tensor, error) {
+func eval(op mim.Opcode, a map[string]*mim.Attr, in []*Tensor, outDType mim.DType, outShape []int) (*Tensor, error) {
 	switch {
-	case op >= mmf.OpNeg && op <= mmf.OpTrunc:
+	case op >= mim.OpNeg && op <= mim.OpTrunc:
 		x := in[0]
-		if !(isArith(x.DType) || IsInt(x.DType) && (op == mmf.OpNeg || op == mmf.OpTrunc)) {
+		if !(isArith(x.DType) || IsInt(x.DType) && (op == mim.OpNeg || op == mim.OpTrunc)) {
 			return nil, fmt.Errorf("unsupported dtype %s", x.DType)
 		}
 		return evalUnary(op, x)
 
-	case op >= mmf.OpAdd && op <= mmf.OpCmpeq:
+	case op >= mim.OpAdd && op <= mim.OpCmpeq:
 		x, z := in[0], in[1]
 		if x.DType != z.DType {
 			return nil, fmt.Errorf("operand dtypes %s and %s differ", x.DType, z.DType)
@@ -193,12 +193,12 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		switch {
 		case isFloatOnly(op):
 			ok = isArith(dt)
-		case op >= mmf.OpIdiv && op <= mmf.OpShr:
+		case op >= mim.OpIdiv && op <= mim.OpShr:
 			ok = IsInt(dt)
-		case op >= mmf.OpAnd && op <= mmf.OpXor:
-			ok = IsInt(dt) || dt == mmf.Bool
-		case op == mmf.OpCmpeq:
-			ok = isArith(dt) || IsInt(dt) || dt == mmf.Bool
+		case op >= mim.OpAnd && op <= mim.OpXor:
+			ok = IsInt(dt) || dt == mim.Bool
+		case op == mim.OpCmpeq:
+			ok = isArith(dt) || IsInt(dt) || dt == mim.Bool
 		default: // add, mul, max, cmplt
 			ok = isArith(dt) || IsInt(dt)
 		}
@@ -210,14 +210,14 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 			return nil, err
 		}
 		out := dt
-		if op == mmf.OpCmplt || op == mmf.OpCmpeq {
-			out = mmf.Bool
+		if op == mim.OpCmplt || op == mim.OpCmpeq {
+			out = mim.Bool
 		}
 		return evalBinary(op, x, z, out, shape)
 
-	case op == mmf.OpWhere:
+	case op == mim.OpWhere:
 		c, x, z := in[0], in[1], in[2]
-		if c.DType != mmf.Bool || x.DType != z.DType {
+		if c.DType != mim.Bool || x.DType != z.DType {
 			return nil, fmt.Errorf("cond must be bool and a, b must share a dtype")
 		}
 		shape, err := broadcastShape(c.Shape, x.Shape, z.Shape)
@@ -226,22 +226,22 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalWhere(c, x, z, shape)
 
-	case op == mmf.OpCast:
+	case op == mim.OpCast:
 		to := a["to"].DType
 		if !to.Valid() || to.IsBlock() || in[0].DType.IsBlock() {
 			return nil, fmt.Errorf("cannot cast %s to %s", in[0].DType, to)
 		}
 		return evalCast(in[0], to)
 
-	case op == mmf.OpBitcast:
+	case op == mim.OpBitcast:
 		to := a["to"].DType
 		from := in[0].DType
-		if !to.Valid() || to.IsBlock() || to == mmf.Bool || from == mmf.Bool || elemSize(to) != elemSize(from) {
+		if !to.Valid() || to.IsBlock() || to == mim.Bool || from == mim.Bool || elemSize(to) != elemSize(from) {
 			return nil, fmt.Errorf("cannot bitcast %s to %s", from, to)
 		}
 		return &Tensor{DType: to, Shape: append([]int{}, in[0].Shape...), Data: append([]byte{}, in[0].Data...)}, nil
 
-	case op == mmf.OpReduce:
+	case op == mim.OpReduce:
 		x := in[0]
 		if !isArith(x.DType) && !IsInt(x.DType) {
 			return nil, fmt.Errorf("unsupported dtype %s", x.DType)
@@ -262,7 +262,7 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalReduce(x, mode, axes, shape)
 
-	case op == mmf.OpReshape:
+	case op == mim.OpReshape:
 		x := in[0]
 		target := a["shape"].Ints
 		if len(target) != len(outShape) {
@@ -278,7 +278,7 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return &Tensor{DType: x.DType, Shape: append([]int{}, outShape...), Data: append([]byte{}, x.Data...)}, nil
 
-	case op == mmf.OpExpand:
+	case op == mim.OpExpand:
 		x := in[0]
 		if len(outShape) != len(x.Shape) {
 			return nil, fmt.Errorf("expand cannot change rank")
@@ -290,7 +290,7 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalExpand(x, outShape)
 
-	case op == mmf.OpPermute:
+	case op == mim.OpPermute:
 		x := in[0]
 		perm := intsOf(a["perm"].Ints)
 		if len(perm) != len(x.Shape) {
@@ -307,7 +307,7 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalPermute(x, perm, shape)
 
-	case op == mmf.OpPad:
+	case op == mim.OpPad:
 		x := in[0]
 		pads := intsOf(a["pads"].Ints)
 		if len(pads) != 2*len(x.Shape) {
@@ -329,7 +329,7 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalPad(x, pads, value, shape)
 
-	case op == mmf.OpShrink:
+	case op == mim.OpShrink:
 		x := in[0]
 		begin, end := intsOf(a["begin"].Ints), intsOf(a["end"].Ints)
 		if len(begin) != len(x.Shape) || len(end) != len(x.Shape) {
@@ -348,17 +348,17 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalShrink(x, begin, shape)
 
-	case op == mmf.OpGather, op == mmf.OpScatter:
+	case op == mim.OpGather, op == mim.OpScatter:
 		data, ind := in[0], in[1]
 		axis := int(a["axis"].Int)
 		if len(data.Shape) == 0 || axis < 0 || axis >= len(data.Shape) {
 			return nil, fmt.Errorf("axis %d is invalid for rank %d", axis, len(data.Shape))
 		}
-		if ind.DType != mmf.I32 && ind.DType != mmf.I64 {
+		if ind.DType != mim.I32 && ind.DType != mim.I64 {
 			return nil, fmt.Errorf("indices must be i32 or i64, got %s", ind.DType)
 		}
 		gs := gatherShape(data.Shape, ind.Shape, axis)
-		if op == mmf.OpGather {
+		if op == mim.OpGather {
 			return evalGather(data, ind, axis, gs)
 		}
 		upd := in[2]
@@ -367,7 +367,7 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalScatter(data, ind, upd, axis)
 
-	case op == mmf.OpConst:
+	case op == mim.OpConst:
 		if isStorage(outDType) || outDType.IsBlock() {
 			return nil, fmt.Errorf("const cannot produce %s", outDType)
 		}
@@ -377,10 +377,10 @@ func eval(op mmf.Opcode, a map[string]*mmf.Attr, in []*Tensor, outDType mmf.DTyp
 		}
 		return evalConst(outDType, outShape, v)
 
-	case op == mmf.OpDequantize:
+	case op == mim.OpDequantize:
 		x := in[0]
-		ok := x.DType.IsBlock() || x.DType == mmf.F16 || x.DType == mmf.BF16 || isStorage(x.DType)
-		if !ok || outDType != mmf.F32 && outDType != mmf.BF16 {
+		ok := x.DType.IsBlock() || x.DType == mim.F16 || x.DType == mim.BF16 || isStorage(x.DType)
+		if !ok || outDType != mim.F32 && outDType != mim.BF16 {
 			return nil, fmt.Errorf("cannot dequantize %s to %s", x.DType, outDType)
 		}
 		return evalDequantize(x, outDType)

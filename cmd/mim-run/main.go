@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,10 +11,10 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Command mmf-run generates text with a language model stored as an mmf
-// file with a graph, such as one written by `mmf-import -graph`.
+// Command mim-run generates text with a language model stored as a mim
+// file with a graph, such as one written by `mim-import -graph`.
 //
-//	mmf-run -m tinyllama.mmf -p "Once upon a time" [-n 64] [-temp 0] [-seed 1] [-ref] [-cpuprofile f]
+//	mim-run -m tinyllama.mim -p "Once upon a time" [-n 64] [-temp 0] [-seed 1] [-ref] [-cpuprofile f]
 //
 // The prompt is tokenized with the tokenizer in the file's metadata and run
 // through the graph in one step; each new token is then one step with the
@@ -38,14 +38,14 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/interp"
-	"github.com/gsoultan/mmf/ref"
-	"github.com/gsoultan/mmf/tokenizer"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/interp"
+	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mim/tokenizer"
 )
 
 func main() {
-	model := flag.String("m", "", "model file (.mmf with a graph)")
+	model := flag.String("m", "", "model file (.mim with a graph)")
 	prompt := flag.String("p", "", "prompt")
 	n := flag.Int("n", 64, "number of tokens to generate")
 	temp := flag.Float64("temp", 0, "sampling temperature; 0 picks the most likely token")
@@ -54,7 +54,7 @@ func main() {
 	cpuProfile := flag.String("cpuprofile", "", "write a CPU profile to this file")
 	flag.Parse()
 	if *model == "" {
-		fmt.Fprintln(os.Stderr, "usage: mmf-run -m model.mmf -p prompt [-n 64] [-temp 0] [-seed 1] [-ref]")
+		fmt.Fprintln(os.Stderr, "usage: mim-run -m model.mim -p prompt [-n 64] [-temp 0] [-seed 1] [-ref]")
 		os.Exit(2)
 	}
 	if *cpuProfile != "" {
@@ -63,7 +63,7 @@ func main() {
 			err = pprof.StartCPUProfile(pf)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "mmf-run:", err)
+			fmt.Fprintln(os.Stderr, "mim-run:", err)
 			os.Exit(1)
 		}
 		defer pprof.StopCPUProfile()
@@ -71,7 +71,7 @@ func main() {
 	cfg := config{prompt: *prompt, tokens: *n, temp: *temp, seed: *seed, ref: *useRef}
 	if err := run(os.Stdout, os.Stderr, *model, cfg); err != nil {
 		pprof.StopCPUProfile()
-		fmt.Fprintln(os.Stderr, "mmf-run:", err)
+		fmt.Fprintln(os.Stderr, "mim-run:", err)
 		os.Exit(1)
 	}
 }
@@ -86,14 +86,14 @@ type config struct {
 
 // model is a loaded language model.
 type model struct {
-	f       *mmf.File
+	f       *mim.File
 	prog    *interp.Program
 	tok     tokenizer.Tokenizer
 	context int
 }
 
 func load(path string, useRef bool) (*model, error) {
-	f, err := mmf.Open(path)
+	f, err := mim.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func load(path string, useRef bool) (*model, error) {
 	return m, nil
 }
 
-func newModel(f *mmf.File, useRef bool) (*model, error) {
+func newModel(f *mim.File, useRef bool) (*model, error) {
 	md, err := f.Metadata()
 	if err != nil {
 		return nil, err
@@ -152,8 +152,8 @@ func stepAll(s *interp.Session, ids []int32, pos int) ([]float32, error) {
 // forward runs ids at positions pos, pos+1, ... and returns the logits, a
 // float32 tensor of shape [1, len(ids), V].
 func forward(s *interp.Session, ids []int32, pos int) (*ref.Tensor, error) {
-	tokens, _ := ref.New(mmf.I32, []int{1, len(ids)})
-	positions, _ := ref.New(mmf.I64, []int{1, len(ids)})
+	tokens, _ := ref.New(mim.I32, []int{1, len(ids)})
+	positions, _ := ref.New(mim.I64, []int{1, len(ids)})
 	for i, id := range ids {
 		tokens.SetBits(i, uint64(uint32(id)))
 		positions.SetBits(i, uint64(pos+i))
@@ -166,7 +166,7 @@ func forward(s *interp.Session, ids []int32, pos int) (*ref.Tensor, error) {
 	for _, t := range out {
 		logits = t
 	}
-	if logits.DType != mmf.F32 || len(logits.Shape) != 3 || logits.Shape[1] != len(ids) {
+	if logits.DType != mim.F32 || len(logits.Shape) != 3 || logits.Shape[1] != len(ids) {
 		return nil, fmt.Errorf("logits are %s%v, want f32 [1, %d, V]", logits.DType, logits.Shape, len(ids))
 	}
 	return logits, nil

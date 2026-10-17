@@ -9,14 +9,14 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mmf import dtypes as D
-from mmf import container as C
-from mmf.container import File
-from mmf.errors import MMFError
-from mmf.executor import Program
-from mmf.metadata import decode_metadata
-from mmf.tensor import Tensor
-from mmf.writer import CONST, INPUT, OUTPUT, WEIGHT, GraphBuilder, Writer, encode_metadata
+from mim import dtypes as D
+from mim import container as C
+from mim.container import File
+from mim.errors import MIMError
+from mim.executor import Program
+from mim.metadata import decode_metadata
+from mim.tensor import Tensor
+from mim.writer import CONST, INPUT, OUTPUT, WEIGHT, GraphBuilder, Writer, encode_metadata
 
 
 def f32(*a):
@@ -50,33 +50,33 @@ class TestContainer(unittest.TestCase):
     def test_rejects(self):
         w = Writer()
         w.add_tensor("t", "f32", [1], f32(0))
-        with self.assertRaises(MMFError) as e:
+        with self.assertRaises(MIMError) as e:
             w.add_tensor("t", "f32", [1], f32(0))
         self.assertEqual(e.exception.code, "duplicate")
-        with self.assertRaises(MMFError) as e:
+        with self.assertRaises(MIMError) as e:
             w.add_tensor("u", "f32", [2], f32(0))
         self.assertEqual(e.exception.code, "size-mismatch")
-        with self.assertRaises(MMFError) as e:
+        with self.assertRaises(MIMError) as e:
             w.add_tensor("v", "q4_0", [16], bytes(9))
         self.assertEqual(e.exception.code, "bad-shape")
-        with self.assertRaises(MMFError) as e:
+        with self.assertRaises(MIMError) as e:
             w.add_tensor("", "f32", [1], f32(0))
         self.assertEqual(e.exception.code, "bad-name")
-        with self.assertRaises(MMFError) as e:
+        with self.assertRaises(MIMError) as e:
             Writer(data_alignment=1000)
         self.assertEqual(e.exception.code, "bad-alignment")
         w.add_section(C.METADATA, encode_metadata({}))
-        with self.assertRaises(MMFError):
+        with self.assertRaises(MIMError):
             w.add_section(C.METADATA, encode_metadata({}))
 
     def test_write_is_atomic_and_readable(self):
         w = Writer()
         w.add_tensor("t", "f32", [2], f32(1, 2))
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "m.mmf")
+            p = os.path.join(d, "m.mim")
             n = w.write(p)
             self.assertEqual(os.path.getsize(p), n)
-            self.assertEqual(os.listdir(d), ["m.mmf"])
+            self.assertEqual(os.listdir(d), ["m.mim"])
             # Read rather than map: Windows cannot delete a mapped file.
             with open(p, "rb") as fh:
                 File(fh.read()).verify_hashes()
@@ -156,7 +156,7 @@ class TestGraph(unittest.TestCase):
 
     def test_unknown_symdim(self):
         g = GraphBuilder()
-        with self.assertRaises(MMFError):
+        with self.assertRaises(MIMError):
             g.value("x", D.F32, ["T"], INPUT)
 
 

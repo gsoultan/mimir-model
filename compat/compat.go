@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -36,14 +36,14 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/interp"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/interp"
+	"github.com/gsoultan/mim/ref"
 )
 
 // Format and Version identify an expected.json file.
 const (
-	Format  = "mmf-compat"
+	Format  = "mim-compat"
 	Version = 1
 )
 
@@ -128,12 +128,12 @@ type Output struct {
 
 // Describe builds the expected description of the container, sections,
 // tensors and metadata of f.
-func Describe(f *mmf.File) (*Expected, error) {
+func Describe(f *mim.File) (*Expected, error) {
 	p := f.Preamble()
 	e := &Expected{Format: Format, Version: Version,
 		Container: Container{p.Major, p.Minor, p.DataAlignment}}
 	for _, s := range f.Sections() {
-		e.Sections = append(e.Sections, Section{uint32(s.Kind), s.Flags&mmf.FlagRequired != 0, uint8(s.HashAlg), s.Length})
+		e.Sections = append(e.Sections, Section{uint32(s.Kind), s.Flags&mim.FlagRequired != 0, uint8(s.HashAlg), s.Length})
 	}
 	for i := 0; i < f.NumTensors(); i++ {
 		t := f.TensorAt(i)
@@ -158,7 +158,7 @@ func Describe(f *mmf.File) (*Expected, error) {
 		e.Metadata = append(e.Metadata, m)
 	}
 	e.Metadata = nonNil(e.Metadata)
-	if _, ok := f.Section(mmf.SectionGraph); ok {
+	if _, ok := f.Section(mim.SectionGraph); ok {
 		g, err := f.Graph()
 		if err != nil {
 			return nil, err
@@ -258,7 +258,7 @@ func Check(dir string, e *Expected, fast bool) error {
 	if err != nil {
 		return err
 	}
-	f, err := mmf.Parse(b)
+	f, err := mim.Parse(b)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
@@ -342,7 +342,7 @@ func jsonEqual(a, b json.RawMessage) bool {
 
 // Tensor decodes td.
 func (td TensorData) Tensor() (*ref.Tensor, error) {
-	dt, ok := mmf.ParseDType(td.DType)
+	dt, ok := mim.ParseDType(td.DType)
 	if !ok {
 		return nil, fmt.Errorf("dtype %q", td.DType)
 	}
@@ -378,7 +378,7 @@ func CompareOutput(got *ref.Tensor, want Output) error {
 		}
 		return nil
 	case "close":
-		if got.DType != mmf.F32 {
+		if got.DType != mim.F32 {
 			return fmt.Errorf("check close needs f32, have %s", got.DType)
 		}
 		var big, worst float64

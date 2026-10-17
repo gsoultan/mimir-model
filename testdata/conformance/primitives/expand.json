@@ -1,4 +1,4 @@
-{"format": "mmf-conformance", "op": "expand", "opcode": 26, "version": 1, "cases": [
+{"format": "mim-conformance", "op": "expand", "opcode": 26, "version": 1, "cases": [
 {"check":{"kind":"bits"},"inputs":[{"data":"0100c07f314ed37cd3833633","dtype":"f32","shape":[3,1]}],"name":"f32/3x1_to_3x4","output":{"data":"0100c07f0100c07f0100c07f0100c07f314ed37c314ed37c314ed37c314ed37cd3833633d3833633d3833633d3833633","dtype":"f32","shape":[3,4]}},
 {"check":{"kind":"bits"},"inputs":[{"data":"0100c07f314ed37c","dtype":"f32","shape":[1,1,2]}],"name":"f32/1x1x2_to_2x3x2","output":{"data":"0100c07f314ed37c0100c07f314ed37c0100c07f314ed37c0100c07f314ed37c0100c07f314ed37c0100c07f314ed37c","dtype":"f32","shape":[2,3,2]}},
 {"check":{"kind":"bits"},"inputs":[{"data":"0100c07f","dtype":"f32","shape":[1]}],"name":"f32/1_to_0","output":{"data":"","dtype":"f32","shape":[0]}},

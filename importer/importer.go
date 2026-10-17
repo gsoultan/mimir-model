@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,13 +11,13 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Package importer converts GGUF, safetensors and ONNX files into mmf.
+// Package importer converts GGUF, safetensors and ONNX files into mim.
 //
-// Tensors are copied byte for byte: every GGUF block type that mmf defines
+// Tensors are copied byte for byte: every GGUF block type that mim defines
 // has the same canonical layout (ADR 0004), and safetensors stores plain
 // little-endian arrays, so an import never re-quantizes or rounds. Metadata
 // keys are carried over with their types. Neither GGUF nor safetensors
-// carries a graph mmf can use, so such an import holds weights and metadata
+// carries a graph mim can use, so such an import holds weights and metadata
 // only, unless BuildLlama adds one. ONNX models of a convolutional subset
 // are converted with their graph (see ParseONNX).
 //
@@ -30,13 +30,13 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // Tensor is one tensor of a source file. Data aliases the source bytes.
 type Tensor struct {
 	Name  string
-	DType mmf.DType
+	DType mim.DType
 	Shape []uint64 // row-major, outermost dimension first
 	Data  []byte
 }
@@ -45,10 +45,10 @@ type Tensor struct {
 type Source struct {
 	Format   string // "gguf", "safetensors" or "onnx"
 	Tensors  []Tensor
-	Metadata mmf.Metadata
+	Metadata mim.Metadata
 	// Graph is an optional graph built by the importer (see BuildLlama).
 	// The Ref of its weight, const and variable values indexes Tensors.
-	Graph *mmf.Graph
+	Graph *mim.Graph
 }
 
 // Detect returns "gguf", "safetensors" or "" for the leading bytes of a file.
@@ -89,7 +89,7 @@ func Merge(srcs ...*Source) (*Source, error) {
 			return nil, fmt.Errorf("a %s source with a graph cannot be merged with others", s.Format)
 		}
 	}
-	out := &Source{Format: srcs[0].Format, Metadata: mmf.Metadata{}}
+	out := &Source{Format: srcs[0].Format, Metadata: mim.Metadata{}}
 	seen := map[string]bool{}
 	for _, s := range srcs {
 		if s.Format != out.Format {
@@ -112,7 +112,7 @@ func Merge(srcs ...*Source) (*Source, error) {
 // AddTo adds the source's tensors, a metadata section and, when the source
 // has one, its graph to w. Tensors are added in name order so the weights
 // region is laid out deterministically.
-func (s *Source) AddTo(w *mmf.Writer) error {
+func (s *Source) AddTo(w *mim.Writer) error {
 	order := make([]int, len(s.Tensors))
 	for i := range order {
 		order[i] = i
@@ -128,9 +128,9 @@ func (s *Source) AddTo(w *mmf.Writer) error {
 	}
 	if s.Graph != nil {
 		g := *s.Graph
-		g.Values = append([]mmf.Value(nil), s.Graph.Values...)
+		g.Values = append([]mim.Value(nil), s.Graph.Values...)
 		for i, v := range g.Values {
-			if v.Kind != mmf.KindWeight && v.Kind != mmf.KindConst && v.Kind != mmf.KindVariable || v.Zero {
+			if v.Kind != mim.KindWeight && v.Kind != mim.KindConst && v.Kind != mim.KindVariable || v.Zero {
 				continue
 			}
 			if int(v.Ref) >= len(pos) {
@@ -142,11 +142,11 @@ func (s *Source) AddTo(w *mmf.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := w.AddSection(mmf.SectionGraph, true, enc); err != nil {
+		if err := w.AddSection(mim.SectionGraph, true, enc); err != nil {
 			return err
 		}
 	}
-	md := mmf.Metadata{}
+	md := mim.Metadata{}
 	for k, v := range s.Metadata {
 		md[k] = v
 	}
@@ -155,16 +155,16 @@ func (s *Source) AddTo(w *mmf.Writer) error {
 	if err != nil {
 		return err
 	}
-	return w.AddSection(mmf.SectionMetadata, false, enc)
+	return w.AddSection(mim.SectionMetadata, false, enc)
 }
 
 // checkTensor verifies that a tensor's data length matches its dtype and
 // shape.
 func checkTensor(t Tensor) error {
-	if len(t.Shape) > mmf.MaxRank {
-		return fmt.Errorf("tensor %q: rank %d exceeds %d", t.Name, len(t.Shape), mmf.MaxRank)
+	if len(t.Shape) > mim.MaxRank {
+		return fmt.Errorf("tensor %q: rank %d exceeds %d", t.Name, len(t.Shape), mim.MaxRank)
 	}
-	n, err := mmf.ByteSize(t.DType, t.Shape)
+	n, err := mim.ByteSize(t.DType, t.Shape)
 	if err != nil {
 		return fmt.Errorf("tensor %q: %w", t.Name, err)
 	}
