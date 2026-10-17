@@ -44,7 +44,7 @@ func TestBuildLlama(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := LlamaConfig{Arch: "llama", Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 64, RopeDims: 64,
-		RopeTheta: 10000, NormEps: float64(float32(1e-5)), Vocab: 441, Context: 32, MaxContext: 64}
+		RopeTheta: 10000, NormEps: float64(float32(1e-5)), Vocab: 441, Context: 32, MaxContext: 64, Slots: 1}
 	if *c != want {
 		t.Fatalf("config %+v, want %+v", *c, want)
 	}
@@ -135,7 +135,7 @@ func TestBuildQwen2(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := LlamaConfig{Arch: "qwen2", Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 64, RopeDims: 64,
-		RopeTheta: 1e6, NormEps: float64(float32(1e-6)), Vocab: 406, Context: 32, MaxContext: 64}
+		RopeTheta: 1e6, NormEps: float64(float32(1e-6)), Vocab: 406, Context: 32, MaxContext: 64, Slots: 1}
 	if *c != want {
 		t.Fatalf("config %+v, want %+v", *c, want)
 	}
