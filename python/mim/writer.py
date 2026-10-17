@@ -136,7 +136,7 @@ class Writer:
 
         out = bytearray(file_len)
         out[0 : C.PREAMBLE_SIZE] = struct.pack(
-            "<4sHHIIQQQQQQ", C.MAGIC, 0, 1, C.BYTE_ORDER_MARK, self.data_alignment,
+            "<4sHHIIQQQQQQ", C.MAGIC, 0, 2, C.BYTE_ORDER_MARK, self.data_alignment,
             C.PREAMBLE_SIZE, index_len, data_off, len(weights), file_len, 0,
         )
         out[C.PREAMBLE_SIZE : C.PREAMBLE_SIZE + index_len] = idx

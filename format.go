@@ -26,7 +26,7 @@ const (
 	ByteOrderMark uint32 = 0x0A0B0C0D
 
 	FormatMajor uint16 = 0
-	FormatMinor uint16 = 1
+	FormatMinor uint16 = 2
 
 	PreambleSize     = 64
 	IndexHeaderSize  = 16
@@ -56,7 +56,7 @@ const (
 	SectionMetadata    SectionKind = 2
 	SectionGraph       SectionKind = 3
 	SectionRepackCache SectionKind = 4 // reserved, layout not yet specified
-	SectionTraining    SectionKind = 5 // reserved, layout not yet specified
+	SectionTraining    SectionKind = 5 // spec/training.md
 )
 
 func (k SectionKind) known() bool { return k >= SectionWeights && k <= SectionTraining }

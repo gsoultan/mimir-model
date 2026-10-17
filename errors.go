@@ -47,6 +47,7 @@ const (
 	CodeBadHashAlg         Code = "bad-hash-algorithm"
 	CodeBadMetadata        Code = "bad-metadata"
 	CodeBadGraph           Code = "bad-graph"
+	CodeBadTraining        Code = "bad-training"
 	CodeNotFound           Code = "not-found"
 	CodeUnsupportedDType   Code = "unsupported-dtype"
 )
