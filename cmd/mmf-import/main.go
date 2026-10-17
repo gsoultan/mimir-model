@@ -20,9 +20,10 @@
 //
 // Several safetensors shards are merged into one file. Tensors are copied
 // byte for byte. By default the output holds weights and metadata only;
-// with -graph, a GGUF file of the llama architecture also gets a runnable
-// forward-pass graph with a key-value cache of -ctx positions (default: the
-// model's context length), which mmf-run can generate text with. Its
+// with -graph, a GGUF file of the llama or qwen2 architecture also gets a
+// runnable forward-pass graph with a key-value cache of -ctx positions
+// (default: the model's context length), which mmf-run can generate text
+// with. Its
 // matrix products with quantized weights are dequant_matmul_a8, which
 // lets a runtime round the activations to 8-bit blocks as llama.cpp does:
 // blocks of 256 for K-quant weights (v2) and of 32 for the others (v1).
@@ -54,7 +55,7 @@ func main() {
 	out := flag.String("o", "", "output file (default: first input with the extension replaced by .mmf)")
 	bench := flag.Bool("bench", false, "report sizes and load times of the input and the output")
 	nohash := flag.Bool("nohash", false, "do not write section hashes")
-	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama architecture)")
+	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama or qwen2 architecture)")
 	ctx := flag.Int("ctx", 0, "with -graph, the key-value cache length (default: the model's context length)")
 	a8 := flag.Bool("a8", true, "with -graph, let runtimes round activations to 8 bits in quantized matrix products (dequant_matmul_a8), as llama.cpp does")
 	kv := flag.String("kv", "f16", "with -graph, the key-value cache dtype: f16 or f32")
@@ -145,7 +146,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 		if err != nil {
 			return err
 		}
-		graphNote = fmt.Sprintf(", llama graph: %d layers, %d heads (%d key-value), context %d", c.Layers, c.Heads, c.KVHeads, c.Context)
+		graphNote = fmt.Sprintf(", %s graph: %d layers, %d heads (%d key-value), context %d", c.Arch, c.Layers, c.Heads, c.KVHeads, c.Context)
 	}
 	mw := mmf.NewWriter()
 	mw.Hash = hash
