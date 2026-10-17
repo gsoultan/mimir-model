@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,7 +11,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Package ref holds the reference kernels of the mmf primitives
+// Package ref holds the reference kernels of the mim primitives
 // (spec/primitives.md). The kernels favour clarity over speed: every element
 // is decoded, computed and re-encoded one at a time, and every result is
 // rounded once to the output dtype. They are checked against the
@@ -26,13 +26,13 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // Tensor is a dense tensor: a dtype, a shape and the packed little-endian
-// element bytes in row-major order, laid out as in an mmf file.
+// element bytes in row-major order, laid out as in a mim file.
 type Tensor struct {
-	DType mmf.DType
+	DType mim.DType
 	Shape []int
 	Data  []byte
 }
@@ -48,7 +48,7 @@ func NumElems(shape []int) int {
 
 // ByteSize returns the number of bytes a tensor of dtype dt and the given
 // shape occupies, or an error when the shape is invalid for dt.
-func ByteSize(dt mmf.DType, shape []int) (int, error) {
+func ByteSize(dt mim.DType, shape []int) (int, error) {
 	us := make([]uint64, len(shape))
 	for i, s := range shape {
 		if s < 0 {
@@ -56,7 +56,7 @@ func ByteSize(dt mmf.DType, shape []int) (int, error) {
 		}
 		us[i] = uint64(s)
 	}
-	n, err := mmf.ByteSize(dt, us)
+	n, err := mim.ByteSize(dt, us)
 	if err != nil {
 		return 0, err
 	}
@@ -64,7 +64,7 @@ func ByteSize(dt mmf.DType, shape []int) (int, error) {
 }
 
 // New returns a zero-filled tensor.
-func New(dt mmf.DType, shape []int) (*Tensor, error) {
+func New(dt mim.DType, shape []int) (*Tensor, error) {
 	n, err := ByteSize(dt, shape)
 	if err != nil {
 		return nil, err
@@ -88,7 +88,7 @@ func (t *Tensor) Validate() error {
 func (t *Tensor) NumElems() int { return NumElems(t.Shape) }
 
 // elemSize is the byte width of one element of a plain dtype.
-func elemSize(dt mmf.DType) int { return int(dt.BlockBytes()) }
+func elemSize(dt mim.DType) int { return int(dt.BlockBytes()) }
 
 // Bits returns element i as a zero-extended bit pattern.
 func (t *Tensor) Bits(i int) uint64 { return loadBits(t.DType, t.Data, i) }
@@ -96,7 +96,7 @@ func (t *Tensor) Bits(i int) uint64 { return loadBits(t.DType, t.Data, i) }
 // SetBits stores the low bits of b as element i.
 func (t *Tensor) SetBits(i int, b uint64) { storeBits(t.DType, t.Data, i, b) }
 
-func loadBits(dt mmf.DType, data []byte, i int) uint64 {
+func loadBits(dt mim.DType, data []byte, i int) uint64 {
 	switch elemSize(dt) {
 	case 1:
 		return uint64(data[i])
@@ -109,7 +109,7 @@ func loadBits(dt mmf.DType, data []byte, i int) uint64 {
 	}
 }
 
-func storeBits(dt mmf.DType, data []byte, i int, b uint64) {
+func storeBits(dt mim.DType, data []byte, i int, b uint64) {
 	switch elemSize(dt) {
 	case 1:
 		data[i] = byte(b)

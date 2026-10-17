@@ -1,4 +1,4 @@
-"""The tiny Llama of testdata/llama, run from its mmf file: the prompt and
+"""The tiny Llama of testdata/llama, run from its mim file: the prompt and
 the greedy continuation, step by step through the key-value cache, against
 the float64 NumPy oracle that the Go executor is also checked against."""
 
@@ -10,12 +10,12 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mmf import dtypes as D
-from mmf.container import File
-from mmf.executor import Program
-from mmf.tensor import Tensor
+from mim import dtypes as D
+from mim.container import File
+from mim.executor import Program
+from mim.tensor import Tensor
 
-MODEL = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "tiny-llama.mmf")
+MODEL = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "tiny-llama.mim")
 
 
 def logits(b64):

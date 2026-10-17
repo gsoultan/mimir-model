@@ -5,7 +5,7 @@
  "models": [
   {
    "name": "tiny-cnn",
-   "mmf": "tiny-cnn.mmf",
+   "mim": "tiny-cnn.mim",
    "runs": [
     {
      "inputs": {
@@ -59,7 +59,7 @@
   },
   {
    "name": "audio",
-   "mmf": "audio.mmf",
+   "mim": "audio.mim",
    "runs": [
     {
      "inputs": {
@@ -127,7 +127,7 @@
   },
   {
    "name": "tiny-gpt",
-   "mmf": "tiny-gpt.mmf",
+   "mim": "tiny-gpt.mim",
    "runs": [
     {
      "inputs": {
@@ -179,7 +179,7 @@
   },
   {
    "name": "tiny-llama",
-   "mmf": "tiny-llama.mmf",
+   "mim": "tiny-llama.mim",
    "runs": [
     {
      "inputs": {
@@ -231,7 +231,7 @@
   },
   {
    "name": "tiny-llama-kv",
-   "mmf": "tiny-llama-kv.mmf",
+   "mim": "tiny-llama-kv.mim",
    "runs": [
     {
      "inputs": {

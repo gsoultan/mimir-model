@@ -1,4 +1,4 @@
-{"format": "mmf-conformance", "op": "const", "opcode": 32, "version": 1, "cases": [
+{"format": "mim-conformance", "op": "const", "opcode": 32, "version": 1, "cases": [
 {"attrs":{"value":{"float":"9a9999999999b93f"}},"check":{"kind":"exact"},"inputs":[],"name":"f32/float_0.1/shapescalar","output":{"data":"cdcccc3d","dtype":"f32","shape":[]}},
 {"attrs":{"value":{"float":"9a9999999999b93f"}},"check":{"kind":"exact"},"inputs":[],"name":"f32/float_0.1/shape2x3","output":{"data":"cdcccc3dcdcccc3dcdcccc3dcdcccc3dcdcccc3dcdcccc3d","dtype":"f32","shape":[2,3]}},
 {"attrs":{"value":{"float":"9a9999999999b93f"}},"check":{"kind":"exact"},"inputs":[],"name":"f32/float_0.1/shape0","output":{"data":"","dtype":"f32","shape":[0]}},

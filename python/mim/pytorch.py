@@ -1,11 +1,11 @@
-"""Exporting PyTorch models to mmf, built on torch.export.
+"""Exporting PyTorch models to mim, built on torch.export.
 
     import torch
     from torch.export import Dim
-    from mmf.pytorch import export
+    from mim.pytorch import export
 
     model.eval()
-    export(model, (x,), "model.mmf", dynamic_shapes={"x": {0: Dim("batch", max=64)}})
+    export(model, (x,), "model.mim", dynamic_shapes={"x": {0: Dim("batch", max=64)}})
 
 `torch.export.export` traces the model into a graph of ATen operators with
 the parameters lifted out. Each operator becomes primitives of
@@ -60,10 +60,10 @@ _DTYPES = {
 _TORCH = {v: k for k, v in _DTYPES.items()}
 
 
-def _mmf_dtype(td):
+def _mim_dtype(td):
     dt = _DTYPES.get(td)
     if dt is None:
-        raise ExportError(f"dtype {td} has no mmf equivalent")
+        raise ExportError(f"dtype {td} has no mim equivalent")
     return dt
 
 
@@ -188,7 +188,7 @@ class _Converter:
                 return int(expr)
             if expr.is_Symbol and expr in self.sym:
                 return self.sym[expr]
-            self.fail(f"dimension {expr} is an expression of symbolic sizes; mmf dimensions are literal or a single symbol")
+            self.fail(f"dimension {expr} is an expression of symbolic sizes; mim dimensions are literal or a single symbol")
         self.fail(f"dimension {d!r}")
 
     def meta(self, node):
@@ -338,7 +338,7 @@ class _Converter:
             d = self.dim(x)
             if isinstance(d, int):
                 return d
-            self.fail("a value computed from a symbolic size; mmf graphs cannot use sizes as data")
+            self.fail("a value computed from a symbolic size; mim graphs cannot use sizes as data")
         if isinstance(x, torch.fx.Node):
             v = self.env.get(x)
             if isinstance(v, (int, float, bool)):
@@ -364,7 +364,7 @@ class _Converter:
     def materialize(self, c):
         if c.vid is None:
             t = c.tensor
-            dt = _mmf_dtype(t.dtype)
+            dt = _mim_dtype(t.dtype)
             name = c.name
             if name in self.tensor_names:
                 n = 1
@@ -381,7 +381,7 @@ class _Converter:
         """A graph variable for the mutated buffer t. A buffer of zeros, such
         as an empty key-value cache, is ZERO_INIT and takes no file space;
         any other starts from its stored value."""
-        dt = _mmf_dtype(t.dtype)
+        dt = _mim_dtype(t.dtype)
         shape = list(t.shape)
         self.tensor_names.add(name)
         if t.numel() and not torch.count_nonzero(t) and not (t.is_floating_point() and torch.signbit(t).any()):
@@ -450,7 +450,7 @@ class _Converter:
                 kind = spec.kind.name
                 if kind == "USER_INPUT":
                     t = self.meta(node)
-                    self.tv[node] = g.value(node.name, _mmf_dtype(t.dtype), self.shape_of_meta(t), INPUT)
+                    self.tv[node] = g.value(node.name, _mim_dtype(t.dtype), self.shape_of_meta(t), INPUT)
                 elif kind in ("PARAMETER", "BUFFER", "CONSTANT_TENSOR"):
                     src = state if kind != "CONSTANT_TENSOR" else consts
                     t = src.get(spec.target)
@@ -521,7 +521,7 @@ class _Converter:
             g.values[vid] = tuple(row)
 
         md = {"export.source_format": "pytorch", "export.torch_version": str(torch.__version__),
-              "export.exporter": f"mmf.pytorch {EXPORTER_VERSION}"}
+              "export.exporter": f"mim.pytorch {EXPORTER_VERSION}"}
         if name:
             md["general.name"] = name
         md.update(metadata)
@@ -570,7 +570,7 @@ class _Converter:
             return
         # Check the result against what torch.export recorded, and name it.
         if isinstance(val, torch.Tensor):
-            want_dt, want_shape = _mmf_dtype(val.dtype), self.shape_of_meta(val)
+            want_dt, want_shape = _mim_dtype(val.dtype), self.shape_of_meta(val)
             if self.dt(r) is not want_dt or self.shp(r) != want_shape:
                 self.fail(f"lowered to {self.dt(r).name}{self.shp(r)}, torch.export recorded {want_dt.name}{want_shape}")
         if r >= before and not self.g.values[r][0]:
@@ -636,7 +636,7 @@ def _lower(*names):
 
 def _out(cv, node):
     val = cv.meta(node)
-    return _mmf_dtype(val.dtype), cv.shape_of_meta(val)
+    return _mim_dtype(val.dtype), cv.shape_of_meta(val)
 
 
 def _axis(ax, r):
@@ -793,7 +793,7 @@ def _promoted(cv, a, b):
             x = cv.number(x)
         return x
 
-    return _mmf_dtype(torch.result_type(proto(a), proto(b)))
+    return _mim_dtype(torch.result_type(proto(a), proto(b)))
 
 
 def _arith(op, reverse=False, negate=False):
@@ -1418,7 +1418,7 @@ def _rms_norm(cv, node, a):
 
 def _with_dtype(cv, x, a):
     d = a.get("dtype")
-    return cv.cast(x, _mmf_dtype(d)) if d is not None else x
+    return cv.cast(x, _mim_dtype(d)) if d is not None else x
 
 
 @_lower("softmax.int", "_softmax.default", "log_softmax.int", "_log_softmax.default")
@@ -1517,7 +1517,7 @@ def _sdpa(cv, node, a):
     q, k, v = cv.v(a["query"]), cv.v(a["key"]), cv.v(a["value"])
     qs, ks = cv.shp(q), cv.shp(k)
     if len(qs) != 4:
-        cv.fail(f"attention on rank-{len(qs)} tensors; mmf's attention.v1 takes [B, H, T, D]")
+        cv.fail(f"attention on rank-{len(qs)} tensors; mim's attention.v1 takes [B, H, T, D]")
     if a.get("dropout_p"):
         cv.fail("attention dropout")
     attrs = []
@@ -1528,7 +1528,7 @@ def _sdpa(cv, node, a):
             cv.fail("query and key head counts differ without enable_gqa")
         attrs.append(("num_kv_heads", "int", ks[1]))
     if a.get("is_causal"):
-        # torch aligns the causal mask to the top left, mmf to the end of
+        # torch aligns the causal mask to the top left, mim to the end of
         # the keys; they agree when the lengths are equal.
         if qs[2] != ks[2]:
             cv.fail("causal attention with different query and key lengths")
@@ -1614,7 +1614,7 @@ def _adaptive_pool(cv, node, a):
     is_max = "max" in str(node.target)
     val = cv.meta(node)
     out_meta = val[0] if isinstance(val, (list, tuple)) else val
-    dt, shape = _mmf_dtype(out_meta.dtype), cv.shape_of_meta(out_meta)
+    dt, shape = _mim_dtype(out_meta.dtype), cv.shape_of_meta(out_meta)
     x = cv.v(a["self"])
     xs = cv.shp(x)
     if len(xs) != 4:

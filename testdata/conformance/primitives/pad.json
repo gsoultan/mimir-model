@@ -1,4 +1,4 @@
-{"format": "mmf-conformance", "op": "pad", "opcode": 28, "version": 1, "cases": [
+{"format": "mim-conformance", "op": "pad", "opcode": 28, "version": 1, "cases": [
 {"attrs":{"pads":{"ints":[1,0,2,1]}},"check":{"kind":"bits"},"inputs":[{"data":"0100c07f314ed37cd383363364cadd2b5ef8be902c1f1cf9","dtype":"f32","shape":[2,3]}],"name":"f32/pads1_0_2_1_in2x3_value0.0","output":{"data":"00000000000000000000000000000000000000000000000000000000000000000100c07f314ed37cd383363300000000000000000000000064cadd2b5ef8be902c1f1cf900000000","dtype":"f32","shape":[3,6]}},
 {"attrs":{"pads":{"ints":[0,0,0,0]}},"check":{"kind":"bits"},"inputs":[{"data":"0100c07f314ed37cd383363364cadd2b5ef8be902c1f1cf9","dtype":"f32","shape":[2,3]}],"name":"f32/pads0_0_0_0_in2x3_value0.0","output":{"data":"0100c07f314ed37cd383363364cadd2b5ef8be902c1f1cf9","dtype":"f32","shape":[2,3]}},
 {"attrs":{"pads":{"ints":[2,1]}},"check":{"kind":"bits"},"inputs":[{"data":"0100c07f314ed37cd3833633","dtype":"f32","shape":[3]}],"name":"f32/pads2_1_in3_value0.0","output":{"data":"00000000000000000100c07f314ed37cd383363300000000","dtype":"f32","shape":[6]}},

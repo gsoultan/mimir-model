@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,12 +17,12 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/ref"
 )
 
-func intsAttr(k string, v ...int64) mmf.Attr { return mmf.Attr{Key: k, Type: mmf.AttrInts, Ints: v} }
-func intAttr(k string, v int64) mmf.Attr     { return mmf.Attr{Key: k, Type: mmf.AttrInt, Int: v} }
+func intsAttr(k string, v ...int64) mim.Attr { return mim.Attr{Key: k, Type: mim.AttrInts, Ints: v} }
+func intAttr(k string, v int64) mim.Attr     { return mim.Attr{Key: k, Type: mim.AttrInt, Int: v} }
 
 // naiveConv is the definition of a grouped 2-D convolution, in float64.
 func naiveConv(x, w, bias []float32, nb, c, h, wd, f, kh, kw, g, sh, sw, dh, dw, top, left, ho, wo int) []float64 {
@@ -76,7 +76,7 @@ func TestConv2d(t *testing.T) {
 			in = append(in, b)
 			bias = f32View(b)
 		}
-		attrs := []mmf.Attr{
+		attrs := []mim.Attr{
 			intsAttr("strides", int64(tc.sh), int64(tc.sw)),
 			intsAttr("dilations", int64(tc.dh), int64(tc.dw)),
 			intsAttr("pads", int64(tc.top), int64(tc.bottom), int64(tc.left), int64(tc.right)),
@@ -97,8 +97,8 @@ func TestConv2d(t *testing.T) {
 			}
 		}
 	}
-	if _, err := stdlib["conv2d.v1"]([]mmf.Attr{iAttr("groups", 2)},
-		[]*ref.Tensor{randF32(rng, []int{1, 3, 4, 4}, 1), randF32(rng, []int{2, 1, 1, 1}, 1)}, []mmf.DType{mmf.F32}, nil); err == nil {
+	if _, err := stdlib["conv2d.v1"]([]mim.Attr{iAttr("groups", 2)},
+		[]*ref.Tensor{randF32(rng, []int{1, 3, 4, 4}, 1), randF32(rng, []int{2, 1, 1, 1}, 1)}, []mim.DType{mim.F32}, nil); err == nil {
 		t.Fatal("3 channels in 2 groups were accepted")
 	}
 }

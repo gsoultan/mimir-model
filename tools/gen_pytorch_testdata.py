@@ -6,10 +6,10 @@ Needs NumPy and PyTorch.
 
 Each model of python/tests/torch_models.py (a CNN, a 1-D convolutional
 network, a GPT-style and a Llama-style decoder, with deterministic random
-weights) is exported with mmf.pytorch to <name>.mmf, with a symbolic batch
+weights) is exported with mim.pytorch to <name>.mim, with a symbolic batch
 or sequence length. expected.json holds two input sets per model, of
 different sizes, and PyTorch's outputs for them, as base64 of
-little-endian bytes. tiny-llama-kv.mmf is the Llama with a key-value cache;
+little-endian bytes. tiny-llama-kv.mim is the Llama with a key-value cache;
 its runs are a prompt and three decode steps of one session, in order. The Go test in interp and the Python test run the
 files and compare with PyTorch; neither needs PyTorch installed.
 """
@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, "python"))
 sys.path.insert(0, os.path.join(ROOT, "python", "tests"))
 
 import torch_models as TM  # noqa: E402
-from mmf.pytorch import export  # noqa: E402
+from mim.pytorch import export  # noqa: E402
 
 OUT = os.path.join(ROOT, "testdata", "pytorch")
 
@@ -54,7 +54,7 @@ def kv_model():
     name = "tiny-llama-kv"
     m = TM.build_kv()
     args, dyn = TM.TinyLlamaKV.example()
-    path = os.path.join(OUT, f"{name}.mmf")
+    path = os.path.join(OUT, f"{name}.mim")
     data = export(m, args, path, dynamic_shapes=dyn, metadata={"general.license": "Apache-2.0"})
     m.reset()
     torch.manual_seed(2)
@@ -67,7 +67,7 @@ def kv_model():
         runs.append({"inputs": {"ids": arr(x), "pos": arr(pos)}, "outputs": {"output": arr(out)}})
         t += n
     print(f"{name}: {len(data)} bytes")
-    return {"name": name, "mmf": f"{name}.mmf", "runs": runs}
+    return {"name": name, "mim": f"{name}.mim", "runs": runs}
 
 
 def main():
@@ -76,7 +76,7 @@ def main():
     for name, cls in TM.MODELS.items():
         m = TM.build(name)
         args, dyn = cls.example()
-        path = os.path.join(OUT, f"{name}.mmf")
+        path = os.path.join(OUT, f"{name}.mim")
         data = export(m, args, path, dynamic_shapes=dyn, metadata={"general.license": "Apache-2.0"})
         input_names = list(dyn)
         runs = []
@@ -91,7 +91,7 @@ def main():
                 "inputs": {k: arr(v) for k, v in zip(input_names, ins)},
                 "outputs": {k: arr(v) for k, v in zip(onames, out)},
             })
-        models.append({"name": name, "mmf": f"{name}.mmf", "runs": runs})
+        models.append({"name": name, "mim": f"{name}.mim", "runs": runs})
         print(f"{name}: {len(data)} bytes")
     models.append(kv_model())
     doc = {

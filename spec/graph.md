@@ -1,4 +1,4 @@
-# mmf graph encoding v0.1
+# mim graph encoding v0.1
 
 Status: draft. This document defines the binary layout of the graph section
 (section kind 3). Operation semantics are in spec/primitives.md and
@@ -23,7 +23,7 @@ of the section and are multiples of 8.
 
 | offset | size | field |
 | --- | --- | --- |
-| 0 | 4 | magic `MMFG` |
+| 0 | 4 | magic `MIMG` (readers also accept the legacy `MMFG`) |
 | 4 | 2 | format major (0) |
 | 6 | 2 | format minor (1) |
 | 8 | 4 | primitive version (1) |
@@ -189,5 +189,5 @@ is checked separately from the structural rules above.
 
 - A composite body is referenced from `call` by `(name, version)`; the
   standard library's own bodies are not stored in model files.
-- The text form printed by `mmf-inspect` is for humans and tools; the binary
+- The text form printed by `mim-inspect` is for humans and tools; the binary
   form is the only normative one.

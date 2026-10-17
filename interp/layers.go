@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,8 +17,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/ref"
 )
 
 // This file holds the canonical bodies of the composites that models
@@ -37,38 +37,38 @@ func init() {
 	stdlib["cumsum.v1"] = cumsumV1
 }
 
-func (b *body) abs(x *ref.Tensor) *ref.Tensor { return b.bin(mmf.OpMax, x, b.un(mmf.OpNeg, x)) }
+func (b *body) abs(x *ref.Tensor) *ref.Tensor { return b.bin(mim.OpMax, x, b.un(mim.OpNeg, x)) }
 
 // erfBody is Abramowitz and Stegun formula 7.1.26, as in spec/stdlib.md
 // section 4.3.
 func erfBody(b *body, x *ref.Tensor) *ref.Tensor {
 	r, dt := len(x.Shape), x.DType
 	k := func(v float64) *ref.Tensor { return b.k(v, dt, r) }
-	s := b.where(b.eval(mmf.OpCmplt, nil, mmf.Bool, x.Shape, x, k(0)), k(-1), k(1))
+	s := b.where(b.eval(mim.OpCmplt, nil, mim.Bool, x.Shape, x, k(0)), k(-1), k(1))
 	ax := b.abs(x)
-	t := b.un(mmf.OpRecip, b.bin(mmf.OpAdd, k(1), b.bin(mmf.OpMul, k(0.3275911), ax)))
-	q := b.bin(mmf.OpMul, k(1.061405429), t)
+	t := b.un(mim.OpRecip, b.bin(mim.OpAdd, k(1), b.bin(mim.OpMul, k(0.3275911), ax)))
+	q := b.bin(mim.OpMul, k(1.061405429), t)
 	for _, a := range []float64{-1.453152027, 1.421413741, -0.284496736, 0.254829592} {
-		q = b.bin(mmf.OpMul, b.bin(mmf.OpAdd, q, k(a)), t)
+		q = b.bin(mim.OpMul, b.bin(mim.OpAdd, q, k(a)), t)
 	}
 	if b.err != nil {
 		return nil
 	}
-	e := expBody(b, b.un(mmf.OpNeg, b.bin(mmf.OpMul, ax, ax)))
-	return b.bin(mmf.OpMul, s, b.sub(k(1), b.bin(mmf.OpMul, q, e)))
+	e := expBody(b, b.un(mim.OpNeg, b.bin(mim.OpMul, ax, ax)))
+	return b.bin(mim.OpMul, s, b.sub(k(1), b.bin(mim.OpMul, q, e)))
 }
 
 func geluErfBody(b *body, x *ref.Tensor) *ref.Tensor {
 	r, dt := len(x.Shape), x.DType
-	e := erfBody(b, b.bin(mmf.OpMul, x, b.k(0.7071067811865476, dt, r)))
-	return b.bin(mmf.OpMul, b.bin(mmf.OpMul, b.k(0.5, dt, r), x), b.bin(mmf.OpAdd, b.k(1, dt, r), e))
+	e := erfBody(b, b.bin(mim.OpMul, x, b.k(0.7071067811865476, dt, r)))
+	return b.bin(mim.OpMul, b.bin(mim.OpMul, b.k(0.5, dt, r), x), b.bin(mim.OpAdd, b.k(1, dt, r), e))
 }
 
 func geluTanhBody(b *body, x *ref.Tensor) *ref.Tensor {
 	r, dt := len(x.Shape), x.DType
-	cube := b.bin(mmf.OpMul, x, b.bin(mmf.OpMul, x, x))
-	inner := b.bin(mmf.OpMul, b.k(0.7978845608028654, dt, r), b.bin(mmf.OpAdd, x, b.bin(mmf.OpMul, b.k(0.044715, dt, r), cube)))
-	return b.bin(mmf.OpMul, b.bin(mmf.OpMul, b.k(0.5, dt, r), x), b.bin(mmf.OpAdd, b.k(1, dt, r), tanhBody(b, inner)))
+	cube := b.bin(mim.OpMul, x, b.bin(mim.OpMul, x, x))
+	inner := b.bin(mim.OpMul, b.k(0.7978845608028654, dt, r), b.bin(mim.OpAdd, x, b.bin(mim.OpMul, b.k(0.044715, dt, r), cube)))
+	return b.bin(mim.OpMul, b.bin(mim.OpMul, b.k(0.5, dt, r), x), b.bin(mim.OpAdd, b.k(1, dt, r), tanhBody(b, inner)))
 }
 
 // trailingAxes returns the axes ax..r-1 and the number of elements they hold.
@@ -82,7 +82,7 @@ func trailingAxes(shape []int, ax int) ([]int, int) {
 	return axes, n
 }
 
-func layerNormV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func layerNormV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	a, err := readAttrs(list, "axis", "epsilon")
 	if err != nil {
 		return nil, err
@@ -116,12 +116,12 @@ func layerNormV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) 
 	n := b.k(float64(count), cd, r) // count(x, axes) is exactly count
 	mu := b.div(b.reduce("add", x, axes), n)
 	d := b.sub(x, mu)
-	v := b.div(b.reduce("add", b.bin(mmf.OpMul, d, d), axes), n)
-	inv := b.un(mmf.OpRecip, b.un(mmf.OpSqrt, b.bin(mmf.OpAdd, v, b.k(eps, cd, r))))
-	y := b.cast(b.bin(mmf.OpMul, d, inv), x0.DType)
-	y = b.bin(mmf.OpMul, y, b.reshape(in[1], append(ones(ax), in[1].Shape...)))
+	v := b.div(b.reduce("add", b.bin(mim.OpMul, d, d), axes), n)
+	inv := b.un(mim.OpRecip, b.un(mim.OpSqrt, b.bin(mim.OpAdd, v, b.k(eps, cd, r))))
+	y := b.cast(b.bin(mim.OpMul, d, inv), x0.DType)
+	y = b.bin(mim.OpMul, y, b.reshape(in[1], append(ones(ax), in[1].Shape...)))
 	if len(in) == 3 {
-		y = b.bin(mmf.OpAdd, y, b.reshape(in[2], append(ones(ax), in[2].Shape...)))
+		y = b.bin(mim.OpAdd, y, b.reshape(in[2], append(ones(ax), in[2].Shape...)))
 	}
 	return []*ref.Tensor{y}, b.err
 }
@@ -129,7 +129,7 @@ func layerNormV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) 
 // readAxes reads the axes attribute of a reduction composite.
 func readAxes(a attrs, r int) ([]int, error) {
 	v := a["axes"]
-	if v == nil || v.Type != mmf.AttrInts {
+	if v == nil || v.Type != mim.AttrInts {
 		return nil, fmt.Errorf("attribute \"axes\" must be ints")
 	}
 	seen := make([]bool, r)
@@ -148,7 +148,7 @@ func readAxes(a attrs, r int) ([]int, error) {
 	return axes, nil
 }
 
-func meanV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func meanV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	a, err := readAttrs(list, "axes")
 	if err != nil {
 		return nil, err
@@ -174,7 +174,7 @@ func meanV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*r
 
 // cumsumV1 runs the while loop of spec/stdlib.md section 5.7 directly: one
 // gather, add and scatter per position along the axis.
-func cumsumV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func cumsumV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	a, err := readAttrs(list, "axis", "exclusive", "reverse")
 	if err != nil {
 		return nil, err
@@ -212,28 +212,28 @@ func cumsumV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]
 	x := b.cast(x0, cd)
 	rowShape := append([]int{}, x0.Shape...)
 	rowShape[ax] = 1
-	zero := []mmf.Attr{{Key: "value", Type: mmf.AttrInt, Int: 0}}
+	zero := []mim.Attr{{Key: "value", Type: mim.AttrInt, Int: 0}}
 	if isFloat(cd) {
-		zero = []mmf.Attr{{Key: "value", Type: mmf.AttrFloat, Float: 0}}
+		zero = []mim.Attr{{Key: "value", Type: mim.AttrFloat, Float: 0}}
 	}
-	acc := b.eval(mmf.OpConst, zero, cd, rowShape)
-	y := b.eval(mmf.OpConst, zero, cd, x0.Shape)
-	gatherAt := []mmf.Attr{{Key: "axis", Type: mmf.AttrInt, Int: int64(ax)}}
+	acc := b.eval(mim.OpConst, zero, cd, rowShape)
+	y := b.eval(mim.OpConst, zero, cd, x0.Shape)
+	gatherAt := []mim.Attr{{Key: "axis", Type: mim.AttrInt, Int: int64(ax)}}
 	n := x0.Shape[ax]
 	for i := 0; i < n && b.err == nil; i++ {
 		pos := i
 		if reverse {
 			pos = n - 1 - i
 		}
-		j, _ := ref.New(mmf.I64, []int{1})
+		j, _ := ref.New(mim.I64, []int{1})
 		binary.LittleEndian.PutUint64(j.Data, uint64(pos))
-		xj := b.eval(mmf.OpGather, gatherAt, cd, rowShape, x, j)
+		xj := b.eval(mim.OpGather, gatherAt, cd, rowShape, x, j)
 		if exclusive {
-			y = b.eval(mmf.OpScatter, gatherAt, cd, x0.Shape, y, j, acc)
-			acc = b.bin(mmf.OpAdd, acc, xj)
+			y = b.eval(mim.OpScatter, gatherAt, cd, x0.Shape, y, j, acc)
+			acc = b.bin(mim.OpAdd, acc, xj)
 		} else {
-			acc = b.bin(mmf.OpAdd, acc, xj)
-			y = b.eval(mmf.OpScatter, gatherAt, cd, x0.Shape, y, j, acc)
+			acc = b.bin(mim.OpAdd, acc, xj)
+			y = b.eval(mim.OpScatter, gatherAt, cd, x0.Shape, y, j, acc)
 		}
 	}
 	return []*ref.Tensor{b.cast(y, dt)}, b.err

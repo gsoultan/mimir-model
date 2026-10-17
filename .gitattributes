@@ -5,5 +5,5 @@
 *.yml text eol=lf
 *.gguf binary
 *.safetensors binary
-*.mmf binary
+*.mim binary
 *.onnx binary
