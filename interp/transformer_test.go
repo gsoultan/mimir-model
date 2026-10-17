@@ -131,6 +131,23 @@ func TestFastPathsMatchBodies(t *testing.T) {
 		}
 		checkFast(t, "attention.v1", gqa, []*ref.Tensor{q, k, v, mask}, 1e-5)
 		checkFast(t, "attention.v1", gqa, []*ref.Tensor{q, k, v, randF32(rng, []int{1, 4, 3, 1}, 1)}, 1e-5)
+
+		// Rows long enough for the vector kernels, with a causal mask as
+		// the llama importer writes it: a query sees the keys up to its
+		// position, and the rest of the cache is masked.
+		q = randF32(rng, []int{1, 4, 11, 64}, 1)
+		k = randF32(rng, []int{1, 2, 40, 64}, 1)
+		v = randF32(rng, []int{1, 2, 40, 64}, 1)
+		causal, _ := ref.New(mmf.Bool, []int{1, 1, 11, 40})
+		for i := range 11 {
+			for j := range 40 {
+				if j <= i+20 {
+					causal.Data[i*40+j] = 1
+				}
+			}
+		}
+		checkFast(t, "attention.v1", gqa, []*ref.Tensor{q, k, v, causal}, 1e-5)
+		checkFast(t, "attention.v1", append(gqa, iAttr("causal", 1)), []*ref.Tensor{q, k, v}, 1e-5)
 	})
 	t.Run("embedding", func(t *testing.T) {
 		table := quantized(t, mmf.Q8_0, rng, 6, 32)
@@ -238,11 +255,13 @@ func kquant(rng *rand.Rand, dt mmf.DType, n, k int) *ref.Tensor {
 // and one weight row and one activation row are not finite.
 func TestDequantMatmulA8RowsTogether(t *testing.T) {
 	rng := rand.New(rand.NewSource(4))
-	const k, rows, n = 512, 21, 40
+	// 150 rows are several of linearA8's blocks of rows.
+	const k, rows, n = 512, 150, 40
 	attrs := []mmf.Attr{intAttr("block", 256)}
 	for _, dt := range []mmf.DType{mmf.Q4_K, mmf.Q6_K} {
 		x := randF32(rng, []int{rows, k}, 1)
 		x.SetBits(9*k+3, uint64(math.Float32bits(float32(math.Inf(1)))))
+		x.SetBits(97*k+300, uint64(math.Float32bits(float32(math.NaN()))))
 		w := kquant(rng, dt, n, k)
 		rb := len(w.Data) / n
 		bad := 20*rb + rb/2 // a block of weight row 20
