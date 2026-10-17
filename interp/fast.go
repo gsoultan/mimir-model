@@ -511,16 +511,18 @@ func attentionFast(name string, list []mmf.Attr, in []*ref.Tensor) ([]*ref.Tenso
 	// ends holds, for each query row, the end of its visible keys: keys
 	// past the last one a boolean mask allows, or past the causal limit,
 	// get no weight, so the loops below stop there. With a cache sized for
-	// the whole context, most keys are past the end.
-	var ends []int
+	// the whole context, most keys are past the end. starts likewise holds
+	// the first key a boolean mask allows: with a cache that holds several
+	// sequences, the keys of the sequences before are hidden.
+	var ends, starts []int
 	if mask != nil && mask.DType == mmf.Bool && mst[3] == 1 {
-		ends = make([]int, B*Hq*Tq)
+		ends, starts = make([]int, B*Hq*Tq), make([]int, B*Hq*Tq)
 		for b := 0; b < B; b++ {
 			for h := 0; h < Hq; h++ {
 				for i := 0; i < Tq; i++ {
 					at := (b*Hq+h)*Tq + i
 					if h > 0 && mst[1] == 0 {
-						ends[at] = ends[at-h*Tq]
+						ends[at], starts[at] = ends[at-h*Tq], starts[at-h*Tq]
 						continue
 					}
 					row := mask.Data[b*mst[0]+h*mst[1]+i*mst[2]:][:Tk]
@@ -528,7 +530,11 @@ func attentionFast(name string, list []mmf.Attr, in []*ref.Tensor) ([]*ref.Tenso
 					for e > 0 && row[e-1] == 0 {
 						e--
 					}
-					ends[at] = e
+					st := 0
+					for st < e && row[st] == 0 {
+						st++
+					}
+					ends[at], starts[at] = e, st
 				}
 			}
 		}
@@ -553,18 +559,24 @@ func attentionFast(name string, list []mmf.Attr, in []*ref.Tensor) ([]*ref.Tenso
 			vb := vr.sub(kvh*Tk, Tk)
 			for i := 0; i < Tq; i++ {
 				qi := qv[(bh*Tq+i)*D:][:D]
-				end := Tk
+				end, st := Tk, 0
 				if ends != nil {
-					end = ends[bh*Tq+i]
+					end, st = ends[bh*Tq+i], starts[bh*Tq+i]
 				}
 				if p.causal {
 					end = max(0, min(end, i+(Tk-Tq)+1))
 				}
-				sc := sc[:end]
 				o := out[(bh*Tq+i)*Dv:][:Dv]
-				if vector && attendRow(qi, kb.sub(0, end), vb.sub(0, end), scale, maskRow(b, h, i, end), sc, acc, o) {
-					continue
+				if vector && st < end {
+					var m []byte
+					if mask != nil {
+						m = maskRow(b, h, i, end)[st:]
+					}
+					if attendRow(qi, kb.sub(st, end-st), vb.sub(st, end-st), scale, m, sc[:end-st], acc, o) {
+						continue
+					}
 				}
+				sc := sc[:end]
 				mx := float32(math.Inf(-1))
 				for j := 0; j < end; j++ {
 					s := float32(math.Inf(-1))

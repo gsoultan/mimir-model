@@ -436,3 +436,57 @@ process that has already run a prompt, Mistral's 19 tokens take 0.64 s
 (29.5 tok/s). The rest is the cost of decoding each block of 16 weight
 rows for a single group of activations, which llama.cpp avoids with its
 repacked copy of the weights.
+
+## arm64
+
+The `bench-arm` workflow (`.github/workflows/bench-arm.yml`) runs on
+GitHub's macOS runner: an Apple M1 (virtual), 3 cores, Go 1.24, and
+llama-cpp-python 0.3.16 built for the CPU only (Metal and BLAS off). It
+ran once, on the random-weight TinyLlama: median of 5 runs at 38 prompt
+tokens and of 3 runs at 741, with 64 generated tokens each.
+
+| prompt | runtime | load | prompt | generation | peak RSS |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 38 | llama.cpp | 2603 ms | 59.1 tok/s | 47.8 tok/s | 762 MiB |
+| 38 | mmf-run | 6 ms | 60.3 tok/s | 27.6 tok/s | 670 MiB |
+| 741 | llama.cpp | 2823 ms | 60.6 tok/s | 34.6 tok/s | 817 MiB |
+| 741 | mmf-run | 11 ms | 15.7 tok/s | 6.5 tok/s | 913 MiB |
+
+The NEON kernels for the 8-bit matrix products hold their own: a short
+prompt reads as fast as llama.cpp's. The rest is behind: on arm64 only
+those products have SIMD kernels. Attention
+(scores, softmax, the weighted sum of values, and the f16 cache decoded
+one element at a time) and SwiGLU run in plain Go, and attention's cost
+grows with the context, which is why the 741-token prompt, and the
+generation that follows it, are four to five times slower than
+llama.cpp's. Generation is also slower after the short prompt, 27.6
+against 47.8 tok/s; that run has not been profiled on arm64 yet. NEON
+kernels for attention over the f16 cache are the next step.
+
+## Serving several requests at once
+
+`mmf-serve -bench N` starts N requests for the same prompt at once in
+one process, then the same N one after another, and reports the tokens
+generated per second of wall time, prompts included. The models were
+imported with `-slots 8` (TinyLlama with `-ctx 1024`, Mistral with `-ctx
+512`). Same machine as above, one run each.
+
+| model | requests | prompt | generated each | one at a time | at once | speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TinyLlama 1.1B | 2 | 38 | 64 | 31.1 tok/s | 37.8 tok/s | 1.2x |
+| TinyLlama 1.1B | 4 | 38 | 64 | 28.0 tok/s | 54.1 tok/s | 1.9x |
+| TinyLlama 1.1B | 8 | 38 | 64 | 29.7 tok/s | 61.3 tok/s | 2.1x |
+| Mistral 7B | 4 | 19 | 32 | 6.4 tok/s | 13.7 tok/s | 2.1x |
+| Mistral 7B | 8 | 19 | 32 | 6.4 tok/s | 17.9 tok/s | 2.8x |
+
+```
+go run ./cmd/mmf-import -graph -ctx 512 -slots 8 -o /tmp/big/mistral-s8.mmf /tmp/big/mistral-rand-q4km.gguf
+go run ./cmd/mmf-serve -m /tmp/big/mistral-s8.mmf -bench 8 -n 32
+```
+
+Generating one token reads every weight once, and at 7B that read is
+most of the step: a step for 8 requests reads the same 4.4 GB as a step
+for one, so throughput grows with the number of requests. The gain is
+smaller for TinyLlama, where reading the weights is a smaller share of a
+step, and stops short of N times because attention and the per-token
+work still grow with N.
