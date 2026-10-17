@@ -474,31 +474,3 @@ Prompts now read about 30% faster than llama.cpp's at both lengths, and
 generation is 8 to 12% slower instead of 40 to 80%. The CPU profile of
 the 741-token run (printed by the workflow) puts 61% of the time in the
 8-bit matrix product kernels and 10% in attention.
-
-## Serving several requests at once
-
-`mmf-serve -bench N` starts N requests for the same prompt at once in
-one process, then the same N one after another, and reports the tokens
-generated per second of wall time, prompts included. The models were
-imported with `-slots 8` (TinyLlama with `-ctx 1024`, Mistral with `-ctx
-512`). Same machine as above, one run each.
-
-| model | requests | prompt | generated each | one at a time | at once | speedup |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| TinyLlama 1.1B | 2 | 38 | 64 | 31.1 tok/s | 37.8 tok/s | 1.2x |
-| TinyLlama 1.1B | 4 | 38 | 64 | 28.0 tok/s | 54.1 tok/s | 1.9x |
-| TinyLlama 1.1B | 8 | 38 | 64 | 29.7 tok/s | 61.3 tok/s | 2.1x |
-| Mistral 7B | 4 | 19 | 32 | 6.4 tok/s | 13.7 tok/s | 2.1x |
-| Mistral 7B | 8 | 19 | 32 | 6.4 tok/s | 17.9 tok/s | 2.8x |
-
-```
-go run ./cmd/mmf-import -graph -ctx 512 -slots 8 -o /tmp/big/mistral-s8.mmf /tmp/big/mistral-rand-q4km.gguf
-go run ./cmd/mmf-serve -m /tmp/big/mistral-s8.mmf -bench 8 -n 32
-```
-
-Generating one token reads every weight once, and at 7B that read is
-most of the step: a step for 8 requests reads the same 4.4 GB as a step
-for one, so throughput grows with the number of requests. The gain is
-smaller for TinyLlama, where reading the weights is a smaller share of a
-step, and stops short of N times because attention and the per-token
-work still grow with N.
