@@ -157,3 +157,41 @@ func TestF16Attention(t *testing.T) {
 		}
 	}
 }
+
+// TestSiluMulF32 checks the float32 kernel against silu computed in
+// float64, within swiglu.v1's tolerance, rel (20 + 2|a|) u.
+func TestSiluMulF32(t *testing.T) {
+	rng := rand.New(rand.NewSource(21))
+	n := 1003
+	a, b, out := make([]float32, n), make([]float32, n), make([]float32, n)
+	for i := range a {
+		a[i] = float32(rng.NormFloat64() * 8)
+		b[i] = float32(rng.NormFloat64())
+	}
+	special := []float32{0, float32(math.Copysign(0, -1)), 1e-30, -1e-30, 87, -87, 88.8, -88.8, 89, -89, 100, -100,
+		1e30, -1e30, float32(math.Inf(1)), float32(math.Inf(-1)), float32(math.NaN())}
+	copy(a, special)
+	SiluMulF32(a, b, out)
+	const u = 0x1p-24
+	for i := range a {
+		x := float64(a[i])
+		want := x / (1 + math.Exp(-x)) * float64(b[i])
+		got := float64(out[i])
+		if math.IsNaN(want) || math.IsNaN(got) {
+			if math.IsNaN(want) != math.IsNaN(got) {
+				t.Errorf("a=%g b=%g: got %g, want %g", a[i], b[i], got, want)
+			}
+			continue
+		}
+		if math.IsInf(want, 0) {
+			if got != want {
+				t.Errorf("a=%g b=%g: got %g, want %g", a[i], b[i], got, want)
+			}
+			continue
+		}
+		tol := (20 + 2*math.Abs(x)) * u * math.Abs(want)
+		if math.Abs(got-want) > tol && math.Abs(got-want) >= 0x1p-126 { // results below the smallest normal float may round to zero
+			t.Errorf("a=%g b=%g: got %g, want %g (diff %g, tolerance %g)", a[i], b[i], got, want, got-want, tol)
+		}
+	}
+}

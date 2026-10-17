@@ -56,6 +56,22 @@ func ExpSumF32(x []float32, m float32) float32 {
 	return s
 }
 
+// SiluMulF32 sets out[i] to silu(a[i]) * b[i], silu(x) = x/(1+exp(-x)),
+// for the elements of out; a and b must be at least as long. With AVX2 the
+// exponentials are computed in float32 as in ExpSumF32, within a few units
+// in the last place, and so is the rest; otherwise in float64.
+func SiluMulF32(a, b, out []float32) {
+	a, b = a[:len(out)], b[:len(out)]
+	i := 0
+	if useAVX2 && len(out) >= 8 {
+		i = len(out) &^ 7
+		siluMulF32AVX2(&a[0], &b[0], &out[0], i)
+	}
+	for ; i < len(out); i++ {
+		out[i] = float32(float64(a[i]) / (1 + math.Exp(-float64(a[i]))) * float64(b[i]))
+	}
+}
+
 // WeightedSumF32 adds p[j] times row j of v, whose rows are len(acc) long,
 // to acc for each j of p, in order: the result is that of AxpyF32 called
 // for each row.

@@ -384,3 +384,55 @@ The runs of the long prompts generated 16 tokens.
   prompt position over vocabularies of 128,256 and 152,064 tokens, where
   llama.cpp computes only the last one's: 7% of the prompt's
   multiply-adds.
+
+## Faster prompts on AMX
+
+Same machine as the 7 to 8B models, median of 5 runs for TinyLlama (64
+generated tokens) and of 3 for the large models (32). "main" is mmf-run
+before this step. The machine is a shared cloud VM, and repeated runs of
+the same command vary by up to 15%.
+
+| model | prompt | llama.cpp | mmf-run main | mmf-run now |
+| --- | ---: | ---: | ---: | ---: |
+| TinyLlama 1.1B | 38 | 157.6 tok/s | 126.2 tok/s | 179.2 tok/s |
+| TinyLlama 1.1B | 741 | 200.9 tok/s | 181.4 tok/s | 213.1 tok/s |
+| Mistral 7B | 19 | 27.5 tok/s | 22.0 tok/s | 23.9 tok/s |
+| Mistral 7B | 181 | 36.2 tok/s | 43.8 tok/s | 60.6 tok/s |
+| Llama 3 8B | 19 | 25.5 tok/s | 15.7 tok/s | 18.1 tok/s |
+| Llama 3 8B | 181 | 41.8 tok/s | 39.1 tok/s | 55.5 tok/s |
+| Qwen2.5 7B | 18 | 28.0 tok/s | 21.2 tok/s | 21.3 tok/s |
+| Qwen2.5 7B | 180 | 38.1 tok/s | 45.7 tok/s | 56.0 tok/s |
+
+Generation and peak memory are unchanged (TinyLlama 36.9 tok/s and 695
+MiB; the large models 6.6 to 7.1 tok/s and 4.4 to 4.9 GiB). The
+large-model "main" column and llama.cpp's long-prompt figures are those of
+the previous section.
+
+mmf-run now reads TinyLlama's prompts faster than llama.cpp, short or
+long, and the large models' long prompts 1.3 to 1.7 times faster. What
+changed:
+
+- **Activation layout.** The rows of activations are laid out for the
+  tile products by group of 16 rows, one goroutine per group, so that no
+  two goroutines write the same cache line, and the Q6_K sums of 16 that
+  only the VNNI kernels read are no longer computed on AMX.
+- **Buffers are reused.** The quantized activations, their tile layout
+  and the kernels' scratch space come from pools instead of being
+  allocated for each matrix product.
+- **The weights are prefetched** two blocks ahead in the AMX kernels'
+  decoding loops.
+- **The results are written one weight row at a time**, straight from
+  the kernel's totals, instead of through a second pass.
+- **SwiGLU is vectorized** (`kernels.SiluMulF32`, AVX2), within
+  `swiglu.v1`'s tolerance down to the smallest normal float: it computes
+  exp(-|x|/2) and squares it, so the result does not round to zero where
+  silu(x) is still a normal float. It took 11% of a long prompt.
+
+Short prompts of the large models are still 10 to 30% slower than
+llama.cpp's. They are measured in a fresh process, which maps the 4.4 to
+4.9 GB file and faults its pages in during the first prompt, where
+llama.cpp reads and repacks the file during its 1 to 3 second load; in a
+process that has already run a prompt, Mistral's 19 tokens take 0.64 s
+(29.5 tok/s). The rest is the cost of decoding each block of 16 weight
+rows for a single group of activations, which llama.cpp avoids with its
+repacked copy of the weights.
