@@ -43,7 +43,7 @@ func TestBuildLlama(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := LlamaConfig{Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 64, RopeDims: 64,
+	want := LlamaConfig{Arch: "llama", Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 64, RopeDims: 64,
 		RopeTheta: 10000, NormEps: float64(float32(1e-5)), Vocab: 441, Context: 32, MaxContext: 64}
 	if *c != want {
 		t.Fatalf("config %+v, want %+v", *c, want)
@@ -118,5 +118,45 @@ func TestBuildLlamaRejects(t *testing.T) {
 	}
 	if _, err := BuildLlama(llamaFixture(t), LlamaOptions{Context: maxLlamaContext + 1}); err == nil {
 		t.Error("accepted an enormous context")
+	}
+}
+
+func TestBuildQwen2(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "testdata", "qwen2", "tiny-q4km.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := ParseGGUF(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := BuildLlama(s, LlamaOptions{Context: 32})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := LlamaConfig{Arch: "qwen2", Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 64, RopeDims: 64,
+		RopeTheta: 1e6, NormEps: float64(float32(1e-6)), Vocab: 406, Context: 32, MaxContext: 64}
+	if *c != want {
+		t.Fatalf("config %+v, want %+v", *c, want)
+	}
+	biases := 0
+	for _, v := range s.Graph.Values {
+		if v.Kind == mmf.KindWeight && strings.HasSuffix(v.Name, ".bias") {
+			biases++
+		}
+	}
+	if biases != 3*c.Layers {
+		t.Errorf("%d bias weights in the graph, want %d", biases, 3*c.Layers)
+	}
+
+	s, _ = ParseGGUF(b)
+	for i, t := range s.Tensors {
+		if t.Name == "blk.0.attn_k.bias" {
+			s.Tensors = append(s.Tensors[:i], s.Tensors[i+1:]...)
+			break
+		}
+	}
+	if _, err := BuildLlama(s, LlamaOptions{}); err == nil || !strings.Contains(err.Error(), "attn_k.bias") {
+		t.Errorf("without a bias: error %v", err)
 	}
 }
