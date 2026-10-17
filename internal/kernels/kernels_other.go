@@ -29,6 +29,7 @@ func dotBF16AVX2(w *byte, x *float32, n int) float32       { panic("no assembly"
 
 func scoresF32AVX2(q, k *float32, d, n int, scale float32, out *float32) { panic("no assembly") }
 func expSumF32AVX2(x *float32, n int, m float32) float32                 { panic("no assembly") }
+func siluMulF32AVX2(a, b, out *float32, n int)                           { panic("no assembly") }
 func wsumF32AVX2(p, v *float32, n, d int, acc *float32)                  { panic("no assembly") }
 
 func scoresF16AVX2(q *float32, k *byte, d, n int, scale float32, out *float32) { panic("no assembly") }
