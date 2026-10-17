@@ -399,12 +399,17 @@ def rope(attrs, ins, dts, shapes):
     return [_out(dts[0], shapes[0], y)]
 
 
-def attention(attrs, ins, dts, shapes):
+def attention(attrs, ins, dts, shapes, v2=False):
     at = _Attrs(attrs, "attention", "scale", "causal", "num_kv_heads", "softcap")
     _need(3 <= len(ins) <= 5, "attention takes q, k, v, an optional mask and optional sinks")
     q, k, v = ins[:3]
     _float(q, "attention")
-    _need(k.dtype is q.dtype and v.dtype is q.dtype, "attention: q, k and v must share a dtype")
+    if v2:
+        # attention.v2: keys and values of any float dtype, read as their values.
+        _float(k, "attention keys")
+        _float(v, "attention values")
+    else:
+        _need(k.dtype is q.dtype and v.dtype is q.dtype, "attention: q, k and v must share a dtype")
     _need(len(q.shape) == len(k.shape) == len(v.shape) == 4, "attention: q, k and v must be rank 4")
     B, Hq, Tq, Dd = q.shape
     Hkv, Tk = k.shape[1], k.shape[2]
@@ -537,6 +542,7 @@ COMPOSITES = {
     "cumsum.v1": cumsum,
     "rope.v1": rope,
     "attention.v1": attention,
+    "attention.v2": lambda attrs, ins, dts, shapes: attention(attrs, ins, dts, shapes, v2=True),
     "embedding.v1": embedding,
     "top_k.v1": top_k,
     "argsort.v1": argsort,

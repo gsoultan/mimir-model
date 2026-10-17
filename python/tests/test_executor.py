@@ -129,6 +129,21 @@ class TestComposites(unittest.TestCase):
                 want[0, h, i] = (p / p.sum()) @ v[0, h // 2, :n]
         np.testing.assert_allclose(o.arr, want, rtol=1e-6, atol=1e-6)
 
+    def test_attention_v2_f16_cache(self):
+        rng = np.random.default_rng(3)
+        q = rng.standard_normal((1, 4, 2, 8)).astype(np.float32)
+        k = rng.standard_normal((1, 2, 5, 8)).astype(np.float16)
+        v = rng.standard_normal((1, 2, 5, 3)).astype(np.float16)
+        attrs = {"causal": Attr("int", 1), "num_kv_heads": Attr("int", 2)}
+        (o,) = call("attention.v2", attrs, [f32(q), Tensor(D.F16, k.shape, k), Tensor(D.F16, v.shape, v)],
+                    [D.F32], [(1, 4, 2, 3)])
+        (want,) = call("attention.v1", attrs, [f32(q), f32(k.astype(np.float32)), f32(v.astype(np.float32))],
+                       [D.F32], [(1, 4, 2, 3)])
+        np.testing.assert_array_equal(o.arr, want.arr)
+        with self.assertRaises(RunError):
+            call("attention.v1", attrs, [f32(q), Tensor(D.F16, k.shape, k), f32(v.astype(np.float32))],
+                 [D.F32], [(1, 4, 2, 3)])
+
     def test_norms_and_gelu(self):
         x = np.linspace(-4, 4, 24, dtype=np.float32).reshape(2, 3, 4)
         scale = np.linspace(0.5, 1.5, 12, dtype=np.float32).reshape(3, 4)

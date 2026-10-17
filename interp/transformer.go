@@ -23,7 +23,7 @@ import (
 
 // This file holds the canonical bodies of the composites a decoder-only
 // transformer needs beyond the basic ones in stdlib.go: dequant_matmul.v1
-// and dequant_matmul_a8.v1 and v2, swiglu.v1, cos.v1, tanh.v1, rope.v1 and attention.v1 (spec/stdlib.md
+// and dequant_matmul_a8.v1 and v2, swiglu.v1, cos.v1, tanh.v1, rope.v1 and attention.v1 and v2 (spec/stdlib.md
 // sections 3.3, 4 and 6). Like the rest of the executor's standard library
 // they evaluate the body on the primitive kernels, so their results are the
 // body's results.
@@ -37,7 +37,8 @@ func init() {
 	stdlib["cos.v1"] = unaryComposite(cosBody)
 	stdlib["tanh.v1"] = unaryComposite(tanhBody)
 	stdlib["rope.v1"] = ropeV1
-	stdlib["attention.v1"] = attentionV1
+	stdlib["attention.v1"] = attentionBody("attention.v1")
+	stdlib["attention.v2"] = attentionBody("attention.v2")
 }
 
 func cosBody(b *body, x *ref.Tensor) *ref.Tensor {
@@ -386,7 +387,7 @@ func ropeV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*r
 	return []*ref.Tensor{b.cast(y, x0.DType)}, b.err
 }
 
-// attnParams are the attributes of attention.v1.
+// attnParams are the attributes of attention.v1 and v2.
 type attnParams struct {
 	scale   float64
 	causal  bool
@@ -394,18 +395,24 @@ type attnParams struct {
 	softcap float64
 }
 
-func readAttention(list []mmf.Attr, in []*ref.Tensor) (*attnParams, error) {
+// readAttention checks the inputs and reads the attributes of name,
+// attention.v1 or attention.v2. v2 takes keys and values of any float
+// dtype, each independently of q.
+func readAttention(name string, list []mmf.Attr, in []*ref.Tensor) (*attnParams, error) {
 	a, err := readAttrs(list, "scale", "causal", "num_kv_heads", "softcap")
 	if err != nil {
 		return nil, err
 	}
 	if len(in) < 3 || len(in) > 4 {
-		return nil, fmt.Errorf("attention.v1 takes q, k, v and an optional mask (sinks are not supported by this executor)")
+		return nil, fmt.Errorf("%s takes q, k, v and an optional mask (sinks are not supported by this executor)", name)
 	}
 	q, k, v := in[0], in[1], in[2]
-	if len(q.Shape) != 4 || len(k.Shape) != 4 || len(v.Shape) != 4 || !isFloat(q.DType) ||
-		k.DType != q.DType || v.DType != q.DType {
-		return nil, fmt.Errorf("attention.v1: q %s%v, k %s%v, v %s%v", q.DType, q.Shape, k.DType, k.Shape, v.DType, v.Shape)
+	kvOK := k.DType == q.DType && v.DType == q.DType
+	if name == "attention.v2" {
+		kvOK = isFloat(k.DType) && isFloat(v.DType)
+	}
+	if len(q.Shape) != 4 || len(k.Shape) != 4 || len(v.Shape) != 4 || !isFloat(q.DType) || !kvOK {
+		return nil, fmt.Errorf("%s: q %s%v, k %s%v, v %s%v", name, q.DType, q.Shape, k.DType, k.Shape, v.DType, v.Shape)
 	}
 	B, Hq, D := q.Shape[0], q.Shape[1], q.Shape[3]
 	p := &attnParams{}
@@ -425,25 +432,33 @@ func readAttention(list []mmf.Attr, in []*ref.Tensor) (*attnParams, error) {
 	p.kvHeads = int(kv)
 	if kv <= 0 || int64(Hq)%kv != 0 || k.Shape[1] != p.kvHeads || v.Shape[1] != p.kvHeads ||
 		k.Shape[0] != B || v.Shape[0] != B || k.Shape[3] != D || v.Shape[2] != k.Shape[2] {
-		return nil, fmt.Errorf("attention.v1: q %v, k %v, v %v with num_kv_heads %d", q.Shape, k.Shape, v.Shape, kv)
+		return nil, fmt.Errorf("%s: q %v, k %v, v %v with num_kv_heads %d", name, q.Shape, k.Shape, v.Shape, kv)
 	}
 	if len(in) == 4 {
 		m := in[3]
 		want := []int{B, Hq, q.Shape[2], k.Shape[2]}
 		if len(m.Shape) != 4 || (m.DType != mmf.Bool && !isFloat(m.DType)) {
-			return nil, fmt.Errorf("attention.v1: mask %s%v", m.DType, m.Shape)
+			return nil, fmt.Errorf("%s: mask %s%v", name, m.DType, m.Shape)
 		}
 		for i := range want {
 			if m.Shape[i] != want[i] && m.Shape[i] != 1 {
-				return nil, fmt.Errorf("attention.v1: mask %v does not broadcast to %v", m.Shape, want)
+				return nil, fmt.Errorf("%s: mask %v does not broadcast to %v", name, m.Shape, want)
 			}
 		}
 	}
 	return p, nil
 }
 
-func attentionV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
-	p, err := readAttention(list, in)
+// attentionBody returns the canonical body of name, attention.v1 or v2:
+// the same body, which casts the keys and values to the compute dtype.
+func attentionBody(name string) compositeFunc {
+	return func(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, shapes [][]int) ([]*ref.Tensor, error) {
+		return attentionCanonical(name, list, in)
+	}
+}
+
+func attentionCanonical(name string, list []mmf.Attr, in []*ref.Tensor) ([]*ref.Tensor, error) {
+	p, err := readAttention(name, list, in)
 	if err != nil {
 		return nil, err
 	}

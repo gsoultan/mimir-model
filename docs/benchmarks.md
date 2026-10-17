@@ -291,3 +291,25 @@ one VPDPBUSD multiplies four weight quants by four quants of each of the
 per multiply-add for Q4_K and 14 for Q6_K, against 25 and 31 for the
 four-row AVX2 kernels. The 38-token prompt has only two full groups of
 16 rows and is still bound by the serial steps between the products.
+
+### A key-value cache in f16
+
+Same machine, median of 3 runs. Both files come from the same GGUF with
+`mmf-import -graph -ctx 2048`; one with `-kv f32`, the other with the new
+default, `-kv f16`.
+
+| prompt | cache | prompt | generation | peak RSS |
+| ---: | --- | ---: | ---: | ---: |
+| 38 tokens | f32 | 78.0 tok/s | 31.5 tok/s | 741 MiB |
+| 38 tokens | f16 | 86.8 tok/s | 27.1 tok/s | 700 MiB |
+| 741 tokens | f32 | 120.1 tok/s | 26.7 tok/s | 1024 MiB |
+| 741 tokens | f16 | 119.3 tok/s | 24.0 tok/s | 931 MiB |
+| 741 tokens | llama.cpp | 116.4 tok/s | 20.1 tok/s | 1248 MiB |
+
+The cache of TinyLlama at a context of 2048 takes 46 MiB instead of 92,
+and the peak drops by 41 MiB at 38 tokens and 93 MiB at 741. The speed
+differences are run to run noise on this shared machine: alternating eight
+200-token runs gave 27 to 31 tokens per second for either file, and a CPU
+profile puts the extra time in the matrix products, which the cache does
+not touch. Attention reads half the bytes per token, but at these lengths
+it is under 3% of a step; the gain grows with the context.
