@@ -255,17 +255,27 @@ func named(k string, a mmf.Attr) mmf.Attr { a.Key = k; return a }
 // 256, the Q8_K activations llama.cpp pairs with them, and the other
 // dtypes dequant_matmul_a8.v1, the blocks of 32 of its Q8_0 activations.
 func (b *llamaBuilder) matmulOp(name string, x, w uint32, shape ...mmf.Dim) uint32 {
+	return b.matmulBias(name, x, w, nil, shape...)
+}
+
+// matmulBias is matmulOp plus a bias, the optional third input of the
+// composites, when bias is not nil.
+func (b *llamaBuilder) matmulBias(name string, x, w uint32, bias *uint32, shape ...mmf.Dim) uint32 {
 	out := b.val(name, mmf.F32, shape...)
+	in := []uint32{x, w}
+	if bias != nil {
+		in = append(in, *bias)
+	}
 	switch dt := b.g.Values[w].DType; {
 	case dt == mmf.F32:
-		return b.call("linear", []uint32{x, w}, out)
+		return b.call("linear", in, out)
 	case b.a8 && (dt == mmf.Q4_K || dt == mmf.Q6_K):
-		return b.callVersion("dequant_matmul_a8", 2, []uint32{x, w}, out,
+		return b.callVersion("dequant_matmul_a8", 2, in, out,
 			mmf.Attr{Key: "block", Type: mmf.AttrInt, Int: 256})
 	case b.a8:
-		return b.call("dequant_matmul_a8", []uint32{x, w}, out)
+		return b.call("dequant_matmul_a8", in, out)
 	}
-	return b.call("dequant_matmul", []uint32{x, w}, out)
+	return b.call("dequant_matmul", in, out)
 }
 
 // f32Of casts a weight such as a norm scale to f32 when it is stored in
@@ -426,17 +436,16 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 
 		h := b.call("rms_norm", []uint32{x, b.f32Of(attnNorm)}, b.val(p+"attn_in", mmf.F32, 1, T, E), eps)
 		heads := func(name string, wt uint32, n mmf.Dim) (uint32, error) {
-			y := b.matmulOp(p+name, h, wt, 1, T, n*D)
+			var bias *uint32
 			if c.Arch == "qwen2" {
-				bias, err := w("attn_"+name+".bias", int(n*D))
+				bv, err := w("attn_"+name+".bias", int(n*D))
 				if err != nil {
 					return 0, err
 				}
-				// Broadcasting needs equal ranks: the bias becomes [1, 1, n*D].
-				bias = b.op(mmf.OpReshape, []uint32{b.f32Of(bias)}, b.val(p+name+".bias3", mmf.F32, 1, 1, n*D),
-					named("shape", ints(1, 1, int64(n*D))))
-				y = b.op(mmf.OpAdd, []uint32{y, bias}, b.val(p+name+".biased", mmf.F32, 1, T, n*D))
+				bv = b.f32Of(bv)
+				bias = &bv
 			}
+			y := b.matmulBias(p+name, h, wt, bias, 1, T, n*D)
 			y = b.op(mmf.OpReshape, []uint32{y}, b.val(p+name+".heads", mmf.F32, 1, T, n, D), named("shape", ints(1, sym, int64(n), int64(D))))
 			return b.op(mmf.OpPermute, []uint32{y}, b.val(p+name+".bhtd", mmf.F32, 1, n, T, D), named("perm", ints(0, 2, 1, 3))), nil
 		}
