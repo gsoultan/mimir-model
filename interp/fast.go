@@ -206,10 +206,12 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 		}
 	})
 	y := make([]float32, rows*n)
-	// tiled[j/16] reports whether the AMX kernels computed weight rows j to
-	// j+15 for the quantized rows of x.
+	// tiled[j/16] reports whether the tile kernels (AMX or VNNI) computed
+	// weight rows j to j+15 for the quantized rows of x. A last group of
+	// fewer than 16 rows goes with the others: running the four-row
+	// kernels for it would read every weight row once more.
 	var tiled []bool
-	if block == 256 && rows >= tileMinRows && kernels.TileQ8(w.t.DType) {
+	if block == 256 && kernels.TileQ8(w.t.DType) && rows >= kernels.TileMinRows() {
 		tiled = linearA8Tiles(&acts, quantized, w, bias, y)
 	}
 	// four[i] reports whether rows i to i+3 are all quantized.
@@ -292,20 +294,16 @@ func a8RowBlock(k int, dt mmf.DType) int {
 // a8CacheBytes is the cache budget of a8RowBlock.
 const a8CacheBytes = 32 << 10
 
-// tileMinRows is the number of rows of activations from which linearA8
-// multiplies with the AMX kernels: with fewer, the four-row kernels are as
-// fast, since a tile product costs the same for 1 row as for 16.
-const tileMinRows = 8
-
-// linearA8Tiles computes y for the quantized rows of x with the AMX
-// kernels, 16 weight rows at a time, and reports for each run of 16 weight
+// linearA8Tiles computes y for the rows i of x for which quantized[i] is
+// true with the AMX or VNNI kernels, 16 weight rows at a time, and reports for each run of 16 weight
 // rows whether it did. Its results are those of the other 8-bit kernels,
 // bit for bit; a run with a block scale that is not finite, and the weight
 // rows after the last whole run, are left to the caller.
 func linearA8Tiles(acts *kernels.Q8Batch, quantized []bool, w *matrixRows, bias, y []float32) []bool {
 	n, k := w.t.Shape[0], w.k
 	var ta kernels.TileActs
-	ta.Set(acts, quantized)
+	ta.Reset(acts, quantized)
+	parallel(len(quantized), ta.SetRows)
 	tiled := make([]bool, n/kernels.TileRows)
 	parallel(len(tiled), func(lo, hi int) {
 		td := kernels.NewTileDot(w.t.DType, k)

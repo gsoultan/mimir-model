@@ -21,12 +21,24 @@ import (
 	"github.com/gsoultan/mmf"
 )
 
-// TestTileDot checks that the AMX kernels return what RowDot.DotQ8
-// returns, bit for bit, for every row of activations they are given.
+// TestTileDot checks that the AMX and VNNI kernels return what
+// RowDot.DotQ8 returns, bit for bit, for every row of activations they
+// are given.
 func TestTileDot(t *testing.T) {
 	if !TileQ8(mmf.Q4_K) {
-		t.Skip("no AMX kernels on this machine")
+		t.Skip("no AMX or VNNI kernels on this machine")
 	}
+	testTileDot(t)
+	if useAMX && useVNNI {
+		t.Run("vnni", func(t *testing.T) {
+			noAMX = true
+			defer func() { noAMX = false }()
+			testTileDot(t)
+		})
+	}
+}
+
+func testTileDot(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
 	for _, dt := range []mmf.DType{mmf.Q4_K, mmf.Q6_K} {
 		for _, k := range []int{256, 2048, 5632} {
@@ -99,7 +111,7 @@ func TestTileDot(t *testing.T) {
 
 func BenchmarkTileDot(b *testing.B) {
 	if !TileQ8(mmf.Q4_K) {
-		b.Skip("no AMX kernels on this machine")
+		b.Skip("no AMX or VNNI kernels on this machine")
 	}
 	rng := rand.New(rand.NewSource(12))
 	const k = 2048
