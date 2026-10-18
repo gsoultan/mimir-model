@@ -8,10 +8,10 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mim import dtypes as D
-from mim.container import File
-from mim.executor import Program
-from mim.tensor import Tensor
+from mlm import dtypes as D
+from mlm.container import File
+from mlm.executor import Program
+from mlm.tensor import Tensor
 
 try:
     import torch
@@ -19,7 +19,7 @@ try:
     from torch.export import Dim
 
     import torch_models as TM
-    from mim.pytorch import ExportError, export
+    from mlm.pytorch import ExportError, export
 except ImportError:  # pragma: no cover
     torch = None
 
@@ -27,7 +27,7 @@ TOL = 2e-6  # relative to the largest output
 
 
 def to_mim(t):
-    from mim.pytorch import _DTYPES
+    from mlm.pytorch import _DTYPES
 
     a = t.detach().contiguous()
     if a.dtype == torch.bfloat16:

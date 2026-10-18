@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,12 +18,12 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // vocab builds a small vocabulary: the specials, all 256 byte tokens and
 // the given pieces, with scores falling in list order.
-func vocab(pieces ...string) mim.Metadata {
+func vocab(pieces ...string) mlm.Metadata {
 	tokens := []string{"<unk>", "<s>", "</s>"}
 	types := []int64{2, 3, 3}
 	scores := []float64{0, 0, 0}
@@ -37,7 +37,7 @@ func vocab(pieces ...string) mim.Metadata {
 		types = append(types, 1)
 		scores = append(scores, -float64(i))
 	}
-	return mim.Metadata{
+	return mlm.Metadata{
 		"tokenizer.ggml.model":      "llama",
 		"tokenizer.ggml.tokens":     tokens,
 		"tokenizer.ggml.scores":     scores,

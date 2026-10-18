@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -26,8 +26,8 @@ package interp
 import (
 	"fmt"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // DefaultMaxIterations bounds each `while` loop so that a hostile or broken
@@ -45,18 +45,18 @@ type Program struct {
 	// every composite runs its canonical body on the reference kernels.
 	FastPaths bool
 
-	g          *mim.Graph
+	g          *mlm.Graph
 	fixed      map[uint32]*ref.Tensor // weights and consts, by value id
 	initVars   map[uint32]*ref.Tensor // initial variable values, by value id
 	zeroVars   map[uint32]zeroVar     // variables that start as zeros
 	composites map[string]uint32      // "name.vN" to subgraph index
-	inplace    map[*mim.Op]uint32     // scatters that may run in place, to their variable
+	inplace    map[*mlm.Op]uint32     // scatters that may run in place, to their variable
 	frees      [][]uint32             // values each op of the main graph is the last to need
 }
 
 // Load decodes f's graph and resolves its weight, const and variable values
 // to the tensors they refer to. Tensor data is not copied.
-func Load(f *mim.File) (*Program, error) {
+func Load(f *mlm.File) (*Program, error) {
 	g, err := f.Graph()
 	if err != nil {
 		return nil, err
@@ -79,7 +79,7 @@ func Load(f *mim.File) (*Program, error) {
 
 // New builds a program from a decoded graph. tensor returns the file tensor
 // with the given index, for weight, const and variable values.
-func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, error) {
+func New(g *mlm.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, error) {
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 		composites: map[string]uint32{},
 	}
 	for id, v := range g.Values {
-		if v.Kind != mim.KindWeight && v.Kind != mim.KindConst && v.Kind != mim.KindVariable {
+		if v.Kind != mlm.KindWeight && v.Kind != mlm.KindConst && v.Kind != mlm.KindVariable {
 			continue
 		}
 		if v.Zero {
@@ -117,7 +117,7 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 		if err := t.Validate(); err != nil {
 			return nil, fmt.Errorf("value %q: %w", v.Name, err)
 		}
-		if v.Kind == mim.KindVariable {
+		if v.Kind == mlm.KindVariable {
 			p.initVars[uint32(id)] = t
 		} else {
 			p.fixed[uint32(id)] = t
@@ -141,7 +141,7 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 // them once the op has run, so that it holds only the values still to be
 // read rather than every value of every layer. Values read by an op of
 // another subgraph, which may see its parent's values, are kept.
-func lastUses(g *mim.Graph) [][]uint32 {
+func lastUses(g *mlm.Graph) [][]uint32 {
 	if len(g.Subgraphs) == 0 {
 		return nil
 	}
@@ -176,7 +176,7 @@ func lastUses(g *mim.Graph) [][]uint32 {
 	frees := make([][]uint32, len(main.Ops))
 	for id, oi := range last {
 		switch g.Values[id].Kind {
-		case mim.KindWeight, mim.KindConst, mim.KindVariable:
+		case mlm.KindWeight, mlm.KindConst, mlm.KindVariable:
 			continue
 		}
 		if !keep[id] {
@@ -187,7 +187,7 @@ func lastUses(g *mim.Graph) [][]uint32 {
 }
 
 // Graph returns the program's graph.
-func (p *Program) Graph() *mim.Graph { return p.g }
+func (p *Program) Graph() *mlm.Graph { return p.g }
 
 // Session holds the variable state of one sequence of runs, such as one
 // conversation with its key-value cache.
@@ -216,7 +216,7 @@ func (p *Program) NewSession() *Session {
 
 // zeroVar is a variable whose initial value is all zero bytes.
 type zeroVar struct {
-	dt    mim.DType
+	dt    mlm.DType
 	shape []int
 	bytes int
 }
@@ -225,7 +225,7 @@ type zeroVar struct {
 // costs memory without costing file space.
 const maxZeroBytes = 1 << 40
 
-func newZeroVar(v mim.Value) (zeroVar, error) {
+func newZeroVar(v mlm.Value) (zeroVar, error) {
 	z := zeroVar{dt: v.DType, shape: make([]int, len(v.Shape))}
 	n := int64(v.DType.BlockBytes())
 	for k, d := range v.Shape {
@@ -359,7 +359,7 @@ func (s *Session) Run(inputs map[string]*ref.Tensor) (out map[string]*ref.Tensor
 
 // bind checks t against the declared type of v, binding v's symbolic
 // dimensions on first use.
-func (r *run) bind(v mim.Value, t *ref.Tensor) error {
+func (r *run) bind(v mlm.Value, t *ref.Tensor) error {
 	if t.DType != v.DType || len(t.Shape) != len(v.Shape) {
 		return fmt.Errorf("%q is %s%v, declared %s rank %d", v.Name, t.DType, t.Shape, v.DType, len(v.Shape))
 	}
@@ -387,7 +387,7 @@ func (r *run) bind(v mim.Value, t *ref.Tensor) error {
 }
 
 // shape resolves the declared shape of v with the current bindings.
-func (r *run) shape(v mim.Value) ([]int, error) {
+func (r *run) shape(v mlm.Value) ([]int, error) {
 	s := make([]int, len(v.Shape))
 	for k, d := range v.Shape {
 		if !d.Symbolic() {
@@ -404,7 +404,7 @@ func (r *run) shape(v mim.Value) ([]int, error) {
 }
 
 // check verifies that t has the declared dtype and resolved shape of v.
-func (r *run) check(v mim.Value, t *ref.Tensor) error {
+func (r *run) check(v mlm.Value, t *ref.Tensor) error {
 	want, err := r.shape(v)
 	if err != nil {
 		return err
@@ -420,7 +420,7 @@ func (r *run) check(v mim.Value, t *ref.Tensor) error {
 	return nil
 }
 
-func attr(op *mim.Op, key string) *mim.Attr {
+func attr(op *mlm.Op, key string) *mlm.Attr {
 	for i := range op.Attrs {
 		if op.Attrs[i].Key == key {
 			return &op.Attrs[i]
@@ -491,14 +491,14 @@ func (r *run) sub(si int, in []*ref.Tensor, parent *scope) ([]*ref.Tensor, error
 	return out, nil
 }
 
-func (r *run) op(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
+func (r *run) op(op *mlm.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
 	g := r.p.g
 	switch op.Opcode {
-	case mim.OpWhile:
+	case mlm.OpWhile:
 		return r.while(op, in, sc)
-	case mim.OpIf:
+	case mlm.OpIf:
 		return r.ifOp(op, in, sc)
-	case mim.OpCall:
+	case mlm.OpCall:
 		return r.call(op, in, sc)
 	}
 	if len(op.Outputs) != 1 {
@@ -521,22 +521,22 @@ func (r *run) op(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error)
 	return []*ref.Tensor{t}, nil
 }
 
-func subgraphAttr(op *mim.Op, key string) (int, error) {
+func subgraphAttr(op *mlm.Op, key string) (int, error) {
 	a := attr(op, key)
-	if a == nil || a.Type != mim.AttrSubgraph {
+	if a == nil || a.Type != mlm.AttrSubgraph {
 		return 0, fmt.Errorf("missing subgraph attribute %q", key)
 	}
 	return int(a.Subgraph), nil
 }
 
 func scalarBool(t *ref.Tensor) (bool, error) {
-	if t.DType != mim.Bool || len(t.Shape) != 0 {
+	if t.DType != mlm.Bool || len(t.Shape) != 0 {
 		return false, fmt.Errorf("condition is %s%v, want a bool scalar", t.DType, t.Shape)
 	}
 	return t.Data[0] != 0, nil
 }
 
-func (r *run) while(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
+func (r *run) while(op *mlm.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
 	cond, err := subgraphAttr(op, "cond")
 	if err != nil {
 		return nil, err
@@ -574,7 +574,7 @@ func (r *run) while(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, err
 	}
 }
 
-func (r *run) ifOp(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
+func (r *run) ifOp(op *mlm.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
 	thenG, err := subgraphAttr(op, "then")
 	if err != nil {
 		return nil, err
@@ -596,9 +596,9 @@ func (r *run) ifOp(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 	return r.sub(elseG, in[1:], sc)
 }
 
-func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
+func (r *run) call(op *mlm.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
 	name, ver := attr(op, "name"), attr(op, "version")
-	if name == nil || name.Type != mim.AttrString || ver == nil || ver.Type != mim.AttrInt {
+	if name == nil || name.Type != mlm.AttrString || ver == nil || ver.Type != mlm.AttrInt {
 		return nil, fmt.Errorf("call needs a string name and an int version")
 	}
 	key := fmt.Sprintf("%s.v%d", name.String, ver.Int)
@@ -617,7 +617,7 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 	}
 	fast := r.p.FastPaths && fastPaths[key] != nil
 	shapes := make([][]int, len(op.Outputs))
-	dts := make([]mim.DType, len(op.Outputs))
+	dts := make([]mlm.DType, len(op.Outputs))
 	for k, id := range op.Outputs {
 		v := r.p.g.Values[id]
 		s, err := r.shape(v)
@@ -626,7 +626,7 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 		}
 		shapes[k], dts[k] = s, v.DType
 	}
-	var cattrs []mim.Attr
+	var cattrs []mlm.Attr
 	for _, a := range op.Attrs {
 		if a.Key != "name" && a.Key != "version" {
 			cattrs = append(cattrs, a)

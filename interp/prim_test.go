@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,8 +18,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // TestScatterInPlace runs a cache update with and without the primitive
@@ -27,39 +27,39 @@ import (
 // checks that a run failing after the scatter leaves the cache unchanged.
 func TestScatterInPlace(t *testing.T) {
 	b := newGB()
-	b.g.Subgraphs = make([]mim.Subgraph, 3)
-	cache := b.stored("k_cache", mim.KindVariable, mim.F32, []uint64{1, 4, 2}, make([]byte, 32))
-	pos := b.input(0, "pos", mim.I64, 1)
-	kt := b.input(0, "k_t", mim.F32, 1, 1, 2)
-	fail := b.input(0, "fail", mim.Bool)
-	knew := b.val("k_new", mim.F32, mim.KindIntermediate, 1, 4, 2)
-	sum := b.val("sum", mim.F32, mim.KindIntermediate, 1, 1, 1)
-	res := b.val("res", mim.F32, mim.KindIntermediate, 1, 1, 1)
-	b.op(0, mim.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
-	b.op(0, mim.OpReduce, []uint32{knew}, []uint32{sum}, sAttr("mode", "add"), mim.Attr{Key: "axes", Type: mim.AttrInts, Ints: []int64{1, 2}})
-	b.op(0, mim.OpIf, []uint32{fail, sum}, []uint32{res}, gAttr("then", 1), gAttr("else", 2))
+	b.g.Subgraphs = make([]mlm.Subgraph, 3)
+	cache := b.stored("k_cache", mlm.KindVariable, mlm.F32, []uint64{1, 4, 2}, make([]byte, 32))
+	pos := b.input(0, "pos", mlm.I64, 1)
+	kt := b.input(0, "k_t", mlm.F32, 1, 1, 2)
+	fail := b.input(0, "fail", mlm.Bool)
+	knew := b.val("k_new", mlm.F32, mlm.KindIntermediate, 1, 4, 2)
+	sum := b.val("sum", mlm.F32, mlm.KindIntermediate, 1, 1, 1)
+	res := b.val("res", mlm.F32, mlm.KindIntermediate, 1, 1, 1)
+	b.op(0, mlm.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.op(0, mlm.OpReduce, []uint32{knew}, []uint32{sum}, sAttr("mode", "add"), mlm.Attr{Key: "axes", Type: mlm.AttrInts, Ints: []int64{1, 2}})
+	b.op(0, mlm.OpIf, []uint32{fail, sum}, []uint32{res}, gAttr("then", 1), gAttr("else", 2))
 	b.output(0, res)
 	// then: a composite this executor does not have, so the run fails
 	// after the scatter. else: pass the sum through.
 	subIn := func(si int, name string) uint32 {
-		id := b.val(name, mim.F32, mim.KindIntermediate, 1, 1, 1)
+		id := b.val(name, mlm.F32, mlm.KindIntermediate, 1, 1, 1)
 		b.g.Subgraphs[si].Inputs = append(b.g.Subgraphs[si].Inputs, id)
 		return id
 	}
 	x1 := subIn(1, "x1")
-	y1 := b.val("y1", mim.F32, mim.KindIntermediate, 1, 1, 1)
-	b.op(1, mim.OpCall, []uint32{x1}, []uint32{y1}, callAttrs("no_such_composite")...)
+	y1 := b.val("y1", mlm.F32, mlm.KindIntermediate, 1, 1, 1)
+	b.op(1, mlm.OpCall, []uint32{x1}, []uint32{y1}, callAttrs("no_such_composite")...)
 	b.output(1, y1)
 	x2 := subIn(2, "x2")
 	b.output(2, x2)
-	b.g.Updates = []mim.Update{{Variable: cache, Value: knew}}
+	b.g.Updates = []mlm.Update{{Variable: cache, Value: knew}}
 	p := b.load(t)
 	if len(p.inplace) != 1 {
 		t.Fatalf("%d scatters may run in place, want 1", len(p.inplace))
 	}
 
-	no := &ref.Tensor{DType: mim.Bool, Shape: []int{}, Data: []byte{0}}
-	yes := &ref.Tensor{DType: mim.Bool, Shape: []int{}, Data: []byte{1}}
+	no := &ref.Tensor{DType: mlm.Bool, Shape: []int{}, Data: []byte{0}}
+	yes := &ref.Tensor{DType: mlm.Bool, Shape: []int{}, Data: []byte{1}}
 	step := func(s *Session, i int64, f *ref.Tensor) (map[string]*ref.Tensor, error) {
 		v := float32(i + 1)
 		return s.Run(map[string]*ref.Tensor{"pos": i64t([]int{1}, i%4), "k_t": f32t([]int{1, 1, 2}, v, -v), "fail": f})
@@ -104,23 +104,23 @@ func TestScatterInPlace(t *testing.T) {
 
 func TestScatterInPlaceNeedsSoleUse(t *testing.T) {
 	b := newGB()
-	cache := b.stored("k_cache", mim.KindVariable, mim.F32, []uint64{1, 4, 2}, make([]byte, 32))
-	pos := b.input(0, "pos", mim.I64, 1)
-	kt := b.input(0, "k_t", mim.F32, 1, 1, 2)
-	knew := b.val("k_new", mim.F32, mim.KindIntermediate, 1, 4, 2)
-	old := b.val("old", mim.F32, mim.KindIntermediate, 1, 4, 2)
-	b.op(0, mim.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
-	b.op(0, mim.OpAdd, []uint32{cache, knew}, []uint32{old}) // a second use of the old value
+	cache := b.stored("k_cache", mlm.KindVariable, mlm.F32, []uint64{1, 4, 2}, make([]byte, 32))
+	pos := b.input(0, "pos", mlm.I64, 1)
+	kt := b.input(0, "k_t", mlm.F32, 1, 1, 2)
+	knew := b.val("k_new", mlm.F32, mlm.KindIntermediate, 1, 4, 2)
+	old := b.val("old", mlm.F32, mlm.KindIntermediate, 1, 4, 2)
+	b.op(0, mlm.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.op(0, mlm.OpAdd, []uint32{cache, knew}, []uint32{old}) // a second use of the old value
 	b.output(0, old)
-	b.g.Updates = []mim.Update{{Variable: cache, Value: knew}}
+	b.g.Updates = []mlm.Update{{Variable: cache, Value: knew}}
 	if p := b.load(t); len(p.inplace) != 0 {
 		t.Error("a scatter whose input has another use may run in place")
 	}
 }
 
 func TestFastPermute(t *testing.T) {
-	perm := func(p ...int64) *mim.Op {
-		return &mim.Op{Opcode: mim.OpPermute, Attrs: []mim.Attr{{Key: "perm", Type: mim.AttrInts, Ints: p}}}
+	perm := func(p ...int64) *mlm.Op {
+		return &mlm.Op{Opcode: mlm.OpPermute, Attrs: []mlm.Attr{{Key: "perm", Type: mlm.AttrInts, Ints: p}}}
 	}
 	// Every permutation of a rank-4 shape, with axes of size 1 among
 	// them, for elements of 4, 2 and 1 bytes; and the empty tensor.
@@ -138,7 +138,7 @@ func TestFastPermute(t *testing.T) {
 		}
 	}
 	gen(nil, 0)
-	for _, dt := range []mim.DType{mim.F32, mim.F16, mim.Bool} {
+	for _, dt := range []mlm.DType{mlm.F32, mlm.F16, mlm.Bool} {
 		for _, xs := range [][]int{{1, 3, 1, 2}, {2, 3, 4, 5}, {3, 0, 2, 1}} {
 			x, err := ref.New(dt, xs)
 			if err != nil {
@@ -146,7 +146,7 @@ func TestFastPermute(t *testing.T) {
 			}
 			for i := range x.Data {
 				x.Data[i] = byte(i*7 + 1)
-				if dt == mim.Bool {
+				if dt == mlm.Bool {
 					x.Data[i] &= 1
 				}
 			}
@@ -157,7 +157,7 @@ func TestFastPermute(t *testing.T) {
 					t.Errorf("%s %v perm %v: not handled", dt, xs, p)
 					continue
 				}
-				want, err := ref.Eval(mim.OpPermute, perm(p...).Attrs, []*ref.Tensor{x}, dt, shape)
+				want, err := ref.Eval(mlm.OpPermute, perm(p...).Attrs, []*ref.Tensor{x}, dt, shape)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -167,11 +167,11 @@ func TestFastPermute(t *testing.T) {
 			}
 		}
 	}
-	q, err := ref.New(mim.Q8_0, []int{2, 32})
+	q, err := ref.New(mlm.Q8_0, []int{2, 32})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := fastPermute(perm(1, 0), []*ref.Tensor{q}, mim.Q8_0, []int{32, 2}); ok {
+	if _, ok := fastPermute(perm(1, 0), []*ref.Tensor{q}, mlm.Q8_0, []int{32, 2}); ok {
 		t.Error("handled a block dtype")
 	}
 }
@@ -185,16 +185,16 @@ func TestFastCastF16(t *testing.T) {
 	for len(bits) < 10000 {
 		bits = append(bits, rng.Uint32())
 	}
-	x, _ := ref.New(mim.F32, []int{len(bits)})
+	x, _ := ref.New(mlm.F32, []int{len(bits)})
 	for i, b := range bits {
 		x.SetBits(i, uint64(b))
 	}
-	attrs := []mim.Attr{{Key: "to", Type: mim.AttrDType, DType: mim.F16}}
-	want, err := ref.Eval(mim.OpCast, attrs, []*ref.Tensor{x}, mim.F16, x.Shape)
+	attrs := []mlm.Attr{{Key: "to", Type: mlm.AttrDType, DType: mlm.F16}}
+	want, err := ref.Eval(mlm.OpCast, attrs, []*ref.Tensor{x}, mlm.F16, x.Shape)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := fastCastF16([]*ref.Tensor{x}, mim.F16, x.Shape)
+	got, ok := fastCastF16([]*ref.Tensor{x}, mlm.F16, x.Shape)
 	if !ok {
 		t.Fatal("fastCastF16 refused f32 to f16")
 	}

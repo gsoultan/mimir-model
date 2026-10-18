@@ -8,13 +8,13 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mim import compat, stdlib
-from mim import dtypes as D
-from mim.container import File
-from mim.errors import RunError
-from mim.executor import Program
-from mim.prims import Attr
-from mim.tensor import Tensor
+from mlm import compat, stdlib
+from mlm import dtypes as D
+from mlm.container import File
+from mlm.errors import RunError
+from mlm.executor import Program
+from mlm.prims import Attr
+from mlm.tensor import Tensor
 
 GRAPH = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "graph.mim")
 

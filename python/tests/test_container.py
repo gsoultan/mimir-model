@@ -7,8 +7,8 @@ import struct
 import unittest
 
 import _paths  # noqa: F401
-from mim.container import File
-from mim.errors import MIMError
+from mlm.container import File
+from mlm.errors import MIMError
 
 BASE = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "dtypes.mim")
 

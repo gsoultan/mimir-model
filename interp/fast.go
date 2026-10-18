@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,9 +18,9 @@ import (
 	"math"
 	"sync"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/internal/kernels"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/internal/kernels"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // Fast paths (spec/stdlib.md section 1.2). Each one computes a composite
@@ -36,7 +36,7 @@ import (
 // decoded exactly and activations are never quantized, so the
 // dequant_matmul.v1 tolerance holds.
 
-type fastFunc func(attrs []mim.Attr, in []*ref.Tensor, dts []mim.DType, shapes [][]int) (out []*ref.Tensor, handled bool, err error)
+type fastFunc func(attrs []mlm.Attr, in []*ref.Tensor, dts []mlm.DType, shapes [][]int) (out []*ref.Tensor, handled bool, err error)
 
 var fastPaths = map[string]fastFunc{
 	"linear.v1":            fastLinear,
@@ -77,7 +77,7 @@ func (m *matrixRows) rowBytesOf(i int) []byte {
 func (m *matrixRows) row(i int, dst []float32) {
 	// The length checks of Dequantize cannot fail: the row size was
 	// computed from the dtype and K.
-	_ = mim.Dequantize(m.t.DType, m.rowBytesOf(i), dst)
+	_ = mlm.Dequantize(m.t.DType, m.rowBytesOf(i), dst)
 }
 
 // linearF32 computes x [rows, K] times w^T for w [N, K], plus bias.
@@ -102,7 +102,7 @@ func linearF32(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
 
 func linearFast(in []*ref.Tensor) ([]*ref.Tensor, bool) {
 	x, w := in[0], in[1]
-	if x.DType != mim.F32 || len(x.Shape) < 2 {
+	if x.DType != mlm.F32 || len(x.Shape) < 2 {
 		return nil, false
 	}
 	m, ok := newMatrixRows(w)
@@ -111,7 +111,7 @@ func linearFast(in []*ref.Tensor) ([]*ref.Tensor, bool) {
 	}
 	var bias []float32
 	if len(in) == 3 {
-		if in[2].DType != mim.F32 || len(in[2].Shape) != 1 || in[2].Shape[0] != w.Shape[0] {
+		if in[2].DType != mlm.F32 || len(in[2].Shape) != 1 || in[2].Shape[0] != w.Shape[0] {
 			return nil, false
 		}
 		bias = f32View(in[2])
@@ -122,15 +122,15 @@ func linearFast(in []*ref.Tensor) ([]*ref.Tensor, bool) {
 	return []*ref.Tensor{f32Tensor(shape, y)}, true
 }
 
-func fastLinear(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	if len(list) != 0 || len(in) < 2 || len(in) > 3 || in[1].DType != mim.F32 {
+func fastLinear(list []mlm.Attr, in []*ref.Tensor, _ []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) < 2 || len(in) > 3 || in[1].DType != mlm.F32 {
 		return nil, false, nil
 	}
 	out, ok := linearFast(in)
 	return out, ok, nil
 }
 
-func fastDequantMatmul(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+func fastDequantMatmul(list []mlm.Attr, in []*ref.Tensor, _ []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
 	if len(list) != 0 || len(in) < 2 || len(in) > 3 {
 		return nil, false, nil
 	}
@@ -144,7 +144,7 @@ func fastDequantMatmul(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]i
 // fastDequantMatmulA8 runs dequant_matmul_a8.v1 with the activations
 // quantized to 8-bit blocks where the kernels allow (spec/stdlib.md section
 // 3.4), and as dequant_matmul.v1 otherwise.
-func fastDequantMatmulA8(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+func fastDequantMatmulA8(list []mlm.Attr, in []*ref.Tensor, _ []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
 	if len(list) != 0 {
 		return nil, false, nil
 	}
@@ -153,7 +153,7 @@ func fastDequantMatmulA8(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][
 
 // fastDequantMatmulA8V2 runs dequant_matmul_a8.v2 as fastDequantMatmulA8
 // does, with activation blocks of the call's block attribute.
-func fastDequantMatmulA8V2(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+func fastDequantMatmulA8V2(list []mlm.Attr, in []*ref.Tensor, _ []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
 	block, err := a8Block(list)
 	if err != nil {
 		return nil, false, err
@@ -174,12 +174,12 @@ func dequantMatmulA8(in []*ref.Tensor, block int) ([]*ref.Tensor, bool, error) {
 		return out, ok, nil
 	}
 	m, ok := newMatrixRows(w)
-	if !ok || x.DType != mim.F32 || x.Shape[len(x.Shape)-1] != m.k {
+	if !ok || x.DType != mlm.F32 || x.Shape[len(x.Shape)-1] != m.k {
 		return nil, false, nil
 	}
 	var bias []float32
 	if len(in) == 3 {
-		if in[2].DType != mim.F32 {
+		if in[2].DType != mlm.F32 {
 			return nil, false, nil
 		}
 		bias = f32View(in[2])
@@ -286,9 +286,9 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 // a8RowBlock returns the number of rows of activations of length k that
 // linearA8 multiplies by each piece of weight rows at a time: as many as
 // fit in a budget of the core's cache, in multiples of 4, at least 4.
-func a8RowBlock(k int, dt mim.DType) int {
+func a8RowBlock(k int, dt mlm.DType) int {
 	per := k // the quants
-	if dt == mim.Q6_K {
+	if dt == mlm.Q6_K {
 		per += k // and the pair sums
 	}
 	return max(4, a8CacheBytes/per&^3)
@@ -336,12 +336,12 @@ func linearA8Tiles(acts *kernels.Q8Batch, quantized []bool, w *matrixRows, bias,
 	return tiled
 }
 
-func fastRMSNorm(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+func fastRMSNorm(list []mlm.Attr, in []*ref.Tensor, _ []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
 	a, err := readAttrs(list, "axis", "epsilon")
 	if err != nil {
 		return nil, false, err
 	}
-	if len(in) < 1 || len(in) > 2 || in[0].DType != mim.F32 || len(in[0].Shape) == 0 {
+	if len(in) < 1 || len(in) > 2 || in[0].DType != mlm.F32 || len(in[0].Shape) == 0 {
 		return nil, false, nil
 	}
 	x := in[0]
@@ -360,7 +360,7 @@ func fastRMSNorm(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([
 	n := x.Shape[r-1]
 	var scale []float32
 	if len(in) == 2 {
-		if in[1].DType != mim.F32 || len(in[1].Shape) != 1 || in[1].Shape[0] != n {
+		if in[1].DType != mlm.F32 || len(in[1].Shape) != 1 || in[1].Shape[0] != n {
 			return nil, false, nil
 		}
 		scale = f32View(in[1])
@@ -389,8 +389,8 @@ func fastRMSNorm(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([
 	return []*ref.Tensor{f32Tensor(x.Shape, v)}, true, nil
 }
 
-func fastSwiglu(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	if len(list) != 0 || len(in) != 2 || in[0].DType != mim.F32 || in[1].DType != mim.F32 ||
+func fastSwiglu(list []mlm.Attr, in []*ref.Tensor, _ []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) != 2 || in[0].DType != mlm.F32 || in[1].DType != mlm.F32 ||
 		!sameInts(in[0].Shape, in[1].Shape) {
 		return nil, false, nil
 	}
@@ -403,18 +403,18 @@ func fastSwiglu(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]
 }
 
 func position(t *ref.Tensor, i int) float64 {
-	if t.DType == mim.I32 {
+	if t.DType == mlm.I32 {
 		return float64(int32(binary.LittleEndian.Uint32(t.Data[4*i:])))
 	}
 	return float64(int64(binary.LittleEndian.Uint64(t.Data[8*i:])))
 }
 
-func fastRope(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+func fastRope(list []mlm.Attr, in []*ref.Tensor, _ []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
 	if err := checkRope(in); err != nil {
 		return nil, false, err
 	}
 	x, pos := in[0], in[1]
-	if x.DType != mim.F32 {
+	if x.DType != mlm.F32 {
 		return nil, false, nil
 	}
 	B, H, T, D := x.Shape[0], x.Shape[1], x.Shape[2], x.Shape[3]
@@ -461,23 +461,23 @@ func fastRope(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*r
 	return []*ref.Tensor{f32Tensor(x.Shape, v)}, true, nil
 }
 
-func fastAttention(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, shapes [][]int) ([]*ref.Tensor, bool, error) {
+func fastAttention(list []mlm.Attr, in []*ref.Tensor, dts []mlm.DType, shapes [][]int) ([]*ref.Tensor, bool, error) {
 	return attentionFast("attention.v1", list, in)
 }
 
-func fastAttentionV2(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, shapes [][]int) ([]*ref.Tensor, bool, error) {
+func fastAttentionV2(list []mlm.Attr, in []*ref.Tensor, dts []mlm.DType, shapes [][]int) ([]*ref.Tensor, bool, error) {
 	return attentionFast("attention.v2", list, in)
 }
 
 // attentionFast computes attention.v1 or v2 (name) for f32 queries, with
 // keys and values in f32 or f16 (or, for v2, bf16, converted first).
-func attentionFast(name string, list []mim.Attr, in []*ref.Tensor) ([]*ref.Tensor, bool, error) {
+func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tensor, bool, error) {
 	p, err := readAttention(name, list, in)
 	if err != nil {
 		return nil, false, err
 	}
 	q, k, v := in[0], in[1], in[2]
-	if q.DType != mim.F32 || p.softcap > 0 {
+	if q.DType != mlm.F32 || p.softcap > 0 {
 		return nil, false, nil
 	}
 	kr, kok := newKVRows(k)
@@ -489,7 +489,7 @@ func attentionFast(name string, list []mim.Attr, in []*ref.Tensor) ([]*ref.Tenso
 	var mst []int
 	if len(in) == 4 {
 		mask = in[3]
-		if mask.DType != mim.Bool && mask.DType != mim.F32 {
+		if mask.DType != mlm.Bool && mask.DType != mlm.F32 {
 			return nil, false, nil
 		}
 		// Broadcast strides: 0 on size-1 axes.
@@ -515,7 +515,7 @@ func attentionFast(name string, list []mim.Attr, in []*ref.Tensor) ([]*ref.Tenso
 	// the first key a boolean mask allows: with a cache that holds several
 	// sequences, the keys of the sequences before are hidden.
 	var ends, starts []int
-	if mask != nil && mask.DType == mim.Bool && mst[3] == 1 {
+	if mask != nil && mask.DType == mlm.Bool && mst[3] == 1 {
 		ends, starts = make([]int, B*Hq*Tq), make([]int, B*Hq*Tq)
 		for b := 0; b < B; b++ {
 			for h := 0; h < Hq; h++ {
@@ -584,7 +584,7 @@ func attentionFast(name string, list []mim.Attr, in []*ref.Tensor) ([]*ref.Tenso
 					var add float32
 					if mask != nil {
 						mi := b*mst[0] + h*mst[1] + i*mst[2] + j*mst[3]
-						if mask.DType == mim.Bool {
+						if mask.DType == mlm.Bool {
 							allowed = allowed && mask.Data[mi] != 0
 						} else {
 							add = math.Float32frombits(binary.LittleEndian.Uint32(mask.Data[4*mi:]))
@@ -668,11 +668,11 @@ type kvRows struct {
 func newKVRows(t *ref.Tensor) (kvRows, bool) {
 	d := t.Shape[len(t.Shape)-1]
 	switch t.DType {
-	case mim.F32:
+	case mlm.F32:
 		return kvRows{f32: f32View(t), d: d}, true
-	case mim.F16:
+	case mlm.F16:
 		return kvRows{f16: t.Data, d: d}, true
-	case mim.BF16:
+	case mlm.BF16:
 		v := make([]float32, t.NumElems())
 		for i := range v {
 			v[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(t.Data[2*i:])) << 16)
@@ -697,7 +697,7 @@ func (r kvRows) row(j int, buf []float32) []float32 {
 	}
 	b := r.f16[2*j*r.d:]
 	for i := range buf {
-		buf[i] = mim.F16ToF32(binary.LittleEndian.Uint16(b[2*i:]))
+		buf[i] = mlm.F16ToF32(binary.LittleEndian.Uint16(b[2*i:]))
 	}
 	return buf
 }
@@ -720,12 +720,12 @@ func (r kvRows) wsum(p, acc []float32) {
 	kernels.WeightedSumF32(p, r.f32, acc)
 }
 
-func fastEmbedding(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	if len(list) != 0 || len(in) != 2 || len(dts) != 1 || dts[0] != mim.F32 {
+func fastEmbedding(list []mlm.Attr, in []*ref.Tensor, dts []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) != 2 || len(dts) != 1 || dts[0] != mlm.F32 {
 		return nil, false, nil
 	}
 	table, ids := in[0], in[1]
-	if ids.DType != mim.I32 && ids.DType != mim.I64 {
+	if ids.DType != mlm.I32 && ids.DType != mlm.I64 {
 		return nil, false, nil
 	}
 	m, ok := newMatrixRows(table)

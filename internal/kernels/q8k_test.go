@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,7 +20,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // fma32 returns a*b+c rounded once to float32.
@@ -35,16 +35,16 @@ func fma32(a, b, c float32) float32 {
 // dotQ8KRef is what the kernels for activation blocks of 256 compute, in
 // plain Go: the exact integer sums of each block, then one fused
 // multiply-add per block (see kernels_amd64.s and q8_arm64.s).
-func dotQ8KRef(dt mim.DType, row []byte, a *Q8) (float32, bool) {
+func dotQ8KRef(dt mlm.DType, row []byte, a *Q8) (float32, bool) {
 	var tot, off float32
 	f16 := func(b []byte) (float32, bool) {
 		h := binary.LittleEndian.Uint16(b)
-		return mim.F16ToF32(h), h&0x7C00 != 0x7C00
+		return mlm.F16ToF32(h), h&0x7C00 != 0x7C00
 	}
 	for b := 0; b < a.k/256; b++ {
 		y := a.q[256*b : 256*b+256]
 		dx := a.d[8*b]
-		if dt == mim.Q4_K {
+		if dt == mlm.Q4_K {
 			blk := row[144*b : 144*b+144]
 			d, ok1 := f16(blk[0:])
 			dmin, ok2 := f16(blk[2:])
@@ -106,7 +106,7 @@ func dotQ8KRef(dt mim.DType, row []byte, a *Q8) (float32, bool) {
 // architecture that has them.
 func TestDotQ8KReference(t *testing.T) {
 	rng := rand.New(rand.NewSource(14))
-	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K} {
+	for _, dt := range []mlm.DType{mlm.Q4_K, mlm.Q6_K} {
 		if !FusedQ8Blocks(dt, 256) {
 			t.Skip("no 8-bit kernels for blocks of 256 on this machine")
 		}
@@ -138,7 +138,7 @@ func TestDotQ8KReference(t *testing.T) {
 					// The largest finite scales, and all-ones quants.
 					size := int(dt.BlockBytes())
 					for o := 0; o < len(row); o += size {
-						if dt == mim.Q4_K {
+						if dt == mlm.Q4_K {
 							row[o], row[o+1], row[o+2], row[o+3] = 0xFF, 0x7B, 0xFF, 0x7B
 							for i := o + 4; i < o+144; i++ {
 								row[i] = 0xFF
@@ -156,7 +156,7 @@ func TestDotQ8KReference(t *testing.T) {
 				}
 				if trial == 2 {
 					// Subnormal f16 scales.
-					if dt == mim.Q4_K {
+					if dt == mlm.Q4_K {
 						row[0], row[1], row[2], row[3] = 0x01, 0x00, 0xFF, 0x03
 					} else {
 						row[208], row[209] = 0x01, 0x00

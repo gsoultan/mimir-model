@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -19,25 +19,25 @@ import (
 	"math"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // ggmlTypes maps ggml tensor types to mim dtypes. The block types have the
 // same byte layout in both formats (spec/dtypes.md section 3).
-var ggmlTypes = map[uint32]mim.DType{
-	0:  mim.F32,
-	1:  mim.F16,
-	2:  mim.Q4_0,
-	8:  mim.Q8_0,
-	12: mim.Q4_K,
-	14: mim.Q6_K,
-	24: mim.I8,
-	25: mim.I16,
-	26: mim.I32,
-	27: mim.I64,
-	28: mim.F64,
-	30: mim.BF16,
-	39: mim.MXFP4,
+var ggmlTypes = map[uint32]mlm.DType{
+	0:  mlm.F32,
+	1:  mlm.F16,
+	2:  mlm.Q4_0,
+	8:  mlm.Q8_0,
+	12: mlm.Q4_K,
+	14: mlm.Q6_K,
+	24: mlm.I8,
+	25: mlm.I16,
+	26: mlm.I32,
+	27: mlm.I64,
+	28: mlm.F64,
+	30: mlm.BF16,
+	39: mlm.MXFP4,
 }
 
 // ggmlNames names the ggml types mim does not (yet) define, for errors.
@@ -281,7 +281,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 	if nt > maxGGUFCount || nkv > maxGGUFCount || nkv > rest/13 || nt > rest/24 {
 		return nil, fmt.Errorf("gguf: %d tensors and %d keys do not fit in the file", nt, nkv)
 	}
-	md := mim.Metadata{}
+	md := mlm.Metadata{}
 	var skipped []string
 	alignment := uint64(32)
 	for i := uint64(0); i < nkv && r.err == nil; i++ {
@@ -291,7 +291,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 		if r.err != nil {
 			break
 		}
-		if key == "" || len(key) > mim.MaxMetadataKeyLen {
+		if key == "" || len(key) > mlm.MaxMetadataKeyLen {
 			return nil, fmt.Errorf("gguf: invalid metadata key %q", key)
 		}
 		if _, dup := md[key]; dup {
@@ -331,7 +331,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 		if r.err != nil {
 			break
 		}
-		if nd > mim.MaxRank {
+		if nd > mlm.MaxRank {
 			return nil, fmt.Errorf("gguf: tensor %q has %d dimensions", name, nd)
 		}
 		shape := make([]uint64, nd)
@@ -354,7 +354,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 			}
 			return nil, fmt.Errorf("gguf: tensor %q has unknown type %d", name, gt)
 		}
-		size, err := mim.ByteSize(dt, shape)
+		size, err := mlm.ByteSize(dt, shape)
 		if err != nil {
 			return nil, fmt.Errorf("gguf: tensor %q: %w", name, err)
 		}

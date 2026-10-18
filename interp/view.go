@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,8 +18,8 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // mim stores float32 little-endian. On a little-endian machine an f32
@@ -59,7 +59,7 @@ func f32Values(t *ref.Tensor) []float32 {
 // f32Tensor returns an f32 tensor holding v. It takes ownership of v: on a
 // little-endian machine the tensor's bytes are v's memory.
 func f32Tensor(shape []int, v []float32) *ref.Tensor {
-	t := &ref.Tensor{DType: mim.F32, Shape: append([]int{}, shape...)}
+	t := &ref.Tensor{DType: mlm.F32, Shape: append([]int{}, shape...)}
 	if littleEndian {
 		if len(v) > 0 {
 			t.Data = unsafe.Slice((*byte)(unsafe.Pointer(&v[0])), 4*len(v))

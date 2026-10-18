@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 type expTensor struct {
@@ -54,9 +54,9 @@ func expected(t *testing.T) map[string]map[string]expTensor {
 }
 
 // importAndReopen converts src to mim in memory and parses the result.
-func importAndReopen(t *testing.T, src *Source) *mim.File {
+func importAndReopen(t *testing.T, src *Source) *mlm.File {
 	t.Helper()
-	w := mim.NewWriter()
+	w := mlm.NewWriter()
 	if err := src.AddTo(w); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func importAndReopen(t *testing.T, src *Source) *mim.File {
 	if _, err := w.WriteTo(&buf); err != nil {
 		t.Fatal(err)
 	}
-	f, err := mim.Parse(buf.Bytes())
+	f, err := mlm.Parse(buf.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func importAndReopen(t *testing.T, src *Source) *mim.File {
 	return f
 }
 
-func checkFile(t *testing.T, f *mim.File, want map[string]expTensor) {
+func checkFile(t *testing.T, f *mlm.File, want map[string]expTensor) {
 	t.Helper()
 	if f.NumTensors() != len(want) {
 		t.Errorf("%d tensors, want %d", f.NumTensors(), len(want))
@@ -105,7 +105,7 @@ func checkFile(t *testing.T, f *mim.File, want map[string]expTensor) {
 		// Block tensors decode to exactly what gguf's dequantizer gives.
 		raw, _ := base64.StdEncoding.DecodeString(e.F32)
 		got := make([]float32, len(raw)/4)
-		if err := mim.Dequantize(ti.DType, data, got); err != nil {
+		if err := mlm.Dequantize(ti.DType, data, got); err != nil {
 			t.Fatal(err)
 		}
 		for i := range got {

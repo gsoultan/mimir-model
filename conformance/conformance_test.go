@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,8 +17,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 var corpusDir = filepath.Join("..", "testdata", "conformance", "primitives")
@@ -36,7 +36,7 @@ func loadCorpus(t *testing.T) []Case {
 // opcode has cases.
 func TestCorpusCoversEveryPrimitive(t *testing.T) {
 	cases := loadCorpus(t)
-	seen := map[mim.Opcode]int{}
+	seen := map[mlm.Opcode]int{}
 	ids := map[string]bool{}
 	for _, c := range cases {
 		seen[c.Opcode]++
@@ -45,7 +45,7 @@ func TestCorpusCoversEveryPrimitive(t *testing.T) {
 		}
 		ids[c.ID()] = true
 	}
-	for op := mim.OpNeg; op <= mim.OpDequantize; op++ {
+	for op := mlm.OpNeg; op <= mlm.OpDequantize; op++ {
 		if seen[op] == 0 {
 			t.Errorf("no cases for %s", op)
 		}
@@ -80,7 +80,7 @@ func TestCheckerDetectsErrors(t *testing.T) {
 			b := w.Bits(j)
 			var nb uint64
 			switch {
-			case w.DType == mim.Bool:
+			case w.DType == mlm.Bool:
 				nb = b ^ 1
 			case ref.IsFloat(w.DType):
 				v := ref.DecodeFloat(w.DType, b)
@@ -113,7 +113,7 @@ func TestCheckerDetectsErrors(t *testing.T) {
 // taking the test binary down.
 func TestRunReportsPanics(t *testing.T) {
 	cases := loadCorpus(t)[:3]
-	r := Run(cases, func(mim.Opcode, []mim.Attr, []*ref.Tensor, mim.DType, []int) (*ref.Tensor, error) {
+	r := Run(cases, func(mlm.Opcode, []mlm.Attr, []*ref.Tensor, mlm.DType, []int) (*ref.Tensor, error) {
 		panic("boom")
 	}, IEEE)
 	if len(r.Failures) != len(cases) {

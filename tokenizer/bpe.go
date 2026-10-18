@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,7 +20,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // Tokenizer is what a language model runner needs from a tokenizer.
@@ -35,7 +35,7 @@ type Tokenizer interface {
 
 // New builds the tokenizer a file's metadata describes: SentencePiece for
 // tokenizer.ggml.model "llama", byte-level BPE for "gpt2".
-func New(md mim.Metadata) (Tokenizer, error) {
+func New(md mlm.Metadata) (Tokenizer, error) {
 	if m, _ := md["tokenizer.ggml.model"].(string); m == "gpt2" {
 		return BPEFromMetadata(md)
 	}
@@ -67,7 +67,7 @@ type BPE struct {
 }
 
 // BPEFromMetadata builds a byte-level BPE tokenizer from a file's metadata.
-func BPEFromMetadata(md mim.Metadata) (*BPE, error) {
+func BPEFromMetadata(md mlm.Metadata) (*BPE, error) {
 	if m, _ := md["tokenizer.ggml.model"].(string); m != "gpt2" {
 		return nil, fmt.Errorf("tokenizer model %q: want \"gpt2\"", m)
 	}

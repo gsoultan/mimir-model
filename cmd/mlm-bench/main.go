@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,13 +11,13 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Command mim-bench measures how fast model files load and how much memory
+// Command mlm-bench measures how fast model files load and how much memory
 // loading takes, for mim, GGUF and safetensors files alike.
 //
-//	mim-bench [-runs 5] [-cold] model.gguf model.safetensors model.mim ...
+//	mlm-bench [-runs 5] [-cold] model.gguf model.safetensors model.mim ...
 //
 // Each run is a fresh child process, so its memory figures start from
-// zero. A run maps the file, parses its header (for mim: mim.Open, which
+// zero. A run maps the file, parses its header (for mim: mlm.Open, which
 // also validates the index and the tensor table; with a graph, also
 // decodes and resolves it with interp.Load), and then reads every tensor
 // byte, the work a loader must do before the first token. mim files also
@@ -48,9 +48,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/importer"
-	"github.com/gsoultan/mim/interp"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/importer"
+	"github.com/gsoultan/mlm/interp"
 )
 
 func main() {
@@ -59,7 +59,7 @@ func main() {
 	child := flag.Bool("child", false, "internal: measure one load of one file and print it as JSON")
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mim-bench [-runs 5] [-cold] file...")
+		fmt.Fprintln(os.Stderr, "usage: mlm-bench [-runs 5] [-cold] file...")
 		os.Exit(2)
 	}
 	var err error
@@ -72,7 +72,7 @@ func main() {
 		err = run(os.Stdout, flag.Args(), *runs, *cold, spawn)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "mim-bench:", err)
+		fmt.Fprintln(os.Stderr, "mlm-bench:", err)
 		os.Exit(1)
 	}
 }
@@ -146,7 +146,7 @@ func measure(path string, cold bool) (result, error) {
 	start := time.Now()
 	if strings.HasSuffix(path, ".mim") {
 		r.Format = "mim"
-		f, err := mim.Open(path)
+		f, err := mlm.Open(path)
 		if err != nil {
 			return result{}, err
 		}
@@ -156,7 +156,7 @@ func measure(path string, cold bool) (result, error) {
 		if _, err := f.Metadata(); err != nil {
 			return result{}, err
 		}
-		if _, ok := f.Section(mim.SectionGraph); ok {
+		if _, ok := f.Section(mlm.SectionGraph); ok {
 			if _, err := interp.Load(f); err != nil {
 				return result{}, err
 			}

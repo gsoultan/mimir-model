@@ -20,23 +20,23 @@ so the sizes and times are those of the real model.
 | `tinyllama-rand-f16.gguf` | the script, F16 as `convert_hf_to_gguf.py` writes it |
 | `tinyllama-rand-q4km.gguf` | llama.cpp's quantizer, Q4_K_M |
 | `tinyllama-rand-bf16.safetensors` | the script, BF16 with Hugging Face tensor names |
-| `q4km.mim` | `mim-import tinyllama-rand-q4km.gguf` |
-| `q4km-graph.mim` | `mim-import -graph -ctx 2048 -a8=false tinyllama-rand-q4km.gguf` |
-| `q4km-a8.mim` | `mim-import -graph -ctx 2048 tinyllama-rand-q4km.gguf` |
-| `bf16.mim` | `mim-import tinyllama-rand-bf16.safetensors` |
+| `q4km.mim` | `mlm-import tinyllama-rand-q4km.gguf` |
+| `q4km-graph.mim` | `mlm-import -graph -ctx 2048 -a8=false tinyllama-rand-q4km.gguf` |
+| `q4km-a8.mim` | `mlm-import -graph -ctx 2048 tinyllama-rand-q4km.gguf` |
+| `bf16.mim` | `mlm-import tinyllama-rand-bf16.safetensors` |
 
 To reproduce:
 
 ```
 python3 -P tools/gen_bench_models.py /tmp/bench
-go run ./cmd/mim-import -o /tmp/bench/q4km.mim /tmp/bench/tinyllama-rand-q4km.gguf
-go run ./cmd/mim-import -o /tmp/bench/bf16.mim /tmp/bench/tinyllama-rand-bf16.safetensors
-go run ./cmd/mim-import -graph -ctx 2048 -o /tmp/bench/q4km-a8.mim /tmp/bench/tinyllama-rand-q4km.gguf
-go run ./cmd/mim-import -graph -ctx 2048 -a8=false -o /tmp/bench/q4km-graph.mim /tmp/bench/tinyllama-rand-q4km.gguf
-go run ./cmd/mim-bench /tmp/bench/*.gguf /tmp/bench/*.safetensors /tmp/bench/*.mim
-go run ./cmd/mim-bench -cold /tmp/bench/*.gguf /tmp/bench/*.safetensors /tmp/bench/*.mim
-go build -o /tmp/mim-run ./cmd/mim-run
-python3 tools/bench_generate.py --mim-run /tmp/mim-run /tmp/bench/tinyllama-rand-q4km.gguf /tmp/bench/q4km-*.mim
+go run ./cmd/mlm-import -o /tmp/bench/q4km.mim /tmp/bench/tinyllama-rand-q4km.gguf
+go run ./cmd/mlm-import -o /tmp/bench/bf16.mim /tmp/bench/tinyllama-rand-bf16.safetensors
+go run ./cmd/mlm-import -graph -ctx 2048 -o /tmp/bench/q4km-a8.mim /tmp/bench/tinyllama-rand-q4km.gguf
+go run ./cmd/mlm-import -graph -ctx 2048 -a8=false -o /tmp/bench/q4km-graph.mim /tmp/bench/tinyllama-rand-q4km.gguf
+go run ./cmd/mlm-bench /tmp/bench/*.gguf /tmp/bench/*.safetensors /tmp/bench/*.mim
+go run ./cmd/mlm-bench -cold /tmp/bench/*.gguf /tmp/bench/*.safetensors /tmp/bench/*.mim
+go build -o /tmp/mlm-run ./cmd/mlm-run
+python3 tools/bench_generate.py --mlm-run /tmp/mlm-run /tmp/bench/tinyllama-rand-q4km.gguf /tmp/bench/q4km-*.mim
 ```
 
 Machine: 4-core Intel Xeon at 2.8 GHz (a cloud VM), 15 GiB of memory,
@@ -61,9 +61,9 @@ MiB at a context of 2048, starts as zeros and takes no space in the file
 
 ## Opening and reading
 
-`cmd/mim-bench` measures each file in a fresh process. *open* is the time
+`cmd/mlm-bench` measures each file in a fresh process. *open* is the time
 to map the file and parse everything a loader needs before it can use a
-tensor: for GGUF and safetensors the header, for mim `mim.Open`, which
+tensor: for GGUF and safetensors the header, for mim `mlm.Open`, which
 validates the index, plus decoding the metadata section and, when there is
 one, loading the graph. *read* is the time to then touch every byte of
 every tensor, in file order, one byte per cache line. *heap* is what the Go
@@ -115,7 +115,7 @@ What this shows:
 ## Generating text
 
 `tools/bench_generate.py` runs a prompt of 21 tokens and generates 64
-tokens greedily, in a fresh process per run, with `mim-run` for mim files
+tokens greedily, in a fresh process per run, with `mlm-run` for mim files
 and with llama.cpp (through llama-cpp-python 0.3) for the GGUF file. Both
 use the 4 cores. *load* is the time until the model is ready to run,
 *peak RSS* the process's peak resident memory.
@@ -123,8 +123,8 @@ use the 4 cores. *load* is the time until the model is ready to run,
 | file | runtime | load | prompt | generation | peak RSS |
 | --- | --- | ---: | ---: | ---: | ---: |
 | `tinyllama-rand-q4km.gguf` | llama.cpp | 670 ms | 123 tok/s | 26.5 tok/s | 1210 MiB |
-| `q4km-graph.mim` | mim-run | 9 ms | 19.1 tok/s | 9.2 tok/s | 911 MiB |
-| `q4km-a8.mim` | mim-run | 9 ms | 25.6 tok/s | 14.4 tok/s | 931 MiB |
+| `q4km-graph.mim` | mlm-run | 9 ms | 19.1 tok/s | 9.2 tok/s | 911 MiB |
+| `q4km-a8.mim` | mlm-run | 9 ms | 25.6 tok/s | 14.4 tok/s | 931 MiB |
 
 Median of 5 runs.
 
@@ -133,12 +133,12 @@ Median of 5 runs.
 default import, whose matrix products are `dequant_matmul_a8.v1`: the
 activations may be rounded to 8 bits, as llama.cpp does, which lets the
 products run in integer arithmetic. Its logits stay within llama.cpp's own
-distance from a float64 forward pass (`cmd/mim-run`'s `TestGenerateA8`).
+distance from a float64 forward pass (`cmd/mlm-run`'s `TestGenerateA8`).
 
 Before the kernels in `internal/kernels`, the same model generated 0.88
 tokens per second. llama.cpp is still about 1.8 times faster at generation
 and 5 times faster on the prompt, where it multiplies matrices by matrices
-rather than row by row. mim-run's load is fast because nothing is read
+rather than row by row. mlm-run's load is fast because nothing is read
 until the first step.
 
 ### After the first speed work
@@ -151,10 +151,10 @@ on the machine. Same models, same script, median of 3 runs.
 | file | runtime | prompt | generation | peak RSS |
 | --- | --- | ---: | ---: | ---: |
 | `tinyllama-rand-q4km.gguf` | llama.cpp | 131.1 tok/s | 25.1 tok/s | 1297 MiB |
-| `q4km-graph.mim` | mim-run before | 21.8 tok/s | 11.1 tok/s | 843 MiB |
-| `q4km-graph.mim` | mim-run after | 27.9 tok/s | 15.7 tok/s | 904 MiB |
-| `q4km-a8.mim` | mim-run before | 31.3 tok/s | 15.1 tok/s | 932 MiB |
-| `q4km-a8.mim` | mim-run after | 59.2 tok/s | 29.4 tok/s | 920 MiB |
+| `q4km-graph.mim` | mlm-run before | 21.8 tok/s | 11.1 tok/s | 843 MiB |
+| `q4km-graph.mim` | mlm-run after | 27.9 tok/s | 15.7 tok/s | 904 MiB |
+| `q4km-a8.mim` | mlm-run before | 31.3 tok/s | 15.1 tok/s | 932 MiB |
+| `q4km-a8.mim` | mlm-run after | 59.2 tok/s | 29.4 tok/s | 920 MiB |
 
 These are steps 1 and 2 of the speed plan in docs/design-notes.md:
 
@@ -181,13 +181,13 @@ instructions there, which mim's kernels do not yet (step 3).
 Same machine and script, median of 3 runs. `q4km-a8k.mim` is the same GGUF
 imported again: its K-quant matrix products are now
 `dequant_matmul_a8.v2` with blocks of 256, where `q4km-a8.mim` has `v1`
-with blocks of 32. Both run with the same mim-run.
+with blocks of 32. Both run with the same mlm-run.
 
 | file | runtime | prompt | generation | peak RSS |
 | --- | --- | ---: | ---: | ---: |
 | `tinyllama-rand-q4km.gguf` | llama.cpp | 145.7 tok/s | 26.4 tok/s | 1296 MiB |
-| `q4km-a8.mim` | mim-run, blocks of 32 | 60.1 tok/s | 26.3 tok/s | 901 MiB |
-| `q4km-a8k.mim` | mim-run, blocks of 256 | 70.9 tok/s | 31.5 tok/s | 876 MiB |
+| `q4km-a8.mim` | mlm-run, blocks of 32 | 60.1 tok/s | 26.3 tok/s | 901 MiB |
+| `q4km-a8k.mim` | mlm-run, blocks of 256 | 70.9 tok/s | 31.5 tok/s | 876 MiB |
 
 With one activation scale per weight block, the kernels add up the
 integer products of the whole block and convert to float32 once, instead
@@ -205,16 +205,16 @@ float64 oracle went from 0.33 to 0.41, still under llama.cpp's 0.53.
 Same machine and script, median of 5 runs, with a 21-token prompt. The
 Xeon has AMX, which the Linux kernel lets a process use once it asks
 (`arch_prctl(ARCH_REQ_XCOMP_PERM)`). Both rows run the same
-`q4km-a8k.mim`; "before" is mim-run at the previous step.
+`q4km-a8k.mim`; "before" is mlm-run at the previous step.
 
 | file | runtime | prompt | generation | peak RSS |
 | --- | --- | ---: | ---: | ---: |
 | `tinyllama-rand-q4km.gguf` | llama.cpp | 154.8 tok/s | 23.8 tok/s | 1314 MiB |
-| `q4km-a8k.mim` | mim-run before | 65.9 tok/s | 28.5 tok/s | 920 MiB |
-| `q4km-a8k.mim` | mim-run with AMX | 112.8 tok/s | 31.3 tok/s | 1013 MiB |
+| `q4km-a8k.mim` | mlm-run before | 65.9 tok/s | 28.5 tok/s | 920 MiB |
+| `q4km-a8k.mim` | mlm-run with AMX | 112.8 tok/s | 31.3 tok/s | 1013 MiB |
 
 llama.cpp's prompt speed varied from 152 to 191 tokens per second between
-runs. With a 223-token prompt mim-run reached about 120. The matrix
+runs. With a 223-token prompt mlm-run reached about 120. The matrix
 products of 16 or more rows now go to AMX tile kernels, which take 4 to 7
 picoseconds per multiply-add on one core against 25 to 30 for the
 four-row AVX2 kernels (`go test -bench TileDot ./internal/kernels`).
@@ -230,19 +230,19 @@ VM with AVX-512 and VNNI but no AMX, so the prompt runs on the four-row
 AVX2 kernels), 15 GiB of memory, Linux, Go 1.24, llama-cpp-python 0.3.16
 built on the machine. Same `q4km-a8k.mim` and GGUF, median of 5 runs.
 The 38-token prompt is `tools/bench_generate.py`'s sentence; the 741-token
-one is the same sentence 20 times (`--repeat 20`). "before" is mim-run at
+one is the same sentence 20 times (`--repeat 20`). "before" is mlm-run at
 the previous step.
 
 | prompt | runtime | prompt | generation | peak RSS |
 | ---: | --- | ---: | ---: | ---: |
 | 38 tokens | llama.cpp | 102.9 tok/s | 25.9 tok/s | 1185 MiB |
-| 38 tokens | mim-run before | 67.7 tok/s | 30.0 tok/s | 922 MiB |
-| 38 tokens | mim-run after | 79.8 tok/s | 31.3 tok/s | 739 MiB |
+| 38 tokens | mlm-run before | 67.7 tok/s | 30.0 tok/s | 922 MiB |
+| 38 tokens | mlm-run after | 79.8 tok/s | 31.3 tok/s | 739 MiB |
 | 741 tokens | llama.cpp | 122.8 tok/s | 22.5 tok/s | 1248 MiB |
-| 741 tokens | mim-run before | 39.4 tok/s | 11.7 tok/s | 4529 MiB |
-| 741 tokens | mim-run after | 85.5 tok/s | 25.3 tok/s | 965 MiB |
+| 741 tokens | mlm-run before | 39.4 tok/s | 11.7 tok/s | 4529 MiB |
+| 741 tokens | mlm-run after | 85.5 tok/s | 25.3 tok/s | 965 MiB |
 
-Before this step mim-run's prompt speed fell by half as the prompt grew,
+Before this step mlm-run's prompt speed fell by half as the prompt grew,
 and its memory grew with it; llama.cpp's does neither. A profile showed
 four causes:
 
@@ -263,26 +263,26 @@ four causes:
   generation that followed. It now drops each value after the last op
   that reads it.
 
-mim-run also converts only the last position's logits to pick the next
+mlm-run also converts only the last position's logits to pick the next
 token, instead of all of them. The prompt is still 1.3 to 1.4 times slower
 than llama.cpp's here; the matrix products are now 80% of its time.
 
 ### VNNI kernels
 
-Same machine as 'Long prompts', median of 5 runs. "before" is mim-run at
+Same machine as 'Long prompts', median of 5 runs. "before" is mlm-run at
 the previous step; both run the same `q4km-a8k.mim`.
 
 | prompt | runtime | prompt | generation | peak RSS |
 | ---: | --- | ---: | ---: | ---: |
 | 38 tokens | llama.cpp | 105.2 tok/s | 23.7 tok/s | 1184 MiB |
-| 38 tokens | mim-run before | 77.6 tok/s | 29.9 tok/s | 739 MiB |
-| 38 tokens | mim-run with VNNI | 87.0 tok/s | 30.3 tok/s | 742 MiB |
+| 38 tokens | mlm-run before | 77.6 tok/s | 29.9 tok/s | 739 MiB |
+| 38 tokens | mlm-run with VNNI | 87.0 tok/s | 30.3 tok/s | 742 MiB |
 | 741 tokens | llama.cpp | 117.2 tok/s | 21.0 tok/s | 1248 MiB |
-| 741 tokens | mim-run before | 82.9 tok/s | 25.1 tok/s | 984 MiB |
-| 741 tokens | mim-run with VNNI | 117.1 tok/s | 24.7 tok/s | 1014 MiB |
+| 741 tokens | mlm-run before | 82.9 tok/s | 25.1 tok/s | 984 MiB |
+| 741 tokens | mlm-run with VNNI | 117.1 tok/s | 24.7 tok/s | 1014 MiB |
 
 llama.cpp's prompt speed at 741 tokens ranged from 117 to 123 tokens per
-second between sets of runs, and mim-run's with VNNI from 117 to 125. On
+second between sets of runs, and mlm-run's with VNNI from 117 to 125. On
 CPUs with AVX-512 VNNI and without AMX, the Q4_K and Q6_K products of 12 or
 more prompt rows now go to kernels that take 16 activation rows at once:
 one VPDPBUSD multiplies four weight quants by four quants of each of the
@@ -295,7 +295,7 @@ four-row AVX2 kernels. The 38-token prompt has only two full groups of
 ### A key-value cache in f16
 
 Same machine, median of 3 runs. Both files come from the same GGUF with
-`mim-import -graph -ctx 2048`; one with `-kv f32`, the other with the new
+`mlm-import -graph -ctx 2048`; one with `-kv f32`, the other with the new
 default, `-kv f16`.
 
 | prompt | cache | prompt | generation | peak RSS |
@@ -325,13 +325,13 @@ them (llama-models, mistral-common and dashscope). Llama 3 and Qwen use
 byte-level BPE tokenizers, which `tokenizer` now reads (`tokenizer.BPE`),
 and Qwen the qwen2 architecture, with biases on the query, key and value
 projections and rope over the two halves of each head, which
-`mim-import -graph` now builds.
+`mlm-import -graph` now builds.
 
 ```
 pip download --no-deps -d /tmp/wheels llama-models mistral-common dashscope
 python3 -P tools/gen_big_models.py /tmp/wheels /tmp/big
-go run ./cmd/mim-import -graph -ctx 2048 -o /tmp/big/llama3.mim /tmp/big/llama3-rand-q4km.gguf
-python3 -I tools/bench_generate.py --tokens 32 --mim-run /tmp/mim-run /tmp/big/llama3-rand-q4km.gguf /tmp/big/llama3.mim
+go run ./cmd/mlm-import -graph -ctx 2048 -o /tmp/big/llama3.mim /tmp/big/llama3-rand-q4km.gguf
+python3 -I tools/bench_generate.py --tokens 32 --mlm-run /tmp/mlm-run /tmp/big/llama3-rand-q4km.gguf /tmp/big/llama3.mim
 ```
 
 Each model was checked against llama.cpp before it was timed: for
@@ -353,27 +353,27 @@ the sentence 10 times (`--repeat 10`, 180 or 181 tokens).
 | model | prompt | runtime | load | prompt | generation | peak RSS |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
 | Mistral 7B | 19 | llama.cpp | 1431 ms | 27.2 tok/s | 4.7 tok/s | 8527 MiB |
-| Mistral 7B | 19 | mim-run | 10 ms | 22.0 tok/s | 7.0 tok/s | 4382 MiB |
+| Mistral 7B | 19 | mlm-run | 10 ms | 22.0 tok/s | 7.0 tok/s | 4382 MiB |
 | Mistral 7B | 181 | llama.cpp | 2018 ms | 36.2 tok/s | 4.9 tok/s | 8568 MiB |
-| Mistral 7B | 181 | mim-run | 9 ms | 43.8 tok/s | 6.5 tok/s | 4501 MiB |
+| Mistral 7B | 181 | mlm-run | 9 ms | 43.8 tok/s | 6.5 tok/s | 4501 MiB |
 | Llama 3 8B | 19 | llama.cpp | 2893 ms | 26.3 tok/s | 4.4 tok/s | 7944 MiB |
-| Llama 3 8B | 19 | mim-run | 78 ms | 15.7 tok/s | 6.1 tok/s | 4721 MiB |
+| Llama 3 8B | 19 | mlm-run | 78 ms | 15.7 tok/s | 6.1 tok/s | 4721 MiB |
 | Llama 3 8B | 181 | llama.cpp | 2561 ms | 41.8 tok/s | 4.4 tok/s | 9265 MiB |
-| Llama 3 8B | 181 | mim-run | 70 ms | 39.1 tok/s | 6.7 tok/s | 4903 MiB |
+| Llama 3 8B | 181 | mlm-run | 70 ms | 39.1 tok/s | 6.7 tok/s | 4903 MiB |
 | Qwen2.5 7B | 18 | llama.cpp | 2025 ms | 30.1 tok/s | 4.5 tok/s | 8805 MiB |
-| Qwen2.5 7B | 18 | mim-run | 69 ms | 21.2 tok/s | 6.8 tok/s | 4356 MiB |
+| Qwen2.5 7B | 18 | mlm-run | 69 ms | 21.2 tok/s | 6.8 tok/s | 4356 MiB |
 | Qwen2.5 7B | 180 | llama.cpp | 1276 ms | 38.1 tok/s | 4.8 tok/s | 8805 MiB |
-| Qwen2.5 7B | 180 | mim-run | 78 ms | 45.7 tok/s | 6.4 tok/s | 4569 MiB |
+| Qwen2.5 7B | 180 | mlm-run | 78 ms | 45.7 tok/s | 6.4 tok/s | 4569 MiB |
 
 The runs of the long prompts generated 16 tokens.
 
 - **Generation is 1.3 to 1.5 times faster than llama.cpp's** on all three.
   At this size a step reads 4.4 to 4.9 GB of weights, and both runtimes
-  are bound by memory; mim-run reads each weight row once per step from
+  are bound by memory; mlm-run reads each weight row once per step from
   the mapped file.
-- **mim-run uses half the memory.** llama.cpp's peak is about twice the
+- **mlm-run uses half the memory.** llama.cpp's peak is about twice the
   file: it repacks the weights at load into a second copy laid out for its
-  AMX and AVX-512 kernels (llama-cpp-python reports `REPACK`). mim-run
+  AMX and AVX-512 kernels (llama-cpp-python reports `REPACK`). mlm-run
   uses the weights where they lie in the mapped file, and starts in
   milliseconds where llama.cpp takes one to three seconds.
 - **Short prompts are 1.2 to 1.7 times slower**, long ones as fast or
@@ -388,11 +388,11 @@ The runs of the long prompts generated 16 tokens.
 ## Faster prompts on AMX
 
 Same machine as the 7 to 8B models, median of 5 runs for TinyLlama (64
-generated tokens) and of 3 for the large models (32). "main" is mim-run
+generated tokens) and of 3 for the large models (32). "main" is mlm-run
 before this step. The machine is a shared cloud VM, and repeated runs of
 the same command vary by up to 15%.
 
-| model | prompt | llama.cpp | mim-run main | mim-run now |
+| model | prompt | llama.cpp | mlm-run main | mlm-run now |
 | --- | ---: | ---: | ---: | ---: |
 | TinyLlama 1.1B | 38 | 157.6 tok/s | 126.2 tok/s | 179.2 tok/s |
 | TinyLlama 1.1B | 741 | 200.9 tok/s | 181.4 tok/s | 213.1 tok/s |
@@ -408,7 +408,7 @@ MiB; the large models 6.6 to 7.1 tok/s and 4.4 to 4.9 GiB). The
 large-model "main" column and llama.cpp's long-prompt figures are those of
 the previous section.
 
-mim-run now reads TinyLlama's prompts faster than llama.cpp, short or
+mlm-run now reads TinyLlama's prompts faster than llama.cpp, short or
 long, and the large models' long prompts 1.3 to 1.7 times faster. What
 changed:
 
@@ -448,9 +448,9 @@ tokens and of 3 runs at 741, with 64 generated tokens each.
 | prompt | runtime | load | prompt | generation | peak RSS |
 | ---: | --- | ---: | ---: | ---: | ---: |
 | 38 | llama.cpp | 2603 ms | 59.1 tok/s | 47.8 tok/s | 762 MiB |
-| 38 | mim-run | 6 ms | 60.3 tok/s | 27.6 tok/s | 670 MiB |
+| 38 | mlm-run | 6 ms | 60.3 tok/s | 27.6 tok/s | 670 MiB |
 | 741 | llama.cpp | 2823 ms | 60.6 tok/s | 34.6 tok/s | 817 MiB |
-| 741 | mim-run | 11 ms | 15.7 tok/s | 6.5 tok/s | 913 MiB |
+| 741 | mlm-run | 11 ms | 15.7 tok/s | 6.5 tok/s | 913 MiB |
 
 That first run had NEON kernels only for the 8-bit matrix products.
 Attention (scores, softmax, the weighted sum of values, and the f16 cache
@@ -466,9 +466,9 @@ rows of one table, not across tables.
 | prompt | runtime | load | prompt | generation | peak RSS |
 | ---: | --- | ---: | ---: | ---: | ---: |
 | 38 | llama.cpp | 1874 ms | 95.5 tok/s | 63.0 tok/s | 763 MiB |
-| 38 | mim-run | 4 ms | 123.4 tok/s | 57.7 tok/s | 679 MiB |
+| 38 | mlm-run | 4 ms | 123.4 tok/s | 57.7 tok/s | 679 MiB |
 | 741 | llama.cpp | 1581 ms | 88.2 tok/s | 60.3 tok/s | 817 MiB |
-| 741 | mim-run | 3 ms | 115.6 tok/s | 53.3 tok/s | 927 MiB |
+| 741 | mlm-run | 3 ms | 115.6 tok/s | 53.3 tok/s | 927 MiB |
 
 Prompts now read about 30% faster than llama.cpp's at both lengths, and
 generation is 8 to 12% slower instead of 40 to 80%. The CPU profile of

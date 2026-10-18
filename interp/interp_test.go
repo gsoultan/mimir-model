@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -22,50 +22,50 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/conformance"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/conformance"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // gb builds graphs for the tests.
 type gb struct {
-	g       *mim.Graph
+	g       *mlm.Graph
 	tensors []tensorSpec
 }
 
 type tensorSpec struct {
 	name  string
-	dt    mim.DType
+	dt    mlm.DType
 	shape []uint64
 	data  []byte
 }
 
 func newGB() *gb {
-	return &gb{g: &mim.Graph{PrimitiveVersion: mim.CurrentPrimitive, StdlibVersion: mim.CurrentStdlib,
-		Subgraphs: []mim.Subgraph{{}}}}
+	return &gb{g: &mlm.Graph{PrimitiveVersion: mlm.CurrentPrimitive, StdlibVersion: mlm.CurrentStdlib,
+		Subgraphs: []mlm.Subgraph{{}}}}
 }
 
-func (b *gb) sym(name string, bound int64) mim.Dim {
-	b.g.SymDims = append(b.g.SymDims, mim.SymDim{Name: name, Bound: bound})
-	return mim.Dim(-len(b.g.SymDims))
+func (b *gb) sym(name string, bound int64) mlm.Dim {
+	b.g.SymDims = append(b.g.SymDims, mlm.SymDim{Name: name, Bound: bound})
+	return mlm.Dim(-len(b.g.SymDims))
 }
 
-func (b *gb) val(name string, dt mim.DType, kind mim.ValueKind, shape ...mim.Dim) uint32 {
-	b.g.Values = append(b.g.Values, mim.Value{Name: name, DType: dt, Shape: shape, Kind: kind})
+func (b *gb) val(name string, dt mlm.DType, kind mlm.ValueKind, shape ...mlm.Dim) uint32 {
+	b.g.Values = append(b.g.Values, mlm.Value{Name: name, DType: dt, Shape: shape, Kind: kind})
 	return uint32(len(b.g.Values) - 1)
 }
 
-func (b *gb) input(si int, name string, dt mim.DType, shape ...mim.Dim) uint32 {
-	id := b.val(name, dt, mim.KindInput, shape...)
+func (b *gb) input(si int, name string, dt mlm.DType, shape ...mlm.Dim) uint32 {
+	id := b.val(name, dt, mlm.KindInput, shape...)
 	b.g.Subgraphs[si].Inputs = append(b.g.Subgraphs[si].Inputs, id)
 	return id
 }
 
 // stored adds a weight, const or variable value backed by a file tensor.
-func (b *gb) stored(name string, kind mim.ValueKind, dt mim.DType, shape []uint64, data []byte) uint32 {
-	dims := make([]mim.Dim, len(shape))
+func (b *gb) stored(name string, kind mlm.ValueKind, dt mlm.DType, shape []uint64, data []byte) uint32 {
+	dims := make([]mlm.Dim, len(shape))
 	for i, s := range shape {
-		dims[i] = mim.Dim(s)
+		dims[i] = mlm.Dim(s)
 	}
 	id := b.val(name, dt, kind, dims...)
 	b.g.Values[id].Ref = uint32(len(b.tensors))
@@ -73,13 +73,13 @@ func (b *gb) stored(name string, kind mim.ValueKind, dt mim.DType, shape []uint6
 	return id
 }
 
-func (b *gb) op(si int, opc mim.Opcode, in []uint32, out []uint32, attrs ...mim.Attr) {
-	b.g.Subgraphs[si].Ops = append(b.g.Subgraphs[si].Ops, mim.Op{Opcode: opc, Inputs: in, Outputs: out, Attrs: attrs})
+func (b *gb) op(si int, opc mlm.Opcode, in []uint32, out []uint32, attrs ...mlm.Attr) {
+	b.g.Subgraphs[si].Ops = append(b.g.Subgraphs[si].Ops, mlm.Op{Opcode: opc, Inputs: in, Outputs: out, Attrs: attrs})
 }
 
 func (b *gb) output(si int, id uint32) {
 	if si == 0 {
-		b.g.Values[id].Kind = mim.KindOutput
+		b.g.Values[id].Kind = mlm.KindOutput
 	}
 	b.g.Subgraphs[si].Outputs = append(b.g.Subgraphs[si].Outputs, id)
 }
@@ -100,11 +100,11 @@ func (b *gb) load(t testing.TB) *Program {
 		pos[i] = uint32(p)
 	}
 	for i := range b.g.Values {
-		if k := b.g.Values[i].Kind; (k == mim.KindWeight || k == mim.KindConst || k == mim.KindVariable) && !b.g.Values[i].Zero {
+		if k := b.g.Values[i].Kind; (k == mlm.KindWeight || k == mlm.KindConst || k == mlm.KindVariable) && !b.g.Values[i].Zero {
 			b.g.Values[i].Ref = pos[b.g.Values[i].Ref]
 		}
 	}
-	w := mim.NewWriter()
+	w := mlm.NewWriter()
 	for _, ts := range b.tensors {
 		if err := w.AddTensor(ts.name, ts.dt, ts.shape, ts.data); err != nil {
 			t.Fatal(err)
@@ -114,14 +114,14 @@ func (b *gb) load(t testing.TB) *Program {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.AddSection(mim.SectionGraph, true, enc); err != nil {
+	if err := w.AddSection(mlm.SectionGraph, true, enc); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
 	if _, err := w.WriteTo(&buf); err != nil {
 		t.Fatal(err)
 	}
-	f, err := mim.Parse(buf.Bytes())
+	f, err := mlm.Parse(buf.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,20 +132,20 @@ func (b *gb) load(t testing.TB) *Program {
 	return p
 }
 
-func sAttr(k, v string) mim.Attr { return mim.Attr{Key: k, Type: mim.AttrString, String: v} }
-func iAttr(k string, v int64) mim.Attr {
-	return mim.Attr{Key: k, Type: mim.AttrInt, Int: v}
+func sAttr(k, v string) mlm.Attr { return mlm.Attr{Key: k, Type: mlm.AttrString, String: v} }
+func iAttr(k string, v int64) mlm.Attr {
+	return mlm.Attr{Key: k, Type: mlm.AttrInt, Int: v}
 }
-func fAttr(k string, v float64) mim.Attr { return mim.Attr{Key: k, Type: mim.AttrFloat, Float: v} }
-func gAttr(k string, v int) mim.Attr {
-	return mim.Attr{Key: k, Type: mim.AttrSubgraph, Subgraph: uint32(v)}
+func fAttr(k string, v float64) mlm.Attr { return mlm.Attr{Key: k, Type: mlm.AttrFloat, Float: v} }
+func gAttr(k string, v int) mlm.Attr {
+	return mlm.Attr{Key: k, Type: mlm.AttrSubgraph, Subgraph: uint32(v)}
 }
-func callAttrs(name string, extra ...mim.Attr) []mim.Attr {
-	return append([]mim.Attr{sAttr("name", name), iAttr("version", 1)}, extra...)
+func callAttrs(name string, extra ...mlm.Attr) []mlm.Attr {
+	return append([]mlm.Attr{sAttr("name", name), iAttr("version", 1)}, extra...)
 }
 
 func f32t(shape []int, v ...float32) *ref.Tensor {
-	t, _ := ref.New(mim.F32, shape)
+	t, _ := ref.New(mlm.F32, shape)
 	for i, x := range v {
 		t.SetBits(i, uint64(math.Float32bits(x)))
 	}
@@ -161,7 +161,7 @@ func f32bytes(v ...float32) []byte {
 }
 
 func i64t(shape []int, v ...int64) *ref.Tensor {
-	t, _ := ref.New(mim.I64, shape)
+	t, _ := ref.New(mlm.I64, shape)
 	for i, x := range v {
 		t.SetBits(i, uint64(x))
 	}
@@ -190,20 +190,20 @@ func TestConformanceThroughGraphs(t *testing.T) {
 		in := map[string]*ref.Tensor{}
 		var ids []uint32
 		for k, x := range c.Inputs {
-			dims := make([]mim.Dim, len(x.Shape))
+			dims := make([]mlm.Dim, len(x.Shape))
 			for j, d := range x.Shape {
-				dims[j] = mim.Dim(d)
+				dims[j] = mlm.Dim(d)
 			}
 			name := string(rune('a' + k))
 			ids = append(ids, b.input(0, name, x.DType, dims...))
 			in[name] = x
 		}
 		w := c.Output.Tensor
-		dims := make([]mim.Dim, len(w.Shape))
+		dims := make([]mlm.Dim, len(w.Shape))
 		for j, d := range w.Shape {
-			dims[j] = mim.Dim(d)
+			dims[j] = mlm.Dim(d)
 		}
-		out := b.val("y", w.DType, mim.KindOutput, dims...)
+		out := b.val("y", w.DType, mlm.KindOutput, dims...)
 		b.op(0, c.Opcode, ids, []uint32{out}, c.Attrs...)
 		b.output(0, out)
 		p := b.load(t)
@@ -222,15 +222,15 @@ func TestConformanceThroughGraphs(t *testing.T) {
 // section 7: a variable cache updated by scatter, persisting across runs.
 func TestKVCache(t *testing.T) {
 	b := newGB()
-	cache := b.stored("k_cache", mim.KindVariable, mim.F32, []uint64{1, 4, 2}, make([]byte, 32))
-	pos := b.input(0, "pos", mim.I64, 1)
-	kt := b.input(0, "k_t", mim.F32, 1, 1, 2)
-	knew := b.val("k_new", mim.F32, mim.KindIntermediate, 1, 4, 2)
-	sum := b.val("sum", mim.F32, mim.KindIntermediate, 1, 1, 1)
-	b.op(0, mim.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
-	b.op(0, mim.OpReduce, []uint32{knew}, []uint32{sum}, sAttr("mode", "add"), mim.Attr{Key: "axes", Type: mim.AttrInts, Ints: []int64{1, 2}})
+	cache := b.stored("k_cache", mlm.KindVariable, mlm.F32, []uint64{1, 4, 2}, make([]byte, 32))
+	pos := b.input(0, "pos", mlm.I64, 1)
+	kt := b.input(0, "k_t", mlm.F32, 1, 1, 2)
+	knew := b.val("k_new", mlm.F32, mlm.KindIntermediate, 1, 4, 2)
+	sum := b.val("sum", mlm.F32, mlm.KindIntermediate, 1, 1, 1)
+	b.op(0, mlm.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.op(0, mlm.OpReduce, []uint32{knew}, []uint32{sum}, sAttr("mode", "add"), mlm.Attr{Key: "axes", Type: mlm.AttrInts, Ints: []int64{1, 2}})
 	b.output(0, sum)
-	b.g.Updates = []mim.Update{{Variable: cache, Value: knew}}
+	b.g.Updates = []mlm.Update{{Variable: cache, Value: knew}}
 	p := b.load(t)
 
 	s := p.NewSession()
@@ -269,46 +269,46 @@ func TestKVCache(t *testing.T) {
 // negation with an if on a predicate input.
 func TestWhileIf(t *testing.T) {
 	b := newGB()
-	b.g.Subgraphs = make([]mim.Subgraph, 5)
-	n := b.input(0, "n", mim.I64)
-	neg := b.input(0, "negate", mim.Bool)
-	zero := b.val("zero", mim.I64, mim.KindIntermediate)
-	b.op(0, mim.OpConst, nil, []uint32{zero}, iAttr("value", 0))
-	i1, acc1 := b.val("i1", mim.I64, 0), b.val("acc1", mim.I64, 0)
-	b.op(0, mim.OpWhile, []uint32{zero, zero}, []uint32{i1, acc1}, gAttr("cond", 1), gAttr("body", 2))
-	res := b.val("result", mim.I64, 0)
-	b.op(0, mim.OpIf, []uint32{neg, acc1}, []uint32{res}, gAttr("then", 3), gAttr("else", 4))
+	b.g.Subgraphs = make([]mlm.Subgraph, 5)
+	n := b.input(0, "n", mlm.I64)
+	neg := b.input(0, "negate", mlm.Bool)
+	zero := b.val("zero", mlm.I64, mlm.KindIntermediate)
+	b.op(0, mlm.OpConst, nil, []uint32{zero}, iAttr("value", 0))
+	i1, acc1 := b.val("i1", mlm.I64, 0), b.val("acc1", mlm.I64, 0)
+	b.op(0, mlm.OpWhile, []uint32{zero, zero}, []uint32{i1, acc1}, gAttr("cond", 1), gAttr("body", 2))
+	res := b.val("result", mlm.I64, 0)
+	b.op(0, mlm.OpIf, []uint32{neg, acc1}, []uint32{res}, gAttr("then", 3), gAttr("else", 4))
 	b.output(0, res)
 
 	// cond: i < n, reading n from the enclosing graph
-	ci, ca := b.val("ci", mim.I64, 0), b.val("ca", mim.I64, 0)
+	ci, ca := b.val("ci", mlm.I64, 0), b.val("ca", mlm.I64, 0)
 	b.g.Subgraphs[1].Inputs = []uint32{ci, ca}
-	lt := b.val("lt", mim.Bool, 0)
-	b.op(1, mim.OpCmplt, []uint32{ci, n}, []uint32{lt})
+	lt := b.val("lt", mlm.Bool, 0)
+	b.op(1, mlm.OpCmplt, []uint32{ci, n}, []uint32{lt})
 	b.output(1, lt)
 	// body: (i + 1, acc + i)
-	bi, ba := b.val("bi", mim.I64, 0), b.val("ba", mim.I64, 0)
+	bi, ba := b.val("bi", mlm.I64, 0), b.val("ba", mlm.I64, 0)
 	b.g.Subgraphs[2].Inputs = []uint32{bi, ba}
-	one, ni, na := b.val("one", mim.I64, 0), b.val("ni", mim.I64, 0), b.val("na", mim.I64, 0)
-	b.op(2, mim.OpConst, nil, []uint32{one}, iAttr("value", 1))
-	b.op(2, mim.OpAdd, []uint32{bi, one}, []uint32{ni})
-	b.op(2, mim.OpAdd, []uint32{ba, bi}, []uint32{na})
+	one, ni, na := b.val("one", mlm.I64, 0), b.val("ni", mlm.I64, 0), b.val("na", mlm.I64, 0)
+	b.op(2, mlm.OpConst, nil, []uint32{one}, iAttr("value", 1))
+	b.op(2, mlm.OpAdd, []uint32{bi, one}, []uint32{ni})
+	b.op(2, mlm.OpAdd, []uint32{ba, bi}, []uint32{na})
 	b.output(2, ni)
 	b.output(2, na)
 	// then: -x; else: x + 0
-	tx, ty := b.val("tx", mim.I64, 0), b.val("ty", mim.I64, 0)
+	tx, ty := b.val("tx", mlm.I64, 0), b.val("ty", mlm.I64, 0)
 	b.g.Subgraphs[3].Inputs = []uint32{tx}
-	b.op(3, mim.OpNeg, []uint32{tx}, []uint32{ty})
+	b.op(3, mlm.OpNeg, []uint32{tx}, []uint32{ty})
 	b.output(3, ty)
-	ex, ez, ey := b.val("ex", mim.I64, 0), b.val("ez", mim.I64, 0), b.val("ey", mim.I64, 0)
+	ex, ez, ey := b.val("ex", mlm.I64, 0), b.val("ez", mlm.I64, 0), b.val("ey", mlm.I64, 0)
 	b.g.Subgraphs[4].Inputs = []uint32{ex}
-	b.op(4, mim.OpConst, nil, []uint32{ez}, iAttr("value", 0))
-	b.op(4, mim.OpAdd, []uint32{ex, ez}, []uint32{ey})
+	b.op(4, mlm.OpConst, nil, []uint32{ez}, iAttr("value", 0))
+	b.op(4, mlm.OpAdd, []uint32{ex, ez}, []uint32{ey})
 	b.output(4, ey)
 	p := b.load(t)
 
 	boolT := func(v bool) *ref.Tensor {
-		x, _ := ref.New(mim.Bool, nil)
+		x, _ := ref.New(mlm.Bool, nil)
 		if v {
 			x.Data[0] = 1
 		}
@@ -339,16 +339,16 @@ func TestWhileIf(t *testing.T) {
 func TestMLP(t *testing.T) {
 	b := newGB()
 	B := b.sym("batch", 16)
-	x := b.input(0, "x", mim.F32, B, 3)
+	x := b.input(0, "x", mlm.F32, B, 3)
 	wv := []float32{0.5, -1, 2, 1.5, 0.25, -0.75}
 	bv := []float32{0.1, -0.2}
-	w := b.stored("w", mim.KindWeight, mim.F32, []uint64{2, 3}, f32bytes(wv...))
-	bias := b.stored("bias", mim.KindWeight, mim.F32, []uint64{2}, f32bytes(bv...))
-	h1, h2, h3, y := b.val("h1", mim.F32, 0, B, 2), b.val("h2", mim.F32, 0, B, 2), b.val("h3", mim.F32, 0, B, 2), b.val("y", mim.F32, 0, B, 2)
-	b.op(0, mim.OpCall, []uint32{x, w, bias}, []uint32{h1}, callAttrs("linear")...)
-	b.op(0, mim.OpCall, []uint32{h1}, []uint32{h2}, callAttrs("silu")...)
-	b.op(0, mim.OpCall, []uint32{h2}, []uint32{h3}, callAttrs("rms_norm", fAttr("epsilon", 1e-5))...)
-	b.op(0, mim.OpCall, []uint32{h3}, []uint32{y}, callAttrs("softmax", iAttr("axis", -1))...)
+	w := b.stored("w", mlm.KindWeight, mlm.F32, []uint64{2, 3}, f32bytes(wv...))
+	bias := b.stored("bias", mlm.KindWeight, mlm.F32, []uint64{2}, f32bytes(bv...))
+	h1, h2, h3, y := b.val("h1", mlm.F32, 0, B, 2), b.val("h2", mlm.F32, 0, B, 2), b.val("h3", mlm.F32, 0, B, 2), b.val("y", mlm.F32, 0, B, 2)
+	b.op(0, mlm.OpCall, []uint32{x, w, bias}, []uint32{h1}, callAttrs("linear")...)
+	b.op(0, mlm.OpCall, []uint32{h1}, []uint32{h2}, callAttrs("silu")...)
+	b.op(0, mlm.OpCall, []uint32{h2}, []uint32{h3}, callAttrs("rms_norm", fAttr("epsilon", 1e-5))...)
+	b.op(0, mlm.OpCall, []uint32{h3}, []uint32{y}, callAttrs("softmax", iAttr("axis", -1))...)
 	b.output(0, y)
 	p := b.load(t)
 
@@ -394,10 +394,10 @@ func TestMLP(t *testing.T) {
 // and integer operands, which wrap.
 func TestMatmulBatchBroadcast(t *testing.T) {
 	b := newGB()
-	a := b.input(0, "a", mim.I64, 2, 1, 2)
-	m := b.input(0, "m", mim.I64, 1, 2, 2)
-	y := b.val("y", mim.I64, 0, 2, 1, 2)
-	b.op(0, mim.OpCall, []uint32{a, m}, []uint32{y}, callAttrs("matmul")...)
+	a := b.input(0, "a", mlm.I64, 2, 1, 2)
+	m := b.input(0, "m", mlm.I64, 1, 2, 2)
+	y := b.val("y", mlm.I64, 0, 2, 1, 2)
+	b.op(0, mlm.OpCall, []uint32{a, m}, []uint32{y}, callAttrs("matmul")...)
 	b.output(0, y)
 	p := b.load(t)
 	out, err := p.NewSession().Run(map[string]*ref.Tensor{
@@ -420,16 +420,16 @@ func TestMatmulBatchBroadcast(t *testing.T) {
 // table.
 func TestLocalComposite(t *testing.T) {
 	b := newGB()
-	b.g.Subgraphs = make([]mim.Subgraph, 2)
-	x := b.input(0, "x", mim.F32, 3)
-	y := b.val("y", mim.F32, 0, 3)
-	b.op(0, mim.OpCall, []uint32{x}, []uint32{y}, sAttr("name", "acme/double"), iAttr("version", 2))
+	b.g.Subgraphs = make([]mlm.Subgraph, 2)
+	x := b.input(0, "x", mlm.F32, 3)
+	y := b.val("y", mlm.F32, 0, 3)
+	b.op(0, mlm.OpCall, []uint32{x}, []uint32{y}, sAttr("name", "acme/double"), iAttr("version", 2))
 	b.output(0, y)
-	cx, cy := b.val("cx", mim.F32, 0, 3), b.val("cy", mim.F32, 0, 3)
+	cx, cy := b.val("cx", mlm.F32, 0, 3), b.val("cy", mlm.F32, 0, 3)
 	b.g.Subgraphs[1].Inputs = []uint32{cx}
-	b.op(1, mim.OpAdd, []uint32{cx, cx}, []uint32{cy})
+	b.op(1, mlm.OpAdd, []uint32{cx, cx}, []uint32{cy})
 	b.output(1, cy)
-	b.g.Composites = []mim.Composite{{Name: "acme/double", Version: 2, Subgraph: 1}}
+	b.g.Composites = []mlm.Composite{{Name: "acme/double", Version: 2, Subgraph: 1}}
 	p := b.load(t)
 	out, err := p.NewSession().Run(map[string]*ref.Tensor{"x": f32t([]int{3}, 1, -2, 3.5)})
 	if err != nil {
@@ -443,11 +443,11 @@ func TestLocalComposite(t *testing.T) {
 func TestRunErrors(t *testing.T) {
 	b := newGB()
 	S := b.sym("seq", -1)
-	x := b.input(0, "x", mim.F32, S)
-	z := b.input(0, "z", mim.F32, S)
-	y, u := b.val("y", mim.F32, 0, S), b.val("u", mim.F32, 0, S)
-	b.op(0, mim.OpAdd, []uint32{x, z}, []uint32{y})
-	b.op(0, mim.OpCall, []uint32{y}, []uint32{u}, callAttrs("argsort")...)
+	x := b.input(0, "x", mlm.F32, S)
+	z := b.input(0, "z", mlm.F32, S)
+	y, u := b.val("y", mlm.F32, 0, S), b.val("u", mlm.F32, 0, S)
+	b.op(0, mlm.OpAdd, []uint32{x, z}, []uint32{y})
+	b.op(0, mlm.OpCall, []uint32{y}, []uint32{u}, callAttrs("argsort")...)
 	b.output(0, u)
 	p := b.load(t)
 	s := p.NewSession()
@@ -469,13 +469,13 @@ func TestRunErrors(t *testing.T) {
 // the file: each session gets its own zeroed buffer.
 func TestZeroVariable(t *testing.T) {
 	b := newGB()
-	cache := b.val("k_cache", mim.F32, mim.KindVariable, 1, 4, 2)
+	cache := b.val("k_cache", mlm.F32, mlm.KindVariable, 1, 4, 2)
 	b.g.Values[cache].Zero = true
-	pos := b.input(0, "pos", mim.I64, 1)
-	kt := b.input(0, "k_t", mim.F32, 1, 1, 2)
-	knew := b.val("k_new", mim.F32, mim.KindIntermediate, 1, 4, 2)
-	b.op(0, mim.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
-	b.g.Updates = []mim.Update{{Variable: cache, Value: knew}}
+	pos := b.input(0, "pos", mlm.I64, 1)
+	kt := b.input(0, "k_t", mlm.F32, 1, 1, 2)
+	knew := b.val("k_new", mlm.F32, mlm.KindIntermediate, 1, 4, 2)
+	b.op(0, mlm.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.g.Updates = []mlm.Update{{Variable: cache, Value: knew}}
 	p := b.load(t)
 	p.FastPaths = true
 
@@ -497,10 +497,10 @@ func TestZeroVariable(t *testing.T) {
 
 func TestZeroVariableTooLarge(t *testing.T) {
 	b := newGB()
-	cache := b.val("k_cache", mim.F32, mim.KindVariable, 1<<30, 1<<30)
+	cache := b.val("k_cache", mlm.F32, mlm.KindVariable, 1<<30, 1<<30)
 	b.g.Values[cache].Zero = true
-	x := b.input(0, "x", mim.F32, 1<<30, 1<<30)
-	b.g.Updates = []mim.Update{{Variable: cache, Value: x}}
+	x := b.input(0, "x", mlm.F32, 1<<30, 1<<30)
+	b.g.Updates = []mlm.Update{{Variable: cache, Value: x}}
 	if _, err := New(b.g, nil); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("got %v", err)
 	}

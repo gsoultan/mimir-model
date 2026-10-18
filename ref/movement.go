@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,11 +17,11 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // copyElem copies element j of src to element i of dst; both have dtype dt.
-func copyElem(dt mim.DType, dst []byte, i int, src []byte, j int) {
+func copyElem(dt mlm.DType, dst []byte, i int, src []byte, j int) {
 	s := elemSize(dt)
 	copy(dst[i*s:(i+1)*s], src[j*s:(j+1)*s])
 }
@@ -102,8 +102,8 @@ func evalShrink(x *Tensor, begin []int, shape []int) (*Tensor, error) {
 
 // index returns element i of an i32 or i64 index tensor.
 func index(t *Tensor, i int) int64 {
-	if t.DType == mim.I32 {
-		return sext(mim.I32, t.Bits(i))
+	if t.DType == mlm.I32 {
+		return sext(mlm.I32, t.Bits(i))
 	}
 	return int64(t.Bits(i))
 }
@@ -184,8 +184,8 @@ func evalScatter(data, ind, upd *Tensor, axis int) (*Tensor, error) {
 
 // scalarBits converts the `value` attribute of const and pad to one element
 // of dtype dt (spec/primitives.md section 5.32).
-func scalarBits(dt mim.DType, a *mim.Attr) (uint64, error) {
-	isInt := a.Type == mim.AttrInt
+func scalarBits(dt mlm.DType, a *mlm.Attr) (uint64, error) {
+	isInt := a.Type == mlm.AttrInt
 	switch {
 	case IsFloat(dt):
 		if isInt {
@@ -196,7 +196,7 @@ func scalarBits(dt mim.DType, a *mim.Attr) (uint64, error) {
 			return roundInt(dt, false, uint64(v), isStorage(dt)), nil
 		}
 		return RoundFloat(dt, a.Float, isStorage(dt)), nil
-	case dt == mim.Bool:
+	case dt == mlm.Bool:
 		v := float64(a.Int)
 		if !isInt {
 			v = a.Float
@@ -232,7 +232,7 @@ func scalarBits(dt mim.DType, a *mim.Attr) (uint64, error) {
 	return 0, fmt.Errorf("no scalar value for dtype %s", dt)
 }
 
-func evalConst(dt mim.DType, shape []int, value uint64) (*Tensor, error) {
+func evalConst(dt mlm.DType, shape []int, value uint64) (*Tensor, error) {
 	y, err := New(dt, shape)
 	if err != nil {
 		return nil, err
@@ -243,10 +243,10 @@ func evalConst(dt mim.DType, shape []int, value uint64) (*Tensor, error) {
 	return y, nil
 }
 
-func evalDequantize(x *Tensor, to mim.DType) (*Tensor, error) {
+func evalDequantize(x *Tensor, to mlm.DType) (*Tensor, error) {
 	n := x.NumElems()
 	f := make([]float32, n)
-	if err := mim.Dequantize(x.DType, x.Data, f); err != nil {
+	if err := mlm.Dequantize(x.DType, x.Data, f); err != nil {
 		return nil, err
 	}
 	y, err := New(to, x.Shape)
@@ -254,8 +254,8 @@ func evalDequantize(x *Tensor, to mim.DType) (*Tensor, error) {
 		return nil, err
 	}
 	for i, v := range f {
-		if to == mim.BF16 {
-			y.SetBits(i, uint64(mim.F32ToBF16(v)))
+		if to == mlm.BF16 {
+			y.SetBits(i, uint64(mlm.F32ToBF16(v)))
 		} else {
 			y.SetBits(i, uint64(math.Float32bits(v)))
 		}

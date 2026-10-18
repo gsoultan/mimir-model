@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,7 +18,7 @@
 // On amd64 with AVX2 and FMA the loops are assembly; elsewhere, or when
 // built with the purego tag, they are plain Go, except that arm64 has
 // NEON versions of the float32 kernels (vec_arm64.s). Both decode every
-// weight exactly as mim.Dequantize does, so the only difference between
+// weight exactly as mlm.Dequantize does, so the only difference between
 // them is the order in which the products are summed, and both stay
 // within the dequant_matmul.v1 tolerance (spec/stdlib.md section 3.3).
 // Activations are never quantized, except by the 8-bit kernels of q8.go,
@@ -28,7 +28,7 @@ package kernels
 import (
 	"encoding/binary"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // SIMD reports whether the assembly kernels are in use.
@@ -80,14 +80,14 @@ func AxpyF32(alpha float32, x, y []float32) {
 
 // Fused reports whether rows of dt are decoded inside the dot product
 // rather than into a buffer first.
-func Fused(dt mim.DType) bool {
+func Fused(dt mlm.DType) bool {
 	if !useAVX2 {
 		return false
 	}
 	switch dt {
-	case mim.Q4_K, mim.Q6_K, mim.Q8_0, mim.BF16:
+	case mlm.Q4_K, mlm.Q6_K, mlm.Q8_0, mlm.BF16:
 		return true
-	case mim.F16:
+	case mlm.F16:
 		return hasF16C
 	}
 	return false
@@ -103,7 +103,7 @@ const DecodeOnce = 8
 // elements of one dtype: Load a row, then call Dot for each vector. It
 // holds scratch space, so each goroutine needs its own.
 type RowDot struct {
-	dt       mim.DType
+	dt       mlm.DType
 	k        int
 	rowBytes int
 	row      []byte    // the loaded row, for the fused kernels
@@ -114,7 +114,7 @@ type RowDot struct {
 
 // NewRowDot returns a RowDot for rows of k elements of dtype dt. For block
 // dtypes k must be a multiple of the block size.
-func NewRowDot(dt mim.DType, k int) *RowDot {
+func NewRowDot(dt mlm.DType, k int) *RowDot {
 	return &RowDot{dt: dt, k: k, rowBytes: int(uint64(k) / dt.BlockElems() * dt.BlockBytes())}
 }
 
@@ -126,38 +126,38 @@ func (r *RowDot) Load(row []byte, uses int) {
 			r.buf = make([]float32, r.k)
 		}
 		// Dequantize cannot fail: callers pass rows of the size K implies.
-		_ = mim.Dequantize(r.dt, row, r.buf)
+		_ = mlm.Dequantize(r.dt, row, r.buf)
 		return
 	}
 	r.row = row
 	switch r.dt {
-	case mim.Q4_K:
+	case mlm.Q4_K:
 		nb := r.k / 256
 		r.row = row[:nb*144]
 		r.table(nb * 16)
 		for b := 0; b < nb; b++ {
 			q4kScales(row[144*b:144*b+144], r.tab[16*b:16*b+16])
 		}
-	case mim.Q6_K:
+	case mlm.Q6_K:
 		nb := r.k / 256
 		r.row = row[:nb*210]
 		r.table(nb * 16)
 		for b := 0; b < nb; b++ {
 			blk := row[210*b : 210*b+210]
-			d := mim.F16ToF32(binary.LittleEndian.Uint16(blk[208:]))
+			d := mlm.F16ToF32(binary.LittleEndian.Uint16(blk[208:]))
 			t := r.tab[16*b : 16*b+16]
 			for i, s := range blk[192:208] {
 				t[i] = d * float32(int8(s))
 			}
 		}
-	case mim.Q8_0:
+	case mlm.Q8_0:
 		nb := r.k / 32
 		r.row = row[:nb*34]
 		r.table(nb)
 		for b := range r.tab {
-			r.tab[b] = mim.F16ToF32(binary.LittleEndian.Uint16(row[34*b:]))
+			r.tab[b] = mlm.F16ToF32(binary.LittleEndian.Uint16(row[34*b:]))
 		}
-	case mim.F16, mim.BF16:
+	case mlm.F16, mlm.BF16:
 		r.row = row[:2*r.k]
 	}
 }
@@ -176,21 +176,21 @@ func (r *RowDot) Dot(x []float32) float32 {
 		return DotF32(x, r.buf)
 	}
 	switch r.dt {
-	case mim.Q4_K:
+	case mlm.Q4_K:
 		return dotQ4KAVX2(&r.row[0], &x[0], &r.tab[0], r.k/256)
-	case mim.Q6_K:
+	case mlm.Q6_K:
 		return dotQ6KAVX2(&r.row[0], &x[0], &r.tab[0], r.k/256)
-	case mim.Q8_0:
+	case mlm.Q8_0:
 		return dotQ8_0AVX2(&r.row[0], &x[0], &r.tab[0], r.k/32)
 	}
 	n := r.k &^ 7
 	var s float32
-	if r.dt == mim.F16 {
+	if r.dt == mlm.F16 {
 		if n > 0 {
 			s = dotF16AVX2(&r.row[0], &x[0], n)
 		}
 		for i := n; i < r.k; i++ {
-			s += x[i] * mim.F16ToF32(binary.LittleEndian.Uint16(r.row[2*i:]))
+			s += x[i] * mlm.F16ToF32(binary.LittleEndian.Uint16(r.row[2*i:]))
 		}
 		return s
 	}
@@ -198,19 +198,19 @@ func (r *RowDot) Dot(x []float32) float32 {
 		s = dotBF16AVX2(&r.row[0], &x[0], n)
 	}
 	for i := n; i < r.k; i++ {
-		s += x[i] * mim.BF16ToF32(binary.LittleEndian.Uint16(r.row[2*i:]))
+		s += x[i] * mlm.BF16ToF32(binary.LittleEndian.Uint16(r.row[2*i:]))
 	}
 	return s
 }
 
 // q4kScales writes the eight sub-block scales d*sc and then the eight
 // offsets dmin*m of one Q4_K block, rounded to float32 as
-// mim.Dequantize computes them.
+// mlm.Dequantize computes them.
 func q4kScales(blk []byte, t []float32) {
 	blk = blk[:16]
 	t = t[:16]
-	d := mim.F16ToF32(binary.LittleEndian.Uint16(blk[0:]))
-	dmin := mim.F16ToF32(binary.LittleEndian.Uint16(blk[2:]))
+	d := mlm.F16ToF32(binary.LittleEndian.Uint16(blk[0:]))
+	dmin := mlm.F16ToF32(binary.LittleEndian.Uint16(blk[2:]))
 	q := blk[4:16]
 	for j := 0; j < 4; j++ {
 		t[j] = d * float32(q[j]&63)

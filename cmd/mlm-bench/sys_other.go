@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,17 +11,14 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-//go:build !unix
+//go:build !(linux && (amd64 || arm64))
 
 package main
 
-import "os"
+import "errors"
 
-// mapFile reads path into memory on platforms without a unix mmap.
-func mapFile(path string) ([]byte, func() error, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, err
-	}
-	return b, func() error { return nil }, nil
+func dropCache(string) error {
+	return errors.New("-cold is only supported on Linux")
 }
+
+func residentMemory() (anon, file int64) { return -1, -1 }

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,7 +18,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 func TestScoresF32(t *testing.T) {
@@ -127,7 +127,7 @@ func TestF16Attention(t *testing.T) {
 	rng := rand.New(rand.NewSource(4))
 	for _, d := range []int{8, 64, 72, 160, 5} {
 		for _, n := range []int{1, 3, 4, 9} {
-			kb := randomRows(rng, mim.F16, n, d)
+			kb := randomRows(rng, mlm.F16, n, d)
 			k := make([]float32, n*d)
 			f16Row(kb, k)
 			q := make([]float32, d)
@@ -201,7 +201,7 @@ func TestSiluMulF32(t *testing.T) {
 func BenchmarkAttention(b *testing.B) {
 	rng := rand.New(rand.NewSource(5))
 	const d, n = 64, 1024
-	k, v := randomRows(rng, mim.F16, n, d), randomRows(rng, mim.F16, n, d)
+	k, v := randomRows(rng, mlm.F16, n, d), randomRows(rng, mlm.F16, n, d)
 	q, sc, acc := make([]float32, d), make([]float32, n), make([]float32, d)
 	for i := range q {
 		q[i] = float32(rng.NormFloat64())

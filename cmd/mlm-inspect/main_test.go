@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -19,17 +19,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 func TestInspectRuns(t *testing.T) {
 	dir := t.TempDir()
-	w := mim.NewWriter()
-	if err := w.AddTensor("a", mim.F32, []uint64{2}, make([]byte, 8)); err != nil {
+	w := mlm.NewWriter()
+	if err := w.AddTensor("a", mlm.F32, []uint64{2}, make([]byte, 8)); err != nil {
 		t.Fatal(err)
 	}
-	mb, _ := mim.Metadata{mim.KeyName: "t"}.Encode()
-	if err := w.AddSection(mim.SectionMetadata, false, mb); err != nil {
+	mb, _ := mlm.Metadata{mlm.KeyName: "t"}.Encode()
+	if err := w.AddSection(mlm.SectionMetadata, false, mb); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "t.mim")

@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, "python"))
 sys.path.insert(0, os.path.join(ROOT, "python", "tests"))
 
 import torch_models as TM  # noqa: E402
-from mim.pytorch import export  # noqa: E402
+from mlm.pytorch import export  # noqa: E402
 
 OUT = os.path.join(ROOT, "testdata", "pytorch")
 

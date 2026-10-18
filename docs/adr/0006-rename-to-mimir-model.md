@@ -1,6 +1,6 @@
 # ADR 0006: Rename the format to Mimir Model (.mim)
 
-Status: accepted. Date: 2026-10.
+Status: accepted; the repository and code names are amended by ADR 0008. Date: 2026-10.
 
 ## Context
 
@@ -13,8 +13,8 @@ name should say which family it belongs to.
 ## Decision
 
 The format is Mimir Model, mim for short, and files end in `.mim`. The Go
-module is `github.com/gsoultan/mim`, the commands are `mim-run`,
-`mim-import`, `mim-inspect` and `mim-bench`, and the Python package is
+module is `github.com/gsoultan/mlm`, the commands are `mlm-run`,
+`mlm-import`, `mlm-inspect` and `mlm-bench`, and the Python package is
 `mim`.
 
 The magic changes with the name: files start with `MIM\0`, and the
@@ -37,5 +37,5 @@ old files keep theirs.
   `bad-magic`. This breaks the backward window of spec/versioning.md
   section 3, which major 0 keeps on a best-effort basis (section 5); the
   break is recorded here. There were no releases outside this repository.
-- Code that imports `github.com/gsoultan/mmf` changes its import path. The
+- Code that imports `github.com/gsoultan/mlm` changes its import path. The
   repository is renamed to match the module.

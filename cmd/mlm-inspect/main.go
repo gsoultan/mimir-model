@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,9 +11,9 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Command mim-inspect prints the index, metadata and graph of a mim file.
+// Command mlm-inspect prints the index, metadata and graph of a mim file.
 //
-//	mim-inspect [-verify] [-graph] [-meta] model.mim
+//	mlm-inspect [-verify] [-graph] [-meta] model.mim
 package main
 
 import (
@@ -24,7 +24,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 func main() {
@@ -39,7 +39,7 @@ func main() {
 		return
 	}
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: mim-inspect [-verify] [-graph] [-meta] file.mim")
+		fmt.Fprintln(os.Stderr, "usage: mlm-inspect [-verify] [-graph] [-meta] file.mim")
 		os.Exit(2)
 	}
 	if err := inspect(os.Stdout, flag.Arg(0), *verify, *graph, *meta); err != nil {
@@ -50,7 +50,7 @@ func main() {
 
 // usage prints the visible flags only, so -gembit stays a secret.
 func usage() {
-	fmt.Fprintln(flag.CommandLine.Output(), "usage: mim-inspect [-verify] [-graph] [-meta] file.mim")
+	fmt.Fprintln(flag.CommandLine.Output(), "usage: mlm-inspect [-verify] [-graph] [-meta] file.mim")
 	flag.VisitAll(func(f *flag.Flag) {
 		if f.Name == "gembit" {
 			return
@@ -68,7 +68,7 @@ const banner = `
 `
 
 func inspect(w io.Writer, path string, verify, graph, meta bool) error {
-	f, err := mim.Open(path)
+	f, err := mlm.Open(path)
 	if err != nil {
 		return err
 	}
@@ -80,11 +80,11 @@ func inspect(w io.Writer, path string, verify, graph, meta bool) error {
 	fmt.Fprintln(w, "sections:")
 	for _, s := range f.Sections() {
 		req := ""
-		if s.Flags&mim.FlagRequired != 0 {
+		if s.Flags&mlm.FlagRequired != 0 {
 			req = " required"
 		}
 		h := "no hash"
-		if s.HashAlg == mim.HashSHA256 {
+		if s.HashAlg == mlm.HashSHA256 {
 			h = fmt.Sprintf("sha256 %x…", s.Hash[:4])
 		}
 		fmt.Fprintf(w, "  %-13s @%d +%d%s  %s\n", s.Kind, s.Offset, s.Length, req, h)
@@ -129,7 +129,7 @@ func inspect(w io.Writer, path string, verify, graph, meta bool) error {
 	return nil
 }
 
-func printGraph(w io.Writer, g *mim.Graph) {
+func printGraph(w io.Writer, g *mlm.Graph) {
 	fmt.Fprintf(w, "graph: primitives v%d, stdlib v%d, %d values, %d subgraphs, %d composites\n",
 		g.PrimitiveVersion, g.StdlibVersion, len(g.Values), len(g.Subgraphs), len(g.Composites))
 	for i, s := range g.SymDims {
@@ -164,17 +164,17 @@ func printGraph(w io.Writer, g *mim.Graph) {
 			attrs := make([]string, len(op.Attrs))
 			for i, a := range op.Attrs {
 				switch a.Type {
-				case mim.AttrInt:
+				case mlm.AttrInt:
 					attrs[i] = fmt.Sprintf("%s=%d", a.Key, a.Int)
-				case mim.AttrInts:
+				case mlm.AttrInts:
 					attrs[i] = fmt.Sprintf("%s=%v", a.Key, a.Ints)
-				case mim.AttrFloat:
+				case mlm.AttrFloat:
 					attrs[i] = fmt.Sprintf("%s=%g", a.Key, a.Float)
-				case mim.AttrString:
+				case mlm.AttrString:
 					attrs[i] = fmt.Sprintf("%s=%q", a.Key, a.String)
-				case mim.AttrDType:
+				case mlm.AttrDType:
 					attrs[i] = fmt.Sprintf("%s=%s", a.Key, a.DType)
-				case mim.AttrSubgraph:
+				case mlm.AttrSubgraph:
 					attrs[i] = fmt.Sprintf("%s=subgraph %d", a.Key, a.Subgraph)
 				}
 			}

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,18 +11,18 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Command mim-import converts GGUF, safetensors and ONNX files into mim.
+// Command mlm-import converts GGUF, safetensors and ONNX files into mim.
 //
-//	mim-import [-o out.mim] [-bench] [-nohash] input.gguf
-//	mim-import model.onnx
-//	mim-import -graph [-ctx 2048] [-a8=false] [-kv f32] [-slots 1] tinyllama.gguf
-//	mim-import -o model.mim model-00001-of-00002.safetensors model-00002-of-00002.safetensors
+//	mlm-import [-o out.mim] [-bench] [-nohash] input.gguf
+//	mlm-import model.onnx
+//	mlm-import -graph [-ctx 2048] [-a8=false] [-kv f32] [-slots 1] tinyllama.gguf
+//	mlm-import -o model.mim model-00001-of-00002.safetensors model-00002-of-00002.safetensors
 //
 // Several safetensors shards are merged into one file. Tensors are copied
 // byte for byte. By default the output holds weights and metadata only;
 // with -graph, a GGUF file of the llama or qwen2 architecture also gets a
 // runnable forward-pass graph with a key-value cache of -ctx positions
-// (default: the model's context length), which mim-run can generate text
+// (default: the model's context length), which mlm-run can generate text
 // with. Its
 // matrix products with quantized weights are dequant_matmul_a8, which
 // lets a runtime round the activations to 8-bit blocks as llama.cpp does:
@@ -49,8 +49,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/importer"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/importer"
 )
 
 func main() {
@@ -64,17 +64,17 @@ func main() {
 	slots := flag.Int("slots", 1, "with -graph, the number of sequences the cache holds at once, for a server running several requests")
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mim-import [-o out.mim] [-bench] [-nohash] input...")
+		fmt.Fprintln(os.Stderr, "usage: mlm-import [-o out.mim] [-bench] [-nohash] input...")
 		os.Exit(2)
 	}
-	cache, ok := mim.ParseDType(*kv)
-	if !ok || (cache != mim.F16 && cache != mim.F32) {
-		fmt.Fprintf(os.Stderr, "mim-import: -kv %s: want f16 or f32\n", *kv)
+	cache, ok := mlm.ParseDType(*kv)
+	if !ok || (cache != mlm.F16 && cache != mlm.F32) {
+		fmt.Fprintf(os.Stderr, "mlm-import: -kv %s: want f16 or f32\n", *kv)
 		os.Exit(2)
 	}
 	o := options{out: *out, bench: *bench, hash: !*nohash, graph: *graph, ctx: *ctx, a8: *a8, cache: cache, slots: *slots}
 	if err := run(os.Stdout, flag.Args(), o); err != nil {
-		fmt.Fprintln(os.Stderr, "mim-import:", err)
+		fmt.Fprintln(os.Stderr, "mlm-import:", err)
 		os.Exit(1)
 	}
 }
@@ -102,7 +102,7 @@ type options struct {
 	graph       bool
 	ctx         int
 	a8          bool
-	cache       mim.DType // the key-value cache's dtype
+	cache       mlm.DType // the key-value cache's dtype
 	slots       int       // sequences the cache holds
 }
 
@@ -155,7 +155,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 			graphNote += fmt.Sprintf(" in each of %d slots", c.Slots)
 		}
 	}
-	mw := mim.NewWriter()
+	mw := mlm.NewWriter()
 	mw.Hash = hash
 	if err := src.AddTo(mw); err != nil {
 		return err
@@ -222,11 +222,11 @@ func timeSource(inputs []string) (time.Duration, byte, error) {
 	return time.Since(start), sum, nil
 }
 
-// timeMIM measures mim.Open (map and validate) and reading every tensor byte.
+// timeMIM measures mlm.Open (map and validate) and reading every tensor byte.
 func timeMIM(path string) (time.Duration, byte, error) {
 	var sum byte
 	start := time.Now()
-	f, err := mim.Open(path)
+	f, err := mlm.Open(path)
 	if err != nil {
 		return 0, 0, err
 	}

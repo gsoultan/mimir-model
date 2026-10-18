@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // Graph construction for decoder-only transformers in the Llama family.
@@ -69,7 +69,7 @@ type LlamaConfig struct {
 	Slots      int // sequences the cache holds at once
 }
 
-func metaInt(md mim.Metadata, key string) (int64, bool) {
+func metaInt(md mlm.Metadata, key string) (int64, bool) {
 	switch v := md[key].(type) {
 	case int64:
 		return v, true
@@ -82,7 +82,7 @@ func metaInt(md mim.Metadata, key string) (int64, bool) {
 	return 0, false
 }
 
-func metaFloat(md mim.Metadata, key string) (float64, bool) {
+func metaFloat(md mlm.Metadata, key string) (float64, bool) {
 	switch v := md[key].(type) {
 	case float64:
 		return v, true
@@ -166,51 +166,51 @@ func LlamaConfigOf(s *Source, context int) (*LlamaConfig, error) {
 // AddTo remaps them to the file's sorted tensor order.
 type llamaBuilder struct {
 	s       *Source
-	g       *mim.Graph
+	g       *mlm.Graph
 	byName  map[string]int
 	weights map[string]uint32
 	a8      bool
-	cache   mim.DType // the key-value cache's dtype, F32 or F16
+	cache   mlm.DType // the key-value cache's dtype, F32 or F16
 }
 
-func (b *llamaBuilder) val(name string, dt mim.DType, shape ...mim.Dim) uint32 {
-	b.g.Values = append(b.g.Values, mim.Value{Name: name, DType: dt, Shape: shape})
+func (b *llamaBuilder) val(name string, dt mlm.DType, shape ...mlm.Dim) uint32 {
+	b.g.Values = append(b.g.Values, mlm.Value{Name: name, DType: dt, Shape: shape})
 	return uint32(len(b.g.Values) - 1)
 }
 
-func (b *llamaBuilder) op(opc mim.Opcode, in []uint32, out uint32, attrs ...mim.Attr) uint32 {
+func (b *llamaBuilder) op(opc mlm.Opcode, in []uint32, out uint32, attrs ...mlm.Attr) uint32 {
 	main := &b.g.Subgraphs[0]
-	main.Ops = append(main.Ops, mim.Op{Opcode: opc, Inputs: in, Outputs: []uint32{out}, Attrs: attrs})
+	main.Ops = append(main.Ops, mlm.Op{Opcode: opc, Inputs: in, Outputs: []uint32{out}, Attrs: attrs})
 	return out
 }
 
-func (b *llamaBuilder) call(name string, in []uint32, out uint32, attrs ...mim.Attr) uint32 {
+func (b *llamaBuilder) call(name string, in []uint32, out uint32, attrs ...mlm.Attr) uint32 {
 	return b.callVersion(name, 1, in, out, attrs...)
 }
 
 // callVersion is call for version v of the composite.
-func (b *llamaBuilder) callVersion(name string, v int64, in []uint32, out uint32, attrs ...mim.Attr) uint32 {
-	a := append([]mim.Attr{
-		{Key: "name", Type: mim.AttrString, String: name},
-		{Key: "version", Type: mim.AttrInt, Int: v},
+func (b *llamaBuilder) callVersion(name string, v int64, in []uint32, out uint32, attrs ...mlm.Attr) uint32 {
+	a := append([]mlm.Attr{
+		{Key: "name", Type: mlm.AttrString, String: name},
+		{Key: "version", Type: mlm.AttrInt, Int: v},
 	}, attrs...)
-	return b.op(mim.OpCall, in, out, a...)
+	return b.op(mlm.OpCall, in, out, a...)
 }
 
 // stored adds a value of the given kind backed by source tensor i.
-func (b *llamaBuilder) stored(i int, kind mim.ValueKind) uint32 {
+func (b *llamaBuilder) stored(i int, kind mlm.ValueKind) uint32 {
 	t := b.s.Tensors[i]
-	dims := make([]mim.Dim, len(t.Shape))
+	dims := make([]mlm.Dim, len(t.Shape))
 	for k, d := range t.Shape {
-		dims[k] = mim.Dim(d)
+		dims[k] = mlm.Dim(d)
 	}
-	b.g.Values = append(b.g.Values, mim.Value{Name: t.Name, DType: t.DType, Shape: dims, Kind: kind, Ref: uint32(i)})
+	b.g.Values = append(b.g.Values, mlm.Value{Name: t.Name, DType: t.DType, Shape: dims, Kind: kind, Ref: uint32(i)})
 	return uint32(len(b.g.Values) - 1)
 }
 
 // zeros adds a variable that starts as zeros.
-func (b *llamaBuilder) zeros(name string, dt mim.DType, shape ...mim.Dim) uint32 {
-	b.g.Values = append(b.g.Values, mim.Value{Name: name, DType: dt, Shape: shape, Kind: mim.KindVariable, Zero: true})
+func (b *llamaBuilder) zeros(name string, dt mlm.DType, shape ...mlm.Dim) uint32 {
+	b.g.Values = append(b.g.Values, mlm.Value{Name: name, DType: dt, Shape: shape, Kind: mlm.KindVariable, Zero: true})
 	return uint32(len(b.g.Values) - 1)
 }
 
@@ -232,13 +232,13 @@ func (b *llamaBuilder) weight(name string, shape ...int) (uint32, error) {
 			return 0, fmt.Errorf("tensor %q is %v, want %v", name, t.Shape, shape)
 		}
 	}
-	id := b.stored(i, mim.KindWeight)
+	id := b.stored(i, mlm.KindWeight)
 	b.weights[name] = id
 	return id, nil
 }
 
 // addTensor appends a tensor created by the importer.
-func (b *llamaBuilder) addTensor(name string, dt mim.DType, shape []uint64, data []byte, kind mim.ValueKind) (uint32, error) {
+func (b *llamaBuilder) addTensor(name string, dt mlm.DType, shape []uint64, data []byte, kind mlm.ValueKind) (uint32, error) {
 	if _, dup := b.byName[name]; dup {
 		return 0, fmt.Errorf("tensor %q already exists in the source", name)
 	}
@@ -247,32 +247,32 @@ func (b *llamaBuilder) addTensor(name string, dt mim.DType, shape []uint64, data
 	return b.stored(len(b.s.Tensors)-1, kind), nil
 }
 
-func ints(v ...int64) mim.Attr            { return mim.Attr{Type: mim.AttrInts, Ints: v} }
-func named(k string, a mim.Attr) mim.Attr { a.Key = k; return a }
+func ints(v ...int64) mlm.Attr            { return mlm.Attr{Type: mlm.AttrInts, Ints: v} }
+func named(k string, a mlm.Attr) mlm.Attr { a.Key = k; return a }
 
 // matmulOp emits x times w^T, with linear.v1 for f32 weights and
 // dequant_matmul.v1 or dequant_matmul_a8 for every other dtype. With 8-bit
 // activations, the K-quant weights get dequant_matmul_a8.v2 with blocks of
 // 256, the Q8_K activations llama.cpp pairs with them, and the other
 // dtypes dequant_matmul_a8.v1, the blocks of 32 of its Q8_0 activations.
-func (b *llamaBuilder) matmulOp(name string, x, w uint32, shape ...mim.Dim) uint32 {
+func (b *llamaBuilder) matmulOp(name string, x, w uint32, shape ...mlm.Dim) uint32 {
 	return b.matmulBias(name, x, w, nil, shape...)
 }
 
 // matmulBias is matmulOp plus a bias, the optional third input of the
 // composites, when bias is not nil.
-func (b *llamaBuilder) matmulBias(name string, x, w uint32, bias *uint32, shape ...mim.Dim) uint32 {
-	out := b.val(name, mim.F32, shape...)
+func (b *llamaBuilder) matmulBias(name string, x, w uint32, bias *uint32, shape ...mlm.Dim) uint32 {
+	out := b.val(name, mlm.F32, shape...)
 	in := []uint32{x, w}
 	if bias != nil {
 		in = append(in, *bias)
 	}
 	switch dt := b.g.Values[w].DType; {
-	case dt == mim.F32:
+	case dt == mlm.F32:
 		return b.call("linear", in, out)
-	case b.a8 && (dt == mim.Q4_K || dt == mim.Q6_K):
+	case b.a8 && (dt == mlm.Q4_K || dt == mlm.Q6_K):
 		return b.callVersion("dequant_matmul_a8", 2, in, out,
-			mim.Attr{Key: "block", Type: mim.AttrInt, Int: 256})
+			mlm.Attr{Key: "block", Type: mlm.AttrInt, Int: 256})
 	case b.a8:
 		return b.call("dequant_matmul_a8", in, out)
 	}
@@ -283,11 +283,11 @@ func (b *llamaBuilder) matmulBias(name string, x, w uint32, bias *uint32, shape 
 // another float dtype.
 func (b *llamaBuilder) f32Of(w uint32) uint32 {
 	v := b.g.Values[w]
-	if v.DType == mim.F32 {
+	if v.DType == mlm.F32 {
 		return w
 	}
-	return b.op(mim.OpCast, []uint32{w}, b.val(v.Name+".f32", mim.F32, v.Shape...),
-		mim.Attr{Key: "to", Type: mim.AttrDType, DType: mim.F32})
+	return b.op(mlm.OpCast, []uint32{w}, b.val(v.Name+".f32", mlm.F32, v.Shape...),
+		mlm.Attr{Key: "to", Type: mlm.AttrDType, DType: mlm.F32})
 }
 
 // LlamaOptions configures BuildLlama.
@@ -302,7 +302,7 @@ type LlamaOptions struct {
 	// Cache is the dtype of the key-value cache: F16, which halves its
 	// memory and has the graph call attention.v2, or F32 (also the zero
 	// value), with attention.v1.
-	Cache mim.DType
+	Cache mlm.DType
 	// Slots is the number of sequences the key-value cache holds at once,
 	// so that a runtime can serve several requests in one run; 0 or 1
 	// means one. With more than one, the graph has a third input, slots,
@@ -324,16 +324,16 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 	}
 	b := &llamaBuilder{
 		s:       s,
-		g:       &mim.Graph{PrimitiveVersion: mim.CurrentPrimitive, StdlibVersion: mim.CurrentStdlib, Subgraphs: []mim.Subgraph{{}}},
+		g:       &mlm.Graph{PrimitiveVersion: mlm.CurrentPrimitive, StdlibVersion: mlm.CurrentStdlib, Subgraphs: []mlm.Subgraph{{}}},
 		byName:  map[string]int{},
 		weights: map[string]uint32{},
 		a8:      o.A8,
-		cache:   mim.F32,
+		cache:   mlm.F32,
 	}
 	switch o.Cache {
-	case 0, mim.F32:
-	case mim.F16:
-		b.cache = mim.F16
+	case 0, mlm.F32:
+	case mlm.F16:
+		b.cache = mlm.F16
 	default:
 		return nil, fmt.Errorf("key-value cache dtype %s: want f32 or f16", o.Cache)
 	}
@@ -351,16 +351,16 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		return nil, fmt.Errorf("%d slots of %d positions: the cache would exceed %d", c.Slots, c.Context, maxLlamaContext)
 	}
 	cacheLen := c.Slots * c.Context
-	E, F, H, Hkv, D, C, V := mim.Dim(c.Embed), mim.Dim(c.FFN), mim.Dim(c.Heads), mim.Dim(c.KVHeads), mim.Dim(c.HeadDim), mim.Dim(cacheLen), mim.Dim(c.Vocab)
-	b.g.SymDims = []mim.SymDim{{Name: "T", Bound: int64(cacheLen)}}
-	T := mim.Dim(-1)
+	E, F, H, Hkv, D, C, V := mlm.Dim(c.Embed), mlm.Dim(c.FFN), mlm.Dim(c.Heads), mlm.Dim(c.KVHeads), mlm.Dim(c.HeadDim), mlm.Dim(cacheLen), mlm.Dim(c.Vocab)
+	b.g.SymDims = []mlm.SymDim{{Name: "T", Bound: int64(cacheLen)}}
+	T := mlm.Dim(-1)
 	sym := int64(-1) // the -1 sentinel of reshape for a symbolic dimension
 
 	main := &b.g.Subgraphs[0]
-	tokens := b.val("tokens", mim.I32, 1, T)
-	positions := b.val("positions", mim.I64, 1, T)
-	b.g.Values[tokens].Kind = mim.KindInput
-	b.g.Values[positions].Kind = mim.KindInput
+	tokens := b.val("tokens", mlm.I32, 1, T)
+	positions := b.val("positions", mlm.I64, 1, T)
+	b.g.Values[tokens].Kind = mlm.KindInput
+	b.g.Values[positions].Kind = mlm.KindInput
 	main.Inputs = []uint32{tokens, positions}
 
 	// Attention mask, shared by every layer: key j is visible from the
@@ -372,54 +372,54 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 	for j := 0; j < cacheLen; j++ {
 		binary.LittleEndian.PutUint64(kposData[8*j:], uint64(j))
 	}
-	kpos, err := b.addTensor("mim.kv_positions", mim.I64, []uint64{1, 1, 1, uint64(cacheLen)}, kposData, mim.KindConst)
+	kpos, err := b.addTensor("mim.kv_positions", mlm.I64, []uint64{1, 1, 1, uint64(cacheLen)}, kposData, mlm.KindConst)
 	if err != nil {
 		return nil, err
 	}
 	at := positions
 	var start uint32
 	if c.Slots > 1 {
-		slots := b.val("slots", mim.I64, 1, T)
-		b.g.Values[slots].Kind = mim.KindInput
+		slots := b.val("slots", mlm.I64, 1, T)
+		b.g.Values[slots].Kind = mlm.KindInput
 		main.Inputs = append(main.Inputs, slots)
-		size := b.op(mim.OpConst, nil, b.val("slot_size", mim.I64, 1, 1), mim.Attr{Key: "value", Type: mim.AttrInt, Int: int64(c.Context)})
-		start = b.op(mim.OpMul, []uint32{slots, size}, b.val("slot_start", mim.I64, 1, T))
-		at = b.op(mim.OpAdd, []uint32{start, positions}, b.val("slot_positions", mim.I64, 1, T))
+		size := b.op(mlm.OpConst, nil, b.val("slot_size", mlm.I64, 1, 1), mlm.Attr{Key: "value", Type: mlm.AttrInt, Int: int64(c.Context)})
+		start = b.op(mlm.OpMul, []uint32{slots, size}, b.val("slot_start", mlm.I64, 1, T))
+		at = b.op(mlm.OpAdd, []uint32{start, positions}, b.val("slot_positions", mlm.I64, 1, T))
 	}
-	qpos := b.op(mim.OpReshape, []uint32{at}, b.val("query_positions", mim.I64, 1, 1, T, 1), named("shape", ints(1, 1, sym, 1)))
-	hidden := b.op(mim.OpCmplt, []uint32{qpos, kpos}, b.val("mask.future", mim.Bool, 1, 1, T, C))
+	qpos := b.op(mlm.OpReshape, []uint32{at}, b.val("query_positions", mlm.I64, 1, 1, T, 1), named("shape", ints(1, 1, sym, 1)))
+	hidden := b.op(mlm.OpCmplt, []uint32{qpos, kpos}, b.val("mask.future", mlm.Bool, 1, 1, T, C))
 	if c.Slots > 1 {
-		qstart := b.op(mim.OpReshape, []uint32{start}, b.val("query_slot_start", mim.I64, 1, 1, T, 1), named("shape", ints(1, 1, sym, 1)))
-		before := b.op(mim.OpCmplt, []uint32{kpos, qstart}, b.val("mask.other_slots", mim.Bool, 1, 1, T, C))
-		hidden = b.op(mim.OpOr, []uint32{hidden, before}, b.val("mask.hidden", mim.Bool, 1, 1, T, C))
+		qstart := b.op(mlm.OpReshape, []uint32{start}, b.val("query_slot_start", mlm.I64, 1, 1, T, 1), named("shape", ints(1, 1, sym, 1)))
+		before := b.op(mlm.OpCmplt, []uint32{kpos, qstart}, b.val("mask.other_slots", mlm.Bool, 1, 1, T, C))
+		hidden = b.op(mlm.OpOr, []uint32{hidden, before}, b.val("mask.hidden", mlm.Bool, 1, 1, T, C))
 	}
-	truth := b.op(mim.OpConst, nil, b.val("true", mim.Bool, 1, 1, 1, 1), mim.Attr{Key: "value", Type: mim.AttrInt, Int: 1})
-	mask := b.op(mim.OpXor, []uint32{hidden, truth}, b.val("mask", mim.Bool, 1, 1, T, C))
-	cacheIdx := b.op(mim.OpReshape, []uint32{at}, b.val("cache_index", mim.I64, T), named("shape", ints(sym)))
+	truth := b.op(mlm.OpConst, nil, b.val("true", mlm.Bool, 1, 1, 1, 1), mlm.Attr{Key: "value", Type: mlm.AttrInt, Int: 1})
+	mask := b.op(mlm.OpXor, []uint32{hidden, truth}, b.val("mask", mlm.Bool, 1, 1, T, C))
+	cacheIdx := b.op(mlm.OpReshape, []uint32{at}, b.val("cache_index", mlm.I64, T), named("shape", ints(sym)))
 
-	table := b.stored(emb, mim.KindWeight)
+	table := b.stored(emb, mlm.KindWeight)
 	edt := s.Tensors[emb].DType
 	var x uint32
-	if edt == mim.F32 || edt.IsBlock() || edt == mim.F8E4M3 || edt == mim.F8E5M2 {
-		x = b.call("embedding", []uint32{table, tokens}, b.val("embed", mim.F32, 1, T, E))
+	if edt == mlm.F32 || edt.IsBlock() || edt == mlm.F8E4M3 || edt == mlm.F8E5M2 {
+		x = b.call("embedding", []uint32{table, tokens}, b.val("embed", mlm.F32, 1, T, E))
 	} else {
 		raw := b.call("embedding", []uint32{table, tokens}, b.val("embed.raw", edt, 1, T, E))
-		x = b.op(mim.OpCast, []uint32{raw}, b.val("embed", mim.F32, 1, T, E), mim.Attr{Key: "to", Type: mim.AttrDType, DType: mim.F32})
+		x = b.op(mlm.OpCast, []uint32{raw}, b.val("embed", mlm.F32, 1, T, E), mlm.Attr{Key: "to", Type: mlm.AttrDType, DType: mlm.F32})
 	}
 
-	eps := mim.Attr{Key: "epsilon", Type: mim.AttrFloat, Float: c.NormEps}
+	eps := mlm.Attr{Key: "epsilon", Type: mlm.AttrFloat, Float: c.NormEps}
 	// llama.cpp's NORM rope rotates adjacent pairs; qwen2 uses NEOX, which
 	// rotates the first half of each head against the second.
 	interleaved := int64(1)
 	if c.Arch == "qwen2" {
 		interleaved = 0
 	}
-	rope := []mim.Attr{
-		{Key: "theta", Type: mim.AttrFloat, Float: c.RopeTheta},
-		{Key: "interleaved", Type: mim.AttrInt, Int: interleaved},
-		{Key: "rotary_dims", Type: mim.AttrInt, Int: int64(c.RopeDims)},
+	rope := []mlm.Attr{
+		{Key: "theta", Type: mlm.AttrFloat, Float: c.RopeTheta},
+		{Key: "interleaved", Type: mlm.AttrInt, Int: interleaved},
+		{Key: "rotary_dims", Type: mlm.AttrInt, Int: int64(c.RopeDims)},
 	}
-	cacheShape := []mim.Dim{1, mim.Dim(c.KVHeads), C, mim.Dim(c.HeadDim)}
+	cacheShape := []mlm.Dim{1, mlm.Dim(c.KVHeads), C, mlm.Dim(c.HeadDim)}
 	for l := 0; l < c.Layers; l++ {
 		p := fmt.Sprintf("blk.%d.", l)
 		w := func(name string, shape ...int) (uint32, error) { return b.weight(p+name, shape...) }
@@ -463,8 +463,8 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		cacheK := b.zeros(p+"cache_k", b.cache, cacheShape...)
 		cacheV := b.zeros(p+"cache_v", b.cache, cacheShape...)
 
-		h := b.call("rms_norm", []uint32{x, b.f32Of(attnNorm)}, b.val(p+"attn_in", mim.F32, 1, T, E), eps)
-		heads := func(name string, wt uint32, n mim.Dim) (uint32, error) {
+		h := b.call("rms_norm", []uint32{x, b.f32Of(attnNorm)}, b.val(p+"attn_in", mlm.F32, 1, T, E), eps)
+		heads := func(name string, wt uint32, n mlm.Dim) (uint32, error) {
 			var bias *uint32
 			if c.Arch == "qwen2" {
 				bv, err := w("attn_"+name+".bias", int(n*D))
@@ -475,8 +475,8 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 				bias = &bv
 			}
 			y := b.matmulBias(p+name, h, wt, bias, 1, T, n*D)
-			y = b.op(mim.OpReshape, []uint32{y}, b.val(p+name+".heads", mim.F32, 1, T, n, D), named("shape", ints(1, sym, int64(n), int64(D))))
-			return b.op(mim.OpPermute, []uint32{y}, b.val(p+name+".bhtd", mim.F32, 1, n, T, D), named("perm", ints(0, 2, 1, 3))), nil
+			y = b.op(mlm.OpReshape, []uint32{y}, b.val(p+name+".heads", mlm.F32, 1, T, n, D), named("shape", ints(1, sym, int64(n), int64(D))))
+			return b.op(mlm.OpPermute, []uint32{y}, b.val(p+name+".bhtd", mlm.F32, 1, n, T, D), named("perm", ints(0, 2, 1, 3))), nil
 		}
 		q, err := heads("q", wq, H)
 		if err != nil {
@@ -490,35 +490,35 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		if err != nil {
 			return nil, err
 		}
-		q = b.call("rope", []uint32{q, positions}, b.val(p+"q.rope", mim.F32, 1, H, T, D), rope...)
-		k = b.call("rope", []uint32{k, positions}, b.val(p+"k.rope", mim.F32, 1, Hkv, T, D), rope...)
+		q = b.call("rope", []uint32{q, positions}, b.val(p+"q.rope", mlm.F32, 1, H, T, D), rope...)
+		k = b.call("rope", []uint32{k, positions}, b.val(p+"k.rope", mlm.F32, 1, Hkv, T, D), rope...)
 		attnVersion := int64(1)
-		if b.cache == mim.F16 {
+		if b.cache == mlm.F16 {
 			// The new keys and values are rounded to f16 as they go into the
 			// cache, and attention.v2 reads them from it as they are.
-			to := mim.Attr{Key: "to", Type: mim.AttrDType, DType: mim.F16}
-			k = b.op(mim.OpCast, []uint32{k}, b.val(p+"k.f16", mim.F16, 1, Hkv, T, D), to)
-			v = b.op(mim.OpCast, []uint32{v}, b.val(p+"v.f16", mim.F16, 1, Hkv, T, D), to)
+			to := mlm.Attr{Key: "to", Type: mlm.AttrDType, DType: mlm.F16}
+			k = b.op(mlm.OpCast, []uint32{k}, b.val(p+"k.f16", mlm.F16, 1, Hkv, T, D), to)
+			v = b.op(mlm.OpCast, []uint32{v}, b.val(p+"v.f16", mlm.F16, 1, Hkv, T, D), to)
 			attnVersion = 2
 		}
-		scatter := mim.Attr{Key: "axis", Type: mim.AttrInt, Int: 2}
-		newK := b.op(mim.OpScatter, []uint32{cacheK, cacheIdx, k}, b.val(p+"cache_k.next", b.cache, 1, Hkv, C, D), scatter)
-		newV := b.op(mim.OpScatter, []uint32{cacheV, cacheIdx, v}, b.val(p+"cache_v.next", b.cache, 1, Hkv, C, D), scatter)
-		b.g.Updates = append(b.g.Updates, mim.Update{Variable: cacheK, Value: newK}, mim.Update{Variable: cacheV, Value: newV})
+		scatter := mlm.Attr{Key: "axis", Type: mlm.AttrInt, Int: 2}
+		newK := b.op(mlm.OpScatter, []uint32{cacheK, cacheIdx, k}, b.val(p+"cache_k.next", b.cache, 1, Hkv, C, D), scatter)
+		newV := b.op(mlm.OpScatter, []uint32{cacheV, cacheIdx, v}, b.val(p+"cache_v.next", b.cache, 1, Hkv, C, D), scatter)
+		b.g.Updates = append(b.g.Updates, mlm.Update{Variable: cacheK, Value: newK}, mlm.Update{Variable: cacheV, Value: newV})
 
-		o := b.callVersion("attention", attnVersion, []uint32{q, newK, newV, mask}, b.val(p+"attn", mim.F32, 1, H, T, D),
-			mim.Attr{Key: "num_kv_heads", Type: mim.AttrInt, Int: int64(c.KVHeads)})
-		o = b.op(mim.OpPermute, []uint32{o}, b.val(p+"attn.bthd", mim.F32, 1, T, H, D), named("perm", ints(0, 2, 1, 3)))
-		o = b.op(mim.OpReshape, []uint32{o}, b.val(p+"attn.merged", mim.F32, 1, T, E), named("shape", ints(1, sym, int64(E))))
+		o := b.callVersion("attention", attnVersion, []uint32{q, newK, newV, mask}, b.val(p+"attn", mlm.F32, 1, H, T, D),
+			mlm.Attr{Key: "num_kv_heads", Type: mlm.AttrInt, Int: int64(c.KVHeads)})
+		o = b.op(mlm.OpPermute, []uint32{o}, b.val(p+"attn.bthd", mlm.F32, 1, T, H, D), named("perm", ints(0, 2, 1, 3)))
+		o = b.op(mlm.OpReshape, []uint32{o}, b.val(p+"attn.merged", mlm.F32, 1, T, E), named("shape", ints(1, sym, int64(E))))
 		o = b.matmulOp(p+"attn_out", o, wo, 1, T, E)
-		x = b.op(mim.OpAdd, []uint32{x, o}, b.val(p+"resid_attn", mim.F32, 1, T, E))
+		x = b.op(mlm.OpAdd, []uint32{x, o}, b.val(p+"resid_attn", mlm.F32, 1, T, E))
 
-		h = b.call("rms_norm", []uint32{x, b.f32Of(ffnNorm)}, b.val(p+"ffn_in", mim.F32, 1, T, E), eps)
+		h = b.call("rms_norm", []uint32{x, b.f32Of(ffnNorm)}, b.val(p+"ffn_in", mlm.F32, 1, T, E), eps)
 		gate := b.matmulOp(p+"gate", h, wg, 1, T, F)
 		up := b.matmulOp(p+"up", h, wu, 1, T, F)
-		act := b.call("swiglu", []uint32{gate, up}, b.val(p+"swiglu", mim.F32, 1, T, F))
+		act := b.call("swiglu", []uint32{gate, up}, b.val(p+"swiglu", mlm.F32, 1, T, F))
 		down := b.matmulOp(p+"down", act, wd, 1, T, E)
-		x = b.op(mim.OpAdd, []uint32{x, down}, b.val(p+"resid_ffn", mim.F32, 1, T, E))
+		x = b.op(mlm.OpAdd, []uint32{x, down}, b.val(p+"resid_ffn", mlm.F32, 1, T, E))
 	}
 	outNorm, err := b.weight("output_norm.weight", c.Embed)
 	if err != nil {
@@ -530,9 +530,9 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 			return nil, err
 		}
 	}
-	x = b.call("rms_norm", []uint32{x, b.f32Of(outNorm)}, b.val("final_norm", mim.F32, 1, T, E), eps)
+	x = b.call("rms_norm", []uint32{x, b.f32Of(outNorm)}, b.val("final_norm", mlm.F32, 1, T, E), eps)
 	logits := b.matmulOp("logits", x, head, 1, T, V)
-	b.g.Values[logits].Kind = mim.KindOutput
+	b.g.Values[logits].Kind = mlm.KindOutput
 	main.Outputs = []uint32{logits}
 
 	if err := b.g.Validate(); err != nil {

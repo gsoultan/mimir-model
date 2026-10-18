@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,7 +17,7 @@ import (
 	"math"
 	"math/bits"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // floatFormat describes a binary floating-point encoding.
@@ -28,13 +28,13 @@ type floatFormat struct {
 	hasInf bool // false for f8_e4m3, whose top exponent holds finite values
 }
 
-var floatFormats = map[mim.DType]floatFormat{
-	mim.F64:    {53, -1022, 11, true},
-	mim.F32:    {24, -126, 8, true},
-	mim.F16:    {11, -14, 5, true},
-	mim.BF16:   {8, -126, 8, true},
-	mim.F8E4M3: {4, -6, 4, false},
-	mim.F8E5M2: {3, -14, 5, true},
+var floatFormats = map[mlm.DType]floatFormat{
+	mlm.F64:    {53, -1022, 11, true},
+	mlm.F32:    {24, -126, 8, true},
+	mlm.F16:    {11, -14, 5, true},
+	mlm.BF16:   {8, -126, 8, true},
+	mlm.F8E4M3: {4, -6, 4, false},
+	mlm.F8E5M2: {3, -14, 5, true},
 }
 
 func (f floatFormat) width() int { return f.p + f.ebits }
@@ -67,38 +67,38 @@ func (f floatFormat) nanBits() uint64 {
 func (f floatFormat) infBits() uint64 { return f.expMask() << (f.p - 1) }
 
 // IsFloat reports whether dt is a float or storage float dtype.
-func IsFloat(dt mim.DType) bool { _, ok := floatFormats[dt]; return ok }
+func IsFloat(dt mlm.DType) bool { _, ok := floatFormats[dt]; return ok }
 
 // isArith reports whether dt is in the float class of spec/primitives.md
 // section 2.2 (f64, f32, f16, bf16).
-func isArith(dt mim.DType) bool {
-	return dt == mim.F64 || dt == mim.F32 || dt == mim.F16 || dt == mim.BF16
+func isArith(dt mlm.DType) bool {
+	return dt == mlm.F64 || dt == mlm.F32 || dt == mlm.F16 || dt == mlm.BF16
 }
 
 // IsInt reports whether dt is an integer dtype.
-func IsInt(dt mim.DType) bool {
+func IsInt(dt mlm.DType) bool {
 	switch dt {
-	case mim.I8, mim.U8, mim.I16, mim.U16, mim.I32, mim.U32, mim.I64, mim.U64:
+	case mlm.I8, mlm.U8, mlm.I16, mlm.U16, mlm.I32, mlm.U32, mlm.I64, mlm.U64:
 		return true
 	}
 	return false
 }
 
 // isSigned reports whether dt is a signed integer dtype.
-func isSigned(dt mim.DType) bool {
-	return dt == mim.I8 || dt == mim.I16 || dt == mim.I32 || dt == mim.I64
+func isSigned(dt mlm.DType) bool {
+	return dt == mlm.I8 || dt == mlm.I16 || dt == mlm.I32 || dt == mlm.I64
 }
 
-func intWidth(dt mim.DType) uint { return uint(8 * elemSize(dt)) }
+func intWidth(dt mlm.DType) uint { return uint(8 * elemSize(dt)) }
 
 // sext interprets the low intWidth(dt) bits of b as a signed integer.
-func sext(dt mim.DType, b uint64) int64 {
+func sext(dt mlm.DType, b uint64) int64 {
 	s := 64 - intWidth(dt)
 	return int64(b<<s) >> s
 }
 
 // mask keeps the low intWidth(dt) bits of b.
-func mask(dt mim.DType, b uint64) uint64 {
+func mask(dt mlm.DType, b uint64) uint64 {
 	w := intWidth(dt)
 	if w == 64 {
 		return b
@@ -108,7 +108,7 @@ func mask(dt mim.DType, b uint64) uint64 {
 
 // intRange returns the smallest and largest value of an integer dtype. For
 // unsigned dtypes lo is 0 and hi is returned in hiU.
-func intRange(dt mim.DType) (lo int64, hi int64, hiU uint64) {
+func intRange(dt mlm.DType) (lo int64, hi int64, hiU uint64) {
 	w := intWidth(dt)
 	if isSigned(dt) {
 		return -1 << (w - 1), 1<<(w-1) - 1, 1<<(w-1) - 1
@@ -120,9 +120,9 @@ func intRange(dt mim.DType) (lo int64, hi int64, hiU uint64) {
 }
 
 // DecodeFloat returns the exact value of a float bit pattern of dtype dt.
-func DecodeFloat(dt mim.DType, b uint64) float64 {
+func DecodeFloat(dt mlm.DType, b uint64) float64 {
 	f := floatFormats[dt]
-	if dt == mim.F64 {
+	if dt == mlm.F64 {
 		return math.Float64frombits(b)
 	}
 	sign := b&f.signBit() != 0
@@ -152,7 +152,7 @@ func DecodeFloat(dt mim.DType, b uint64) float64 {
 // and returns the bit pattern. Finite values beyond the largest finite value
 // become infinity, or the largest finite value when sat is set or dt has no
 // infinity.
-func roundExact(dt mim.DType, neg bool, m uint64, e int, sat bool) uint64 {
+func roundExact(dt mlm.DType, neg bool, m uint64, e int, sat bool) uint64 {
 	f := floatFormats[dt]
 	var s uint64
 	if neg {
@@ -210,9 +210,9 @@ func roundExact(dt mim.DType, neg bool, m uint64, e int, sat bool) uint64 {
 // NaN of dt. Infinities stay infinite where dt has them; f8_e4m3, which has
 // none, saturates. With sat set, finite values that overflow saturate to the
 // largest finite value of the same sign instead of becoming infinite.
-func RoundFloat(dt mim.DType, x float64, sat bool) uint64 {
+func RoundFloat(dt mlm.DType, x float64, sat bool) uint64 {
 	f := floatFormats[dt]
-	if dt == mim.F64 {
+	if dt == mlm.F64 {
 		return math.Float64bits(x)
 	}
 	if math.IsNaN(x) {
@@ -241,14 +241,14 @@ func RoundFloat(dt mim.DType, x float64, sat bool) uint64 {
 }
 
 // roundInt rounds an integer, given as a sign and magnitude, to dt.
-func roundInt(dt mim.DType, neg bool, mag uint64, sat bool) uint64 {
+func roundInt(dt mlm.DType, neg bool, mag uint64, sat bool) uint64 {
 	return roundExact(dt, neg, mag, 0, sat)
 }
 
 // ULP returns the spacing of dt's values at the magnitude of x: the unit in
 // the last place used by the tolerance rules of spec/primitives.md
 // section 3.5. x must be finite.
-func ULP(dt mim.DType, x float64) float64 {
+func ULP(dt mlm.DType, x float64) float64 {
 	f := floatFormats[dt]
 	e := f.emin
 	if x != 0 {

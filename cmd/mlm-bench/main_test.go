@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/importer"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/importer"
 )
 
 func TestBench(t *testing.T) {
@@ -41,7 +41,7 @@ func TestBench(t *testing.T) {
 	if _, err := importer.BuildLlama(s, importer.LlamaOptions{Context: 16}); err != nil {
 		t.Fatal(err)
 	}
-	w := mim.NewWriter()
+	w := mlm.NewWriter()
 	if err := s.AddTo(w); err != nil {
 		t.Fatal(err)
 	}
