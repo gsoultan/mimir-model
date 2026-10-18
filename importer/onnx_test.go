@@ -253,3 +253,69 @@ func TestONNXRejects(t *testing.T) {
 		t.Error("half a model was accepted")
 	}
 }
+
+// floatInit is a float initializer that declares dims but carries no data.
+func floatInit(name string, dims ...uint64) pb {
+	t := pb(nil)
+	for _, d := range dims {
+		t = t.varint(1, d)
+	}
+	return t.varint(2, onnxFloat).str(8, name)
+}
+
+func intsAttr(name string, v ...uint64) pb {
+	a := pb(nil).str(1, name)
+	for _, x := range v {
+		a = a.varint(8, x)
+	}
+	return a.varint(20, 7)
+}
+
+// TestONNXHostile checks inputs that once exhausted memory or time: tensor
+// dims that promise far more data than the file holds, and pooling that
+// would unroll into an enormous graph or divisor table.
+func TestONNXHostile(t *testing.T) {
+	bn := pb(nil).bytes(1, node("BatchNormalization", []string{"x", "s", "b", "m", "v"}, []string{"y"}))
+	for _, name := range []string{"s", "b", "m", "v"} {
+		bn = bn.bytes(5, floatInit(name, 1<<40))
+	}
+	bn = bn.bytes(11, floatInput("x", 1, 4)).bytes(12, pb(nil).str(1, "y"))
+
+	pool := func(op string, attrs ...pb) []byte {
+		return testModel(13, pb(nil).bytes(1, node(op, []string{"x"}, []string{"y"}, attrs...)).
+			bytes(11, floatInput("x", 1, 1, 1<<20, 1<<20)).bytes(12, pb(nil).str(1, "y")))
+	}
+	cases := map[string][]byte{
+		"dims without data":   testModel(13, bn),
+		"huge pooling kernel": pool("MaxPool", intsAttr("kernel_shape", 1<<20, 1<<20)),
+		"huge average divisor table": pool("AveragePool", intsAttr("kernel_shape", 1, 1),
+			intsAttr("pads", 1, 1, 1, 1)),
+	}
+	for name, b := range cases {
+		if _, err := ParseONNX(b); err == nil {
+			t.Errorf("%s: accepted", name)
+		} else {
+			t.Logf("%s: %v", name, err)
+		}
+	}
+}
+
+func FuzzParseONNX(f *testing.F) {
+	model, err := os.ReadFile(filepath.Join(onnxDir(), "tiny-cnn.onnx"))
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(model)
+	relu := pb(nil).bytes(1, node("Relu", []string{"x"}, []string{"y"})).
+		bytes(11, floatInput("x", 1, 4)).bytes(12, pb(nil).str(1, "y"))
+	f.Add(testModel(13, relu))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if src, err := ParseONNX(b); err == nil {
+			for _, tn := range src.Tensors {
+				if err := checkTensor(tn); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	})
+}

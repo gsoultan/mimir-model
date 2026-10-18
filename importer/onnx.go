@@ -469,7 +469,9 @@ func (t *onnxTensor) elems() (int, error) {
 	return n, nil
 }
 
-// floats returns the values of a float or double tensor as float64.
+// floats returns the values of a float or double tensor as float64. The
+// data length is checked against the dims before anything is allocated, so
+// a tensor that declares a huge shape but carries no data costs nothing.
 func (t *onnxTensor) floats() ([]float64, error) {
 	if t.extern {
 		return nil, fmt.Errorf("onnx: tensor %q is stored in an external file, which is not supported", t.name)
@@ -478,38 +480,42 @@ func (t *onnxTensor) floats() ([]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]float64, 0, n)
 	switch {
 	case t.dtype == onnxFloat && t.hasRaw:
 		if len(t.raw) != 4*n {
 			return nil, fmt.Errorf("onnx: tensor %q has %d raw bytes for %d floats", t.name, len(t.raw), n)
 		}
-		for i := 0; i < n; i++ {
-			out = append(out, float64(math.Float32frombits(binary.LittleEndian.Uint32(t.raw[4*i:]))))
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(t.raw[4*i:])))
 		}
+		return out, nil
 	case t.dtype == onnxFloat:
 		if len(t.f32) != n {
 			return nil, fmt.Errorf("onnx: tensor %q has %d floats for %d elements", t.name, len(t.f32), n)
 		}
-		for _, v := range t.f32 {
-			out = append(out, float64(v))
+		out := make([]float64, n)
+		for i, v := range t.f32 {
+			out[i] = float64(v)
 		}
+		return out, nil
 	case t.dtype == onnxDouble && t.hasRaw:
 		if len(t.raw) != 8*n {
 			return nil, fmt.Errorf("onnx: tensor %q has %d raw bytes for %d doubles", t.name, len(t.raw), n)
 		}
-		for i := 0; i < n; i++ {
-			out = append(out, math.Float64frombits(binary.LittleEndian.Uint64(t.raw[8*i:])))
+		out := make([]float64, n)
+		for i := range out {
+			out[i] = math.Float64frombits(binary.LittleEndian.Uint64(t.raw[8*i:]))
 		}
+		return out, nil
 	case t.dtype == onnxDouble:
 		if len(t.f64) != n {
 			return nil, fmt.Errorf("onnx: tensor %q has %d doubles for %d elements", t.name, len(t.f64), n)
 		}
-		out = append(out, t.f64...)
+		return append([]float64(nil), t.f64...), nil
 	default:
 		return nil, fmt.Errorf("onnx: tensor %q has data type %d, want float", t.name, t.dtype)
 	}
-	return out, nil
 }
 
 // int64s returns the values of an int64 tensor.
@@ -1317,6 +1323,14 @@ func (c *onnxConverter) spatial(n *onnxNode, h, w, kh, kw int64) (*spatial, erro
 	return p, nil
 }
 
+// Limits on what a pooling node may unroll into: kernel positions, output
+// positions, and window elements visited to count the average divisors.
+const (
+	maxPoolWindow = 1 << 12
+	maxPoolOutput = 1 << 24
+	maxPoolVisits = 1 << 28
+)
+
 func ceilDiv(a, b int64) int64 { return (a + b - 1) / b }
 
 func (c *onnxConverter) conv(n *onnxNode, out string) error {
@@ -1473,6 +1487,15 @@ func (c *onnxConverter) pool(n *onnxNode, out string) error {
 	if err != nil {
 		return err
 	}
+	// Pooling is unrolled into one node per kernel position, and the
+	// average divisors are a table of ho x wo computed by visiting every
+	// window, so both are bounded before anything is built.
+	if p.kh*p.kw > maxPoolWindow {
+		return fmt.Errorf("a %dx%d pooling kernel is larger than %d positions", p.kh, p.kw, maxPoolWindow)
+	}
+	if p.ho > maxPoolOutput || p.wo > maxPoolOutput || p.ho*p.wo > maxPoolOutput {
+		return fmt.Errorf("a %dx%d pooling output is larger than %d positions", p.ho, p.wo, maxPoolOutput)
+	}
 	if c.attrInt(n, "ceil_mode", 0) != 0 {
 		extH, extW := p.dh*(p.kh-1)+1, p.dw*(p.kw-1)+1
 		if (sp[0]+p.top+p.bottom-extH)%p.sh != 0 || (sp[1]+p.left+p.right-extW)%p.sw != 0 {
@@ -1521,6 +1544,9 @@ func (c *onnxConverter) pool(n *onnxNode, out string) error {
 	padded0 := p.top+p.bottom+p.left+p.right > 0
 	if c.attrInt(n, "count_include_pad", 0) != 0 || !padded0 {
 		return c.output(n, c.op(mim.OpMul, []uint32{acc, c.k(1/area, 4)}, out, ys))
+	}
+	if p.ho*p.wo*p.kh*p.kw > maxPoolVisits {
+		return fmt.Errorf("counting the windows of a %dx%d pooling over %dx%d positions is too much work", p.kh, p.kw, p.ho, p.wo)
 	}
 	inv := make([]float64, p.ho*p.wo)
 	for oy := int64(0); oy < p.ho; oy++ {
