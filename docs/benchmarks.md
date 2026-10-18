@@ -462,3 +462,71 @@ generation that follows it, are four to five times slower than
 llama.cpp's. Generation is also slower after the short prompt, 27.6
 against 47.8 tok/s; that run has not been profiled on arm64 yet. NEON
 kernels for attention over the f16 cache are the next step.
+
+## Real weights
+
+The released models, as published in Q4_K_M by bartowski on Hugging Face,
+checked against the SHA-256 the site lists:
+`Meta-Llama-3-8B-Instruct-Q4_K_M.gguf`,
+`Mistral-7B-Instruct-v0.3-Q4_K_M.gguf` (v0.3, with a 32,768-token
+vocabulary, where the random-weight Mistral above is v0.1) and
+`Qwen2.5-7B-Instruct-Q4_K_M.gguf`. Each was imported with
+`mmf-import -graph -ctx 4096` and ran as it was: no fixes to the
+importer, the tokenizers or the executor were needed.
+
+```
+$ mmf-run -m llama3.mmf -p "The capital of France is" -n 32
+The capital of France is Paris, which is located in the north-central part of the country. Paris is the most populous city in France and is known for its stunning architecture, art museums
+```
+
+### Output against llama.cpp
+
+Four prompts (a fact, the start of a Python function, a story, a
+multiplication), up to 48 greedy tokens each, with mmf-run's default
+`dequant_matmul_a8` file and with llama.cpp on the GGUF file:
+
+| model | same token ids | same top token over the prompt | identical continuations |
+| --- | :---: | ---: | :---: |
+| Llama 3 8B | 4 of 4 | 56 of 57 positions | 2 of 4 |
+| Mistral 7B v0.3 | 4 of 4 | 67 of 69 | 3 of 4 |
+| Qwen2.5 7B | 4 of 4 | 53 of 55 | 1 of 4 |
+
+The tokenizers give llama.cpp's ids for every prompt. Where two
+continuations part, they part at a near-tie. For Mistral and Qwen the
+logits at each of those positions were compared in three runtimes:
+llama.cpp, mmf-run's default file, and the same model imported with
+`-a8=false`, whose matrix products keep the activations in float32 and
+stand in for the exact result. The top two logits are within 0.25 of
+each other in all three, and llama.cpp and mmf-run are about as far from
+the float32 file as each other (largest logit differences of 0.3 to 0.4 for Mistral, 0.7 to 2.1 for
+Qwen, whose logits span about 40). At Mistral's Python prompt, for
+example, llama.cpp's logits for `   ` and ` if` are both 16.08, and
+mmf-run picks `   `, as the float32 file does. Every continuation reads
+as fluent text, and both runtimes answer 391 to 17 × 23.
+
+### Speed
+
+Same machine as the 7 to 8B models above (4 cores of an Intel Xeon at
+2.1 GHz with AMX, 15 GiB, Go 1.24, llama-cpp-python 0.3.16 built on the
+machine), `tools/bench_generate.py --tokens 32`, median of 3 runs:
+
+| model | prompt | runtime | load | prompt | generation | peak RSS |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| Mistral 7B v0.3 | 19 | llama.cpp | 1109 ms | 30.9 tok/s | 5.1 tok/s | 8667 MiB |
+| Mistral 7B v0.3 | 19 | mmf-run | 8 ms | 35.0 tok/s | 7.4 tok/s | 4630 MiB |
+| Mistral 7B v0.3 | 181 | llama.cpp | 2118 ms | 40.3 tok/s | 5.2 tok/s | 8709 MiB |
+| Mistral 7B v0.3 | 181 | mmf-run | 10 ms | 64.1 tok/s | 7.4 tok/s | 4785 MiB |
+| Llama 3 8B | 19 | llama.cpp | 1571 ms | 30.2 tok/s | 4.9 tok/s | 9537 MiB |
+| Llama 3 8B | 19 | mmf-run | 92 ms | 34.7 tok/s | 6.5 tok/s | 5009 MiB |
+| Llama 3 8B | 181 | llama.cpp | 1359 ms | 48.7 tok/s | 4.8 tok/s | 9578 MiB |
+| Llama 3 8B | 181 | mmf-run | 82 ms | 59.2 tok/s | 6.7 tok/s | 5250 MiB |
+| Qwen2.5 7B | 18 | llama.cpp | 1184 ms | 29.1 tok/s | 5.2 tok/s | 8917 MiB |
+| Qwen2.5 7B | 18 | mmf-run | 71 ms | 35.5 tok/s | 7.5 tok/s | 4445 MiB |
+| Qwen2.5 7B | 180 | llama.cpp | 1219 ms | 44.9 tok/s | 5.1 tok/s | 8963 MiB |
+| Qwen2.5 7B | 180 | mmf-run | 74 ms | 73.1 tok/s | 7.6 tok/s | 4704 MiB |
+
+The weights' values do not change the work, so these match the
+random-weight figures of the previous sections within the machine's
+run-to-run spread: mmf-run generates 1.3 to 1.5 times faster than
+llama.cpp, reads prompts 1.1 to 1.6 times faster, and peaks at about
+half its memory.
