@@ -17,7 +17,7 @@ import (
 	"encoding/binary"
 	"math"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // Kernels for the attention fast path: the scores of one query against a

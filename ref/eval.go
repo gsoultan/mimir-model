@@ -16,7 +16,7 @@ package ref
 import (
 	"fmt"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // attrSpec lists the attributes of a primitive: key to type, and whether the

@@ -22,9 +22,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/conformance"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/conformance"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // gb builds graphs for the tests.

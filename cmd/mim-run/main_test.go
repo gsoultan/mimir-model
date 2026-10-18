@@ -24,10 +24,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/importer"
-	"github.com/gsoultan/mim/interp"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/importer"
+	"github.com/gsoultan/mimir-model/interp"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // The fixtures in testdata/llama and testdata/qwen2 are two-layer models

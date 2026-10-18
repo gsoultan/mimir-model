@@ -26,7 +26,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // Tensor is a dense tensor: a dtype, a shape and the packed little-endian

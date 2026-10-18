@@ -16,7 +16,7 @@ package ref
 import (
 	"math"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // evalReduce folds x over axes. Float sums and products accumulate in

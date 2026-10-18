@@ -16,7 +16,7 @@ package kernels
 import (
 	"math"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // 8-bit activations, for dequant_matmul_a8.v1 and v2 (spec/stdlib.md

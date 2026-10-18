@@ -26,8 +26,8 @@ package interp
 import (
 	"fmt"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // DefaultMaxIterations bounds each `while` loop so that a hostile or broken

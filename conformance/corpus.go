@@ -32,8 +32,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // Mode is a runtime's subnormal handling for float dtypes

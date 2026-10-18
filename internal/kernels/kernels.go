@@ -28,7 +28,7 @@ package kernels
 import (
 	"encoding/binary"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // SIMD reports whether the assembly kernels are in use.
