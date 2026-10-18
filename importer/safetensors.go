@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,18 +20,18 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // maxSafetensorsHeader is the header size limit of the reference
 // safetensors implementation.
 const maxSafetensorsHeader = 100 << 20
 
-var safetensorsTypes = map[string]mmf.DType{
-	"F64": mmf.F64, "F32": mmf.F32, "F16": mmf.F16, "BF16": mmf.BF16,
-	"I64": mmf.I64, "I32": mmf.I32, "I16": mmf.I16, "I8": mmf.I8,
-	"U64": mmf.U64, "U32": mmf.U32, "U16": mmf.U16, "U8": mmf.U8,
-	"BOOL": mmf.Bool, "F8_E4M3": mmf.F8E4M3, "F8_E5M2": mmf.F8E5M2,
+var safetensorsTypes = map[string]mim.DType{
+	"F64": mim.F64, "F32": mim.F32, "F16": mim.F16, "BF16": mim.BF16,
+	"I64": mim.I64, "I32": mim.I32, "I16": mim.I16, "I8": mim.I8,
+	"U64": mim.U64, "U32": mim.U32, "U16": mim.U16, "U8": mim.U8,
+	"BOOL": mim.Bool, "F8_E4M3": mim.F8E4M3, "F8_E5M2": mim.F8E5M2,
 }
 
 type stEntry struct {
@@ -58,7 +58,7 @@ func ParseSafetensors(b []byte) (*Source, error) {
 	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("safetensors: header: %w", err)
 	}
-	src := &Source{Format: "safetensors", Metadata: mmf.Metadata{}}
+	src := &Source{Format: "safetensors", Metadata: mim.Metadata{}}
 	type span struct {
 		name       string
 		begin, end uint64

@@ -1,4 +1,4 @@
-# mmf design notes
+# mim design notes
 
 Notes from the first brainstorm. Nothing here is final; spec v0 comes next.
 
@@ -52,7 +52,7 @@ more. Operator creep is how ONNX reached about 190 operators.
 
 ## Compared with ONNX
 
-| | ONNX | mmf |
+| | ONNX | mim |
 | --- | --- | --- |
 | Operators a runtime must implement | about 190, versioned opsets | about 30 primitives |
 | Encoding | protobuf, 2 GB limit, parse and copy | header + aligned raw data, mmap |
@@ -68,7 +68,7 @@ the architecture is a metadata string and the model is hard-coded in C++.
 Must match: block quantization, single memory-mapped file, tokenizer and chat
 template inside the file.
 
-Where mmf wins:
+Where mim wins:
 
 - A real graph, so a new architecture runs on an unchanged runtime.
 - Not limited to LLMs.
@@ -87,7 +87,7 @@ enough.
 3. **Public spec with a conformance test suite:** what makes it a standard
    rather than a file layout.
 4. **Fast reference runtime (mimir)** and a showcase (mimir-server): upload
-   ONNX, get a faster mmf file, serve it, with benchmarks against ONNX
+   ONNX, get a faster mim file, serve it, with benchmarks against ONNX
    Runtime and llama.cpp.
 5. **A second runtime**, even a minimal C or Rust reader, to prove the spec
    stands on its own.
@@ -97,15 +97,15 @@ on servers and at the edge.
 
 ## Repository split
 
-- **mmf** (this repo): spec, standard library, conformance corpus, reference
+- **mim** (this repo): spec, standard library, conformance corpus, reference
   Go reader and writer. Depends on nothing.
-- **mimir**: imports mmf to load and save models; the fast reference runtime.
+- **mimir**: imports mim to load and save models; the fast reference runtime.
 - **mimir-server**: imports both; holds the ONNX and GGUF importers and the
   PyTorch exporter.
 
 ## Open questions
 
-- Final name. "mmf" ties it to mimir; a neutral name may help other runtimes
+- Final name. "mim" ties it to mimir; a neutral name may help other runtimes
   adopt it.
 - Graph encoding inside the header: JSON for readability, or a compact
   binary section for very large graphs.
@@ -123,7 +123,7 @@ tests.
 Every step of the adoption plan above has landed, and v0.1 is tagged. The
 gap that is left is speed on a CPU against llama.cpp on the same Q4_K_M
 model (docs/benchmarks.md): generation was 1.7 times slower and the prompt
-4 to 5 times slower. A profile of mmf-run showed where the time goes: the
+4 to 5 times slower. A profile of mim-run showed where the time goes: the
 8-bit matrix product kernels took 65% of the CPU, the cores sat idle or
 woke up threads for another 20%, and the kernels read the weights from
 memory more slowly than the machine allows.
@@ -187,7 +187,7 @@ llama.cpp on the same machine, and recorded in docs/benchmarks.md.
 
 With every step of the speed plan done, a benchmark on a Xeon without AMX
 (docs/benchmarks.md, 'Long prompts') showed a gap the 21-token prompt had
-hidden: with a 741-token prompt mmf-run read 39 tokens per second against
+hidden: with a 741-token prompt mim-run read 39 tokens per second against
 llama.cpp's 123, and its memory grew to 4.5 GB.
 
 1. **Long prompts.** Matrix products in blocks of activations that fit in
@@ -208,7 +208,7 @@ llama.cpp's 123, and its memory grew to 4.5 GB.
 3. **A key-value cache in f16.** The cache variables in f16 instead of
    f32: half the memory (46 MiB instead of 92 at a context of 2048 for
    TinyLlama, and proportionally more at long contexts), and half the
-   bytes attention reads per token. Done: `mmf-import` writes an f16 cache
+   bytes attention reads per token. Done: `mim-import` writes an f16 cache
    by default, read by `attention.v2`, with the same speed and 93 MiB less
    memory at a 741-token prompt (docs/benchmarks.md, 'A key-value cache in
    f16').

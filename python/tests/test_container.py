@@ -7,10 +7,10 @@ import struct
 import unittest
 
 import _paths  # noqa: F401
-from mmf.container import File
-from mmf.errors import MMFError
+from mim.container import File
+from mim.errors import MIMError
 
-BASE = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "dtypes.mmf")
+BASE = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "dtypes.mim")
 
 
 def hostile_cases(base):
@@ -92,7 +92,7 @@ class TestHostile(unittest.TestCase):
     def test_hostile(self):
         for name, code, data in hostile_cases(self.base):
             with self.subTest(name):
-                with self.assertRaises(MMFError) as cm:
+                with self.assertRaises(MIMError) as cm:
                     File(data)
                 self.assertEqual(cm.exception.code, code, str(cm.exception))
 
@@ -100,7 +100,7 @@ class TestHostile(unittest.TestCase):
         b = bytearray(self.base)
         b[-1] ^= 1
         f = File(bytes(b))
-        with self.assertRaises(MMFError) as cm:
+        with self.assertRaises(MIMError) as cm:
             f.verify_hashes()
         self.assertEqual(cm.exception.code, "hash-mismatch")
 

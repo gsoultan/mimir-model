@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -24,16 +24,16 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/interp"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/interp"
+	"github.com/gsoultan/mim/ref"
 )
 
-var updateONNX = flag.Bool("update-onnx", false, "rewrite testdata/onnx/tiny-cnn.mmf")
+var updateONNX = flag.Bool("update-onnx", false, "rewrite testdata/onnx/tiny-cnn.mim")
 
 type onnxExpected struct {
 	Model     string  `json:"model"`
-	MMF       string  `json:"mmf"`
+	MIM       string  `json:"mim"`
 	Tolerance float64 `json:"tolerance"`
 	Runs      []struct {
 		Inputs  map[string]onnxArray `json:"inputs"`
@@ -52,7 +52,7 @@ func (a onnxArray) tensor(t *testing.T) *ref.Tensor {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := ref.New(mmf.F32, a.Shape)
+	r, err := ref.New(mim.F32, a.Shape)
 	if err != nil || len(r.Data) != len(b) {
 		t.Fatalf("array %v with %d bytes: %v", a.Shape, len(b), err)
 	}
@@ -68,7 +68,7 @@ func importONNX(t *testing.T, b []byte) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := mmf.NewWriter()
+	w := mim.NewWriter()
 	if err := s.AddTo(w); err != nil {
 		t.Fatal(err)
 	}
@@ -96,19 +96,19 @@ func TestONNXTinyCNN(t *testing.T) {
 		t.Fatalf("the ONNX model is detected as %q", Detect(model))
 	}
 	out := importONNX(t, model)
-	mmfPath := filepath.Join(onnxDir(), e.MMF)
+	mimPath := filepath.Join(onnxDir(), e.MIM)
 	if *updateONNX {
-		if err := os.WriteFile(mmfPath, out, 0o644); err != nil {
+		if err := os.WriteFile(mimPath, out, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// The import is deterministic and the committed file is its result,
 	// which the Python runtime runs.
-	if committed, err := os.ReadFile(mmfPath); err != nil || !bytes.Equal(committed, out) {
-		t.Fatalf("%s differs from a fresh import (run go test ./importer -run TestONNXTinyCNN -update-onnx): %v", mmfPath, err)
+	if committed, err := os.ReadFile(mimPath); err != nil || !bytes.Equal(committed, out) {
+		t.Fatalf("%s differs from a fresh import (run go test ./importer -run TestONNXTinyCNN -update-onnx): %v", mimPath, err)
 	}
 
-	f, err := mmf.Parse(out)
+	f, err := mim.Parse(out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,10 +116,10 @@ func TestONNXTinyCNN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if md["import.source_format"] != "onnx" || md[mmf.KeyName] != "tiny-cnn" || md["onnx.opset"] != int64(13) {
+	if md["import.source_format"] != "onnx" || md[mim.KeyName] != "tiny-cnn" || md["onnx.opset"] != int64(13) {
 		t.Errorf("metadata %v", md)
 	}
-	if ti, ok := f.Tensor("conv1.weight"); !ok || ti.DType != mmf.F32 || len(ti.Shape) != 4 {
+	if ti, ok := f.Tensor("conv1.weight"); !ok || ti.DType != mim.F32 || len(ti.Shape) != 4 {
 		t.Errorf("conv1.weight is %+v", ti)
 	}
 	for _, fast := range []bool{true, false} {
@@ -141,7 +141,7 @@ func TestONNXTinyCNN(t *testing.T) {
 			for k, v := range r.Outputs {
 				want := v.tensor(t)
 				g := got[k]
-				if g == nil || g.DType != mmf.F32 || !sameDims(g.Shape, want.Shape) {
+				if g == nil || g.DType != mim.F32 || !sameDims(g.Shape, want.Shape) {
 					t.Fatalf("fast %v run %d: output %q is %v", fast, ri, k, g)
 				}
 				for i := 0; i < want.NumElems(); i++ {

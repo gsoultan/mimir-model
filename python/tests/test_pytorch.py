@@ -1,4 +1,4 @@
-"""The PyTorch exporter: models exported with mmf.pytorch run in the
+"""The PyTorch exporter: models exported with mim.pytorch run in the
 Python runtime with PyTorch's results. Skipped without PyTorch."""
 
 import os
@@ -8,10 +8,10 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mmf import dtypes as D
-from mmf.container import File
-from mmf.executor import Program
-from mmf.tensor import Tensor
+from mim import dtypes as D
+from mim.container import File
+from mim.executor import Program
+from mim.tensor import Tensor
 
 try:
     import torch
@@ -19,15 +19,15 @@ try:
     from torch.export import Dim
 
     import torch_models as TM
-    from mmf.pytorch import ExportError, export
+    from mim.pytorch import ExportError, export
 except ImportError:  # pragma: no cover
     torch = None
 
 TOL = 2e-6  # relative to the largest output
 
 
-def to_mmf(t):
-    from mmf.pytorch import _DTYPES
+def to_mim(t):
+    from mim.pytorch import _DTYPES
 
     a = t.detach().contiguous()
     if a.dtype == torch.bfloat16:
@@ -48,7 +48,7 @@ class TestExport(unittest.TestCase):
         names = [f.graph().values[v].name for v in f.graph().main.inputs]
         outs = [f.graph().values[v].name for v in f.graph().main.outputs]
         for ins in (args, *more):
-            got = s.run({n: to_mmf(t) for n, t in zip(names, ins)})
+            got = s.run({n: to_mim(t) for n, t in zip(names, ins)})
             with torch.no_grad():
                 ref = m(*ins)
             ref = ref if isinstance(ref, tuple) else (ref,)
@@ -111,7 +111,7 @@ class TestExport(unittest.TestCase):
         for td, dt in ((torch.bfloat16, D.BF16), (torch.float16, D.F16)):
             m = TM.build("tiny-llama").to(td)
             f = File(export(m, args, dynamic_shapes=dyn))
-            out = Program.load(f).session().run({"ids": to_mmf(args[0])})["output"]
+            out = Program.load(f).session().run({"ids": to_mim(args[0])})["output"]
             self.assertIs(out.dtype, dt)
             with torch.no_grad():
                 rt = m(*args).double().numpy()
@@ -121,7 +121,7 @@ class TestExport(unittest.TestCase):
     def test_write_to_path(self):
         args, dyn = TM.AudioNet.example()
         with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "audio.mmf")
+            p = os.path.join(d, "audio.mim")
             data = export(TM.build("audio"), args, p, dynamic_shapes=dyn, metadata={"general.license": "MIT"})
             with open(p, "rb") as fh:
                 self.assertEqual(fh.read(), data)
@@ -159,7 +159,7 @@ class TestExport(unittest.TestCase):
             t = 0
             for n in [prompt] + [1] * steps:
                 x, pos = ids[:, t:t + n], torch.arange(t, t + n)
-                got = values(s.run({"ids": to_mmf(x), "pos": to_mmf(pos)})["output"])
+                got = values(s.run({"ids": to_mim(x), "pos": to_mim(pos)})["output"])
                 with torch.no_grad():
                     ref = m(x, pos).double().numpy()
                 scale = max(np.abs(ref).max(), 1)

@@ -1,6 +1,6 @@
-# mmf dtypes v0.1
+# mim dtypes v0.1
 
-Status: draft. This document defines every element type an mmf tensor may
+Status: draft. This document defines every element type a mim tensor may
 have: its numeric id, its name, its storage size and, for quantized types,
 the exact byte layout of a block and the exact procedure that turns a block
 into f32 values. The reference implementation is `dtype.go`.
@@ -257,7 +257,7 @@ order used by ggml `block_mxfp4`.
 
 The scale is `2^(e - 127)` for `e = 0..254`. OCP MX defines `e = 0xFF` as
 NaN; ggml and the Python `gguf` package instead decode it as the finite
-scale `2^128`. For import compatibility mmf follows ggml: a decoder MUST
+scale `2^128`. For import compatibility mim follows ggml: a decoder MUST
 treat `e = 0xFF` as `2^128`, and an encoder MUST NOT emit it. A nibble of
 `0x8` (negative zero) decodes to `+0`, as in ggml.
 

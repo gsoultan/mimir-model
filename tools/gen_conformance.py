@@ -299,7 +299,7 @@ class Corpus:
         for op, cases in self.ops.items():
             names = [c["name"] for c in cases]
             assert len(names) == len(set(names)), op
-            head = {"format": "mmf-conformance", "version": 1, "op": op, "opcode": OPCODES[op]}
+            head = {"format": "mim-conformance", "version": 1, "op": op, "opcode": OPCODES[op]}
             body = ",\n".join(json.dumps(c, sort_keys=True, separators=(",", ":")) for c in cases)
             text = json.dumps(head, sort_keys=True)[:-1] + ', "cases": [\n' + body + "\n]}\n"
             out[op + ".json"] = text

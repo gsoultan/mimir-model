@@ -1,17 +1,17 @@
-# mmf for Python
+# mim for Python
 
-A second runtime for mmf, written from the specification in `../spec`
+A second runtime for mim, written from the specification in `../spec`
 and sharing no code with the Go reference. It reads and validates files,
 decodes every dtype, evaluates the 33 primitives and the standard library,
 and runs graphs with variables, `while`, `if` and model-local composites.
 Its only dependency is NumPy.
 
 ```python
-from mmf.container import File
-from mmf.executor import Program
-from mmf.tensor import Tensor
+from mim.container import File
+from mim.executor import Program
+from mim.tensor import Tensor
 
-with File.open("model.mmf") as f:          # mmap, validate, no copies
+with File.open("model.mim") as f:          # mmap, validate, no copies
     print(f.metadata()["general.name"])     # ("string", "...")
     s = Program.load(f).session()           # holds variables, such as a KV cache
     out = s.run({"x": Tensor.from_bytes("f32", [1, 4], data)})
@@ -19,29 +19,29 @@ with File.open("model.mmf") as f:          # mmap, validate, no copies
 
 ## Writing files and exporting from PyTorch
 
-`mmf.writer` writes files: `Writer` packs tensors canonically, sorts the
+`mim.writer` writes files: `Writer` packs tensors canonically, sorts the
 tensor table, hashes every section and writes atomically;
 `encode_metadata` and `GraphBuilder` produce the metadata and graph
 sections.
 
-`mmf.pytorch` exports a PyTorch model through `torch.export`:
+`mim.pytorch` exports a PyTorch model through `torch.export`:
 
 ```python
 from torch.export import Dim
-from mmf.pytorch import export
+from mim.pytorch import export
 
 model.eval()
-export(model, (x,), "model.mmf", dynamic_shapes={"x": {0: Dim("batch", max=64)}})
+export(model, (x,), "model.mim", dynamic_shapes={"x": {0: Dim("batch", max=64)}})
 ```
 
 Each ATen operator becomes primitives or a standard-library composite, so
-the output runs on any mmf runtime. Parameters are stored byte for byte
+the output runs on any mim runtime. Parameters are stored byte for byte
 under their state-dict names, buffers become constants, and operations
 that depend only on buffers are computed at export time. Symbolic
 dimensions keep the names of the `Dim` objects. An operator the exporter
-cannot express raises `ExportError` naming it; `mmf.pytorch.SUPPORTED`
+cannot express raises `ExportError` naming it; `mim.pytorch.SUPPORTED`
 lists the ones it handles. The exporter needs PyTorch 2.6 or later
-(`pip install "mmf[torch]"`); the rest of the package does not.
+(`pip install "mim[torch]"`); the rest of the package does not.
 
 A buffer the model writes to in `forward`, such as a static key-value
 cache, becomes a graph variable (ADR 0003), and its value at the end of
@@ -53,7 +53,7 @@ between runs, so a prompt followed by one token per step gives the logits
 of the full forward pass:
 
 ```python
-s = Program.load(File.open("model.mmf")).session()
+s = Program.load(File.open("model.mim")).session()
 s.run({"ids": prompt, "pos": positions})   # i64 tensors [1, n] and [n]: 0..n-1
 s.run({"ids": next_id, "pos": position})   # [1, 1] and [1]: n, one decode step
 ```
@@ -94,4 +94,4 @@ version (including the tiny Llama, whose logits must match the Go
 executor's), the tiny Llama's greedy continuation against the float64
 oracle of `tools/gen_llama_testdata.py`, and the CNN in `testdata/onnx`,
 converted from ONNX by the Go importer, against onnxruntime, and the
-models in `testdata/pytorch`, exported by `mmf.pytorch`, against PyTorch.
+models in `testdata/pytorch`, exported by `mim.pytorch`, against PyTorch.

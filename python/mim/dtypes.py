@@ -10,7 +10,7 @@ as their raw bytes.
 
 import numpy as np
 
-from .errors import MMFError
+from .errors import MIMError
 
 
 class DType:
@@ -88,15 +88,15 @@ def byte_size(dt, shape):
     for s in shape:
         n *= s
         if n >= 1 << 64:
-            raise MMFError("overflow", "element count overflows u64")
+            raise MIMError("overflow", "element count overflows u64")
     if dt.is_block:
         if not shape:
-            raise MMFError("bad-shape", f"{dt.name} tensor must have rank >= 1")
+            raise MIMError("bad-shape", f"{dt.name} tensor must have rank >= 1")
         if shape[-1] % dt.block_elems:
-            raise MMFError("bad-shape", f"{dt.name}: last dimension {shape[-1]} is not a multiple of {dt.block_elems}")
+            raise MIMError("bad-shape", f"{dt.name}: last dimension {shape[-1]} is not a multiple of {dt.block_elems}")
     size = n // dt.block_elems * dt.block_bytes
     if size >= 1 << 64:
-        raise MMFError("overflow", "byte size overflows u64")
+        raise MIMError("overflow", "byte size overflows u64")
     return size
 
 

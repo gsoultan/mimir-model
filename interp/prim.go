@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -16,8 +16,8 @@ package interp
 import (
 	"encoding/binary"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/ref"
 )
 
 // Primitive fast paths. With FastPaths set, a few primitives that a
@@ -26,35 +26,35 @@ import (
 // kernels'; anything unusual falls back to them.
 
 // fastPrimitive returns handled = false when the reference kernel must run.
-func (r *run) fastPrimitive(op *mmf.Op, in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool) {
+func (r *run) fastPrimitive(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	switch op.Opcode {
-	case mmf.OpAdd, mmf.OpMul:
+	case mim.OpAdd, mim.OpMul:
 		return fastAddMul(op.Opcode, in, dt, shape)
-	case mmf.OpPermute:
+	case mim.OpPermute:
 		return fastPermute(op, in, dt, shape)
-	case mmf.OpScatter:
+	case mim.OpScatter:
 		return r.scatterInPlace(op, in, dt, shape)
-	case mmf.OpCast:
+	case mim.OpCast:
 		return fastCastF16(in, dt, shape)
 	}
 	return nil, false
 }
 
 // fastCastF16 casts an f32 tensor to f16, as a key-value cache in f16
-// needs for every new key and value, in parallel. mmf.F32ToF16 rounds as
+// needs for every new key and value, in parallel. mim.F32ToF16 rounds as
 // the reference does except in the payload of a NaN, which goes through
 // the reference's rounding.
-func fastCastF16(in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool) {
-	if len(in) != 1 || in[0].DType != mmf.F32 || dt != mmf.F16 || !sameInts(in[0].Shape, shape) {
+func fastCastF16(in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+	if len(in) != 1 || in[0].DType != mim.F32 || dt != mim.F16 || !sameInts(in[0].Shape, shape) {
 		return nil, false
 	}
 	x := f32View(in[0])
-	t := &ref.Tensor{DType: mmf.F16, Shape: append([]int{}, shape...), Data: make([]byte, 2*len(x))}
+	t := &ref.Tensor{DType: mim.F16, Shape: append([]int{}, shape...), Data: make([]byte, 2*len(x))}
 	parallel(len(x), func(lo, hi int) {
 		for i := lo; i < hi; i++ {
-			h := mmf.F32ToF16(x[i])
+			h := mim.F32ToF16(x[i])
 			if x[i] != x[i] {
-				h = uint16(ref.RoundFloat(mmf.F16, float64(x[i]), false))
+				h = uint16(ref.RoundFloat(mim.F16, float64(x[i]), false))
 			}
 			binary.LittleEndian.PutUint16(t.Data[2*i:], h)
 		}
@@ -65,15 +65,15 @@ func fastCastF16(in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool
 // fastAddMul adds or multiplies two f32 tensors of the output's shape.
 // Float32 addition and multiplication are correctly rounded, as the
 // primitives require.
-func fastAddMul(opc mmf.Opcode, in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool) {
-	if len(in) != 2 || dt != mmf.F32 || in[0].DType != mmf.F32 || in[1].DType != mmf.F32 ||
+func fastAddMul(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+	if len(in) != 2 || dt != mim.F32 || in[0].DType != mim.F32 || in[1].DType != mim.F32 ||
 		!sameInts(in[0].Shape, shape) || !sameInts(in[1].Shape, shape) {
 		return nil, false
 	}
 	a, b := f32View(in[0]), f32View(in[1])
 	y := make([]float32, len(a))
 	b = b[:len(a)]
-	if opc == mmf.OpAdd {
+	if opc == mim.OpAdd {
 		for i := range y {
 			y[i] = a[i] + b[i]
 		}
@@ -90,9 +90,9 @@ func fastAddMul(opc mmf.Opcode, in []*ref.Tensor, dt mmf.DType, shape []int) (*r
 // same order, so the result is a copy; any other is copied in runs along
 // the last output axis, walking the input with strides instead of
 // recomputing every index as the reference does.
-func fastPermute(op *mmf.Op, in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool) {
+func fastPermute(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	p := attr(op, "perm")
-	if len(in) != 1 || in[0].DType != dt || p == nil || p.Type != mmf.AttrInts ||
+	if len(in) != 1 || in[0].DType != dt || p == nil || p.Type != mim.AttrInts ||
 		len(p.Ints) != len(shape) || len(shape) != len(in[0].Shape) {
 		return nil, false
 	}
@@ -180,7 +180,7 @@ func permuteStrided(x *ref.Tensor, perm []int64, shape []int) (*ref.Tensor, bool
 
 // inplaceScatters finds the scatters of the main graph that may run in
 // place, and returns the variable each one updates.
-func inplaceScatters(g *mmf.Graph) map[*mmf.Op]uint32 {
+func inplaceScatters(g *mim.Graph) map[*mim.Op]uint32 {
 	uses := map[uint32]int{}
 	for si := range g.Subgraphs {
 		for _, op := range g.Subgraphs[si].Ops {
@@ -198,18 +198,18 @@ func inplaceScatters(g *mmf.Graph) map[*mmf.Op]uint32 {
 		updates[u.Variable]++
 		valueUpdates[u.Value]++
 	}
-	out := map[*mmf.Op]uint32{}
+	out := map[*mim.Op]uint32{}
 	if len(g.Subgraphs) == 0 {
 		return out
 	}
 	main := &g.Subgraphs[0]
 	for oi := range main.Ops {
 		op := &main.Ops[oi]
-		if op.Opcode != mmf.OpScatter || len(op.Inputs) != 3 || len(op.Outputs) != 1 {
+		if op.Opcode != mim.OpScatter || len(op.Inputs) != 3 || len(op.Outputs) != 1 {
 			continue
 		}
 		v, o := op.Inputs[0], op.Outputs[0]
-		if g.Values[v].Kind != mmf.KindVariable || uses[v] != 1 || updates[v] != 1 || valueUpdates[v] != 0 ||
+		if g.Values[v].Kind != mim.KindVariable || uses[v] != 1 || updates[v] != 1 || valueUpdates[v] != 0 ||
 			isOutput(main, o) || valueUpdates[o] != 1 {
 			continue
 		}
@@ -222,7 +222,7 @@ func inplaceScatters(g *mmf.Graph) map[*mmf.Op]uint32 {
 	return out
 }
 
-func isOutput(sg *mmf.Subgraph, id uint32) bool {
+func isOutput(sg *mim.Subgraph, id uint32) bool {
 	for _, o := range sg.Outputs {
 		if o == id {
 			return true
@@ -236,15 +236,15 @@ type undo struct {
 	dst, old []byte
 }
 
-func (r *run) scatterInPlace(op *mmf.Op, in []*ref.Tensor, dt mmf.DType, shape []int) (*ref.Tensor, bool) {
+func (r *run) scatterInPlace(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	v, ok := r.p.inplace[op]
 	if !ok || r.s == nil || !r.s.owned[v] || len(in) != 3 {
 		return nil, false
 	}
 	data, ind, upd := in[0], in[1], in[2]
 	ax := attr(op, "axis")
-	if ax == nil || ax.Type != mmf.AttrInt || data.DType != dt || upd.DType != dt || dt.IsBlock() ||
-		!sameInts(data.Shape, shape) || (ind.DType != mmf.I32 && ind.DType != mmf.I64) {
+	if ax == nil || ax.Type != mim.AttrInt || data.DType != dt || upd.DType != dt || dt.IsBlock() ||
+		!sameInts(data.Shape, shape) || (ind.DType != mim.I32 && ind.DType != mim.I64) {
 		return nil, false
 	}
 	rank := len(shape)

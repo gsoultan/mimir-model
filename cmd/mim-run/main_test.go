@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -24,10 +24,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/importer"
-	"github.com/gsoultan/mmf/interp"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/importer"
+	"github.com/gsoultan/mim/interp"
+	"github.com/gsoultan/mim/ref"
 )
 
 // The fixtures in testdata/llama and testdata/qwen2 are two-layer models
@@ -90,7 +90,7 @@ func f32b64(t *testing.T, s string) []float32 {
 }
 
 // importFixture converts the GGUF fixture with a graph, as
-// `mmf-import -graph -ctx 64 -a8=false` does, and returns the output path.
+// `mim-import -graph -ctx 64 -a8=false` does, and returns the output path.
 func importFixture(t *testing.T, e *expected) string {
 	return importFixtureWith(t, e, importer.LlamaOptions{Context: 64})
 }
@@ -109,11 +109,11 @@ func importFixtureWith(t *testing.T, e *expected, o importer.LlamaOptions) strin
 	if _, err := importer.BuildLlama(src, o); err != nil {
 		t.Fatal(err)
 	}
-	w := mmf.NewWriter()
+	w := mim.NewWriter()
 	if err := src.AddTo(w); err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(t.TempDir(), "tiny.mmf")
+	out := filepath.Join(t.TempDir(), "tiny.mim")
 	if err := w.WriteFile(out); err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func testGenerate(t *testing.T, e *expected) {
 func TestGenerateA8(t *testing.T) { eachFixture(t, testGenerateA8) }
 
 func testGenerateA8(t *testing.T, e *expected) {
-	for _, cache := range []mmf.DType{mmf.F32, mmf.F16} {
+	for _, cache := range []mim.DType{mim.F32, mim.F16} {
 		t.Run(cache.String(), func(t *testing.T) {
 			m, err := load(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, A8: true, Cache: cache}), false)
 			if err != nil {
@@ -253,7 +253,7 @@ func testGenerateA8(t *testing.T, e *expected) {
 			// largest difference from 0.41 to 0.55, against llama.cpp's
 			// 0.53, which rounds them too and also the queries.
 			bound := e.LlamaCppError
-			if cache == mmf.F16 {
+			if cache == mim.F16 {
 				bound *= 1.1
 			}
 			if worst > bound || math.IsNaN(worst) {
@@ -271,7 +271,7 @@ func TestCacheF16(t *testing.T) {
 		t.Skip("slow")
 	}
 	e := loadExpected(t, "llama")
-	path := importFixtureWith(t, e, importer.LlamaOptions{Context: 64, Cache: mmf.F16})
+	path := importFixtureWith(t, e, importer.LlamaOptions{Context: 64, Cache: mim.F16})
 	ids := e.PromptIDs[:3]
 	var out [2][]float32
 	for i, useRef := range []bool{false, true} {
@@ -333,14 +333,14 @@ func TestRun(t *testing.T) {
 }
 
 // TestSlots imports the fixtures with a cache of three sequences, as
-// `mmf-import -graph -slots 3` does, and runs the prompt in slots 2 and 0
+// `mim-import -graph -slots 3` does, and runs the prompt in slots 2 and 0
 // as one block, then the greedy continuation of both, one token each per
 // block: every logit must match the oracle, so no sequence sees another's
 // keys.
 func TestSlots(t *testing.T) { eachFixture(t, testSlots) }
 
 func testSlots(t *testing.T, e *expected) {
-	f, err := mmf.Open(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, Slots: 3}))
+	f, err := mim.Open(importFixtureWith(t, e, importer.LlamaOptions{Context: 64, Slots: 3}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,9 +354,9 @@ func testSlots(t *testing.T, e *expected) {
 	run := func(ids []int32, positions, slots []int64) []float32 {
 		t.Helper()
 		n := len(ids)
-		tokens, _ := ref.New(mmf.I32, []int{1, n})
-		pos, _ := ref.New(mmf.I64, []int{1, n})
-		sl, _ := ref.New(mmf.I64, []int{1, n})
+		tokens, _ := ref.New(mim.I32, []int{1, n})
+		pos, _ := ref.New(mim.I64, []int{1, n})
+		sl, _ := ref.New(mim.I64, []int{1, n})
 		for i := range ids {
 			tokens.SetBits(i, uint64(uint32(ids[i])))
 			pos.SetBits(i, uint64(positions[i]))

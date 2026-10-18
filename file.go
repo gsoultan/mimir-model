@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,7 +11,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-package mmf
+package mim
 
 import (
 	"bytes"
@@ -54,7 +54,7 @@ type TensorInfo struct {
 	Length uint64
 }
 
-// File is a validated, read-only view of an mmf file. Accessors read the
+// File is a validated, read-only view of a mim file. Accessors read the
 // underlying bytes in place; nothing is copied at open time except the small
 // section table.
 type File struct {
@@ -67,7 +67,7 @@ type File struct {
 	pool     []byte // index string pool
 }
 
-// Parse validates b as an mmf file and returns a view over it. b must stay
+// Parse validates b as a mim file and returns a view over it. b must stay
 // alive and unmodified for as long as the File is used.
 func Parse(b []byte) (*File, error) {
 	f := &File{data: b}
@@ -88,7 +88,7 @@ func (f *File) parsePreamble() error {
 	if len(b) < PreambleSize {
 		return errf(CodeTruncated, "file is %d bytes, preamble needs %d", len(b), PreambleSize)
 	}
-	if string(b[0:4]) != Magic {
+	if m := string(b[0:4]); m != Magic && m != LegacyMagic {
 		return errf(CodeBadMagic, "got %q", b[0:4])
 	}
 	p := &f.pre

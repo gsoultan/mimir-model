@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -16,7 +16,7 @@ package ref
 import (
 	"math"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // evalReduce folds x over axes. Float sums and products accumulate in
@@ -76,7 +76,7 @@ func evalReduce(x *Tensor, mode string, axes []int, outShape []int) (*Tensor, er
 		case "mul":
 			accI[o] *= b
 		case "max":
-			accI[o], _ = binaryInt(mmf.OpMax, dt, accI[o], b)
+			accI[o], _ = binaryInt(mim.OpMax, dt, accI[o], b)
 		}
 	}
 	for i := 0; i < n; i++ {

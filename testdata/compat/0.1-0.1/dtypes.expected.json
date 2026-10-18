@@ -1,7 +1,7 @@
 {
- "format": "mmf-compat",
+ "format": "mim-compat",
  "version": 1,
- "file": "dtypes.mmf",
+ "file": "dtypes.mim",
  "container": {
   "major": 0,
   "minor": 1,

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -16,13 +16,13 @@ package interp
 import (
 	"fmt"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/ref"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/ref"
 )
 
 // compositeFunc evaluates a standard-library composite. attrs excludes name
 // and version; dts and shapes are the declared types of the outputs.
-type compositeFunc func(attrs []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, shapes [][]int) ([]*ref.Tensor, error)
+type compositeFunc func(attrs []mim.Attr, in []*ref.Tensor, dts []mim.DType, shapes [][]int) ([]*ref.Tensor, error)
 
 // stdlib holds the composites this executor supports. Each one evaluates
 // the canonical body of spec/stdlib.md on the primitive kernels, so its
@@ -53,7 +53,7 @@ const log2e = 1.4426950408889634
 // body evaluates primitives one at a time, keeping the first error.
 type body struct{ err error }
 
-func (b *body) eval(op mmf.Opcode, attrs []mmf.Attr, dt mmf.DType, shape []int, in ...*ref.Tensor) *ref.Tensor {
+func (b *body) eval(op mim.Opcode, attrs []mim.Attr, dt mim.DType, shape []int, in ...*ref.Tensor) *ref.Tensor {
 	if b.err != nil {
 		return nil
 	}
@@ -85,14 +85,14 @@ func ones(n int) []int {
 	return s
 }
 
-func (b *body) un(op mmf.Opcode, x *ref.Tensor) *ref.Tensor {
+func (b *body) un(op mim.Opcode, x *ref.Tensor) *ref.Tensor {
 	if x == nil {
 		return nil
 	}
 	return b.eval(op, nil, x.DType, x.Shape, x)
 }
 
-func (b *body) bin(op mmf.Opcode, x, y *ref.Tensor) *ref.Tensor {
+func (b *body) bin(op mim.Opcode, x, y *ref.Tensor) *ref.Tensor {
 	if b.err != nil || x == nil || y == nil {
 		return nil
 	}
@@ -112,8 +112,8 @@ func (b *body) bin(op mmf.Opcode, x, y *ref.Tensor) *ref.Tensor {
 
 // k is the body macro k(v): a constant of the computation dtype with every
 // dimension 1.
-func (b *body) k(v float64, dt mmf.DType, rank int) *ref.Tensor {
-	return b.eval(mmf.OpConst, []mmf.Attr{{Key: "value", Type: mmf.AttrFloat, Float: v}}, dt, ones(rank))
+func (b *body) k(v float64, dt mim.DType, rank int) *ref.Tensor {
+	return b.eval(mim.OpConst, []mim.Attr{{Key: "value", Type: mim.AttrFloat, Float: v}}, dt, ones(rank))
 }
 
 func (b *body) reduce(mode string, x *ref.Tensor, axes []int) *ref.Tensor {
@@ -124,9 +124,9 @@ func (b *body) reduce(mode string, x *ref.Tensor, axes []int) *ref.Tensor {
 	for _, a := range axes {
 		s[a] = 1
 	}
-	return b.eval(mmf.OpReduce, []mmf.Attr{
-		{Key: "mode", Type: mmf.AttrString, String: mode},
-		{Key: "axes", Type: mmf.AttrInts, Ints: ints(axes)},
+	return b.eval(mim.OpReduce, []mim.Attr{
+		{Key: "mode", Type: mim.AttrString, String: mode},
+		{Key: "axes", Type: mim.AttrInts, Ints: ints(axes)},
 	}, x.DType, s, x)
 }
 
@@ -134,38 +134,38 @@ func (b *body) reshape(x *ref.Tensor, shape []int) *ref.Tensor {
 	if x == nil {
 		return nil
 	}
-	return b.eval(mmf.OpReshape, []mmf.Attr{{Key: "shape", Type: mmf.AttrInts, Ints: ints(shape)}}, x.DType, shape, x)
+	return b.eval(mim.OpReshape, []mim.Attr{{Key: "shape", Type: mim.AttrInts, Ints: ints(shape)}}, x.DType, shape, x)
 }
 
 func (b *body) expand(x *ref.Tensor, shape []int) *ref.Tensor {
 	if x == nil {
 		return nil
 	}
-	return b.eval(mmf.OpExpand, nil, x.DType, shape, x)
+	return b.eval(mim.OpExpand, nil, x.DType, shape, x)
 }
 
-func (b *body) cast(x *ref.Tensor, dt mmf.DType) *ref.Tensor {
+func (b *body) cast(x *ref.Tensor, dt mim.DType) *ref.Tensor {
 	if x == nil || x.DType == dt {
 		return x
 	}
-	return b.eval(mmf.OpCast, []mmf.Attr{{Key: "to", Type: mmf.AttrDType, DType: dt}}, dt, x.Shape, x)
+	return b.eval(mim.OpCast, []mim.Attr{{Key: "to", Type: mim.AttrDType, DType: dt}}, dt, x.Shape, x)
 }
 
-func (b *body) sub(x, y *ref.Tensor) *ref.Tensor { return b.bin(mmf.OpAdd, x, b.un(mmf.OpNeg, y)) }
-func (b *body) div(x, y *ref.Tensor) *ref.Tensor { return b.bin(mmf.OpMul, x, b.un(mmf.OpRecip, y)) }
+func (b *body) sub(x, y *ref.Tensor) *ref.Tensor { return b.bin(mim.OpAdd, x, b.un(mim.OpNeg, y)) }
+func (b *body) div(x, y *ref.Tensor) *ref.Tensor { return b.bin(mim.OpMul, x, b.un(mim.OpRecip, y)) }
 
 // computeDType is the computation dtype of spec/stdlib.md section 1.4.
-func computeDType(dt mmf.DType) mmf.DType {
-	if dt == mmf.F16 || dt == mmf.BF16 {
-		return mmf.F32
+func computeDType(dt mim.DType) mim.DType {
+	if dt == mim.F16 || dt == mim.BF16 {
+		return mim.F32
 	}
 	return dt
 }
 
 // attrs reads composite attributes, rejecting unknown keys.
-type attrs map[string]*mmf.Attr
+type attrs map[string]*mim.Attr
 
-func readAttrs(list []mmf.Attr, known ...string) (attrs, error) {
+func readAttrs(list []mim.Attr, known ...string) (attrs, error) {
 	a := attrs{}
 	for i := range list {
 		ok := false
@@ -185,7 +185,7 @@ func (a attrs) int(key string, def int64) (int64, error) {
 	if v == nil {
 		return def, nil
 	}
-	if v.Type != mmf.AttrInt {
+	if v.Type != mim.AttrInt {
 		return 0, fmt.Errorf("attribute %q must be an int", key)
 	}
 	return v.Int, nil
@@ -196,7 +196,7 @@ func (a attrs) float(key string, def float64) (float64, error) {
 	if v == nil {
 		return def, nil
 	}
-	if v.Type != mmf.AttrFloat {
+	if v.Type != mim.AttrFloat {
 		return 0, fmt.Errorf("attribute %q must be a float", key)
 	}
 	return v.Float, nil
@@ -213,28 +213,28 @@ func axis(ax int64, r int) (int, error) {
 	return int(ax), nil
 }
 
-func isFloat(dt mmf.DType) bool {
-	return dt == mmf.F64 || dt == mmf.F32 || dt == mmf.F16 || dt == mmf.BF16
+func isFloat(dt mim.DType) bool {
+	return dt == mim.F64 || dt == mim.F32 || dt == mim.F16 || dt == mim.BF16
 }
 
 func expBody(b *body, x *ref.Tensor) *ref.Tensor {
-	return b.un(mmf.OpExp2, b.bin(mmf.OpMul, x, b.k(log2e, x.DType, len(x.Shape))))
+	return b.un(mim.OpExp2, b.bin(mim.OpMul, x, b.k(log2e, x.DType, len(x.Shape))))
 }
 
 func sigmoidBody(b *body, x *ref.Tensor) *ref.Tensor {
 	r := len(x.Shape)
-	e := b.un(mmf.OpExp2, b.bin(mmf.OpMul, b.un(mmf.OpNeg, x), b.k(log2e, x.DType, r)))
-	return b.un(mmf.OpRecip, b.bin(mmf.OpAdd, b.k(1, x.DType, r), e))
+	e := b.un(mim.OpExp2, b.bin(mim.OpMul, b.un(mim.OpNeg, x), b.k(log2e, x.DType, r)))
+	return b.un(mim.OpRecip, b.bin(mim.OpAdd, b.k(1, x.DType, r), e))
 }
 
 func siluBody(b *body, x *ref.Tensor) *ref.Tensor {
-	return b.bin(mmf.OpMul, x, sigmoidBody(b, x))
+	return b.bin(mim.OpMul, x, sigmoidBody(b, x))
 }
 
 // unaryComposite wraps a float elementwise body with the entry and exit
 // casts of spec/stdlib.md section 1.4.
 func unaryComposite(f func(*body, *ref.Tensor) *ref.Tensor) compositeFunc {
-	return func(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+	return func(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 		if len(list) != 0 || len(in) != 1 || len(dts) != 1 || !isFloat(in[0].DType) {
 			return nil, fmt.Errorf("takes one float input, one output and no attributes")
 		}
@@ -276,12 +276,12 @@ func (b *body) matmul(a, bm *ref.Tensor) *ref.Tensor {
 	as := append(append([]int{}, a.Shape[:r-1]...), k, 1)             // [..., M, K, 1]
 	bs := append(append(append([]int{}, bm.Shape[:r-2]...), 1), k, n) // [..., 1, K, N]
 	ps := append(append([]int{}, batch...), m, k, n)                  // [..., M, K, N]
-	p := b.bin(mmf.OpMul, b.expand(b.reshape(a, as), ps), b.expand(b.reshape(bm, bs), ps))
+	p := b.bin(mim.OpMul, b.expand(b.reshape(a, as), ps), b.expand(b.reshape(bm, bs), ps))
 	s := b.reduce("add", p, []int{r - 1}) // [..., M, 1, N]
 	return b.reshape(s, append(append([]int{}, batch...), m, n))
 }
 
-func matmulV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func matmulV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	if len(list) != 0 || len(in) != 2 || len(dts) != 1 {
 		return nil, fmt.Errorf("matmul.v1 takes two inputs, one output and no attributes")
 	}
@@ -291,7 +291,7 @@ func matmulV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]
 	return []*ref.Tensor{y}, b.err
 }
 
-func linearV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func linearV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	if len(list) != 0 || len(in) < 2 || len(in) > 3 || len(dts) != 1 {
 		return nil, fmt.Errorf("linear.v1 takes x, w and an optional bias, and no attributes")
 	}
@@ -303,7 +303,7 @@ func linearV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]
 	n, k := w.Shape[0], w.Shape[1]
 	cd := computeDType(x.DType)
 	b := &body{}
-	wt := b.eval(mmf.OpPermute, []mmf.Attr{{Key: "perm", Type: mmf.AttrInts, Ints: []int64{1, 0}}}, w.DType, []int{k, n}, w)
+	wt := b.eval(mim.OpPermute, []mim.Attr{{Key: "perm", Type: mim.AttrInts, Ints: []int64{1, 0}}}, w.DType, []int{k, n}, w)
 	wt = b.reshape(wt, append(ones(r-2), k, n))
 	y := b.matmul(b.cast(x, cd), b.cast(wt, cd))
 	if len(in) == 3 {
@@ -311,12 +311,12 @@ func linearV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]
 		if bias.DType != x.DType || len(bias.Shape) != 1 || bias.Shape[0] != n {
 			return nil, fmt.Errorf("linear.v1: bias %s%v", bias.DType, bias.Shape)
 		}
-		y = b.bin(mmf.OpAdd, y, b.reshape(b.cast(bias, cd), append(ones(r-1), n)))
+		y = b.bin(mim.OpAdd, y, b.reshape(b.cast(bias, cd), append(ones(r-1), n)))
 	}
 	return []*ref.Tensor{b.cast(y, x.DType)}, b.err
 }
 
-func softmaxV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func softmaxV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	a, err := readAttrs(list, "axis")
 	if err != nil {
 		return nil, err
@@ -340,7 +340,7 @@ func softmaxV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([
 	return []*ref.Tensor{b.cast(b.div(e, s), in[0].DType)}, b.err
 }
 
-func rmsNormV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func rmsNormV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	a, err := readAttrs(list, "axis", "epsilon")
 	if err != nil {
 		return nil, err
@@ -372,19 +372,19 @@ func rmsNormV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([
 	b := &body{}
 	x := b.cast(x0, cd)
 	// count(x, axes) is a reduction of ones; its value is exactly count.
-	ms := b.div(b.reduce("add", b.bin(mmf.OpMul, x, x), axes), b.k(float64(count), cd, r))
-	y := b.bin(mmf.OpMul, x, b.un(mmf.OpRecip, b.un(mmf.OpSqrt, b.bin(mmf.OpAdd, ms, b.k(eps, cd, r)))))
+	ms := b.div(b.reduce("add", b.bin(mim.OpMul, x, x), axes), b.k(float64(count), cd, r))
+	y := b.bin(mim.OpMul, x, b.un(mim.OpRecip, b.un(mim.OpSqrt, b.bin(mim.OpAdd, ms, b.k(eps, cd, r)))))
 	if len(in) == 2 {
 		sc := in[1]
 		if sc.DType != x0.DType || !sameInts(sc.Shape, x0.Shape[ax:]) {
 			return nil, fmt.Errorf("rms_norm.v1: scale %s%v, want %s%v", sc.DType, sc.Shape, x0.DType, x0.Shape[ax:])
 		}
-		y = b.bin(mmf.OpMul, y, b.reshape(b.cast(sc, cd), append(ones(ax), sc.Shape...)))
+		y = b.bin(mim.OpMul, y, b.reshape(b.cast(sc, cd), append(ones(ax), sc.Shape...)))
 	}
 	return []*ref.Tensor{b.cast(y, x0.DType)}, b.err
 }
 
-func embeddingV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) ([]*ref.Tensor, error) {
+func embeddingV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
 	if len(list) != 0 || len(in) != 2 || len(dts) != 1 {
 		return nil, fmt.Errorf("embedding.v1 takes a table and ids, and no attributes")
 	}
@@ -394,11 +394,11 @@ func embeddingV1(list []mmf.Attr, in []*ref.Tensor, dts []mmf.DType, _ [][]int) 
 	}
 	b := &body{}
 	t := table
-	if table.DType.IsBlock() || table.DType == mmf.F8E4M3 || table.DType == mmf.F8E5M2 {
-		t = b.eval(mmf.OpDequantize, nil, dts[0], table.Shape, table)
+	if table.DType.IsBlock() || table.DType == mim.F8E4M3 || table.DType == mim.F8E5M2 {
+		t = b.eval(mim.OpDequantize, nil, dts[0], table.Shape, table)
 	}
 	shape := append(append([]int{}, ids.Shape...), table.Shape[1])
-	y := b.eval(mmf.OpGather, []mmf.Attr{{Key: "axis", Type: mmf.AttrInt, Int: 0}}, dts[0], shape, t, ids)
+	y := b.eval(mim.OpGather, []mim.Attr{{Key: "axis", Type: mim.AttrInt, Int: 0}}, dts[0], shape, t, ids)
 	return []*ref.Tensor{y}, b.err
 }
 

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,9 +11,9 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Command mmf-inspect prints the index, metadata and graph of an mmf file.
+// Command mim-inspect prints the index, metadata and graph of a mim file.
 //
-//	mmf-inspect [-verify] [-graph] [-meta] model.mmf
+//	mim-inspect [-verify] [-graph] [-meta] model.mim
 package main
 
 import (
@@ -24,7 +24,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 func main() {
@@ -39,7 +39,7 @@ func main() {
 		return
 	}
 	if flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: mmf-inspect [-verify] [-graph] [-meta] file.mmf")
+		fmt.Fprintln(os.Stderr, "usage: mim-inspect [-verify] [-graph] [-meta] file.mim")
 		os.Exit(2)
 	}
 	if err := inspect(os.Stdout, flag.Arg(0), *verify, *graph, *meta); err != nil {
@@ -50,7 +50,7 @@ func main() {
 
 // usage prints the visible flags only, so -gembit stays a secret.
 func usage() {
-	fmt.Fprintln(flag.CommandLine.Output(), "usage: mmf-inspect [-verify] [-graph] [-meta] file.mmf")
+	fmt.Fprintln(flag.CommandLine.Output(), "usage: mim-inspect [-verify] [-graph] [-meta] file.mim")
 	flag.VisitAll(func(f *flag.Flag) {
 		if f.Name == "gembit" {
 			return
@@ -62,29 +62,29 @@ func usage() {
 // banner is printed by the hidden -gembit flag.
 const banner = `
   ╔══════════════════════════════╗
-  ║  mmf — crafted with care by  ║
+  ║  mim — crafted with care by  ║
   ║    Gembit Soultan Shirazi    ║
   ╚══════════════════════════════╝
 `
 
 func inspect(w io.Writer, path string, verify, graph, meta bool) error {
-	f, err := mmf.Open(path)
+	f, err := mim.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
 	p := f.Preamble()
-	fmt.Fprintf(w, "mmf %d.%d  file %d bytes  data alignment %d\n", p.Major, p.Minor, p.FileLength, p.DataAlignment)
+	fmt.Fprintf(w, "mim %d.%d  file %d bytes  data alignment %d\n", p.Major, p.Minor, p.FileLength, p.DataAlignment)
 	fmt.Fprintf(w, "index  @%d +%d\nweights @%d +%d\n", p.IndexOffset, p.IndexLength, p.DataOffset, p.DataLength)
 	fmt.Fprintln(w, "sections:")
 	for _, s := range f.Sections() {
 		req := ""
-		if s.Flags&mmf.FlagRequired != 0 {
+		if s.Flags&mim.FlagRequired != 0 {
 			req = " required"
 		}
 		h := "no hash"
-		if s.HashAlg == mmf.HashSHA256 {
+		if s.HashAlg == mim.HashSHA256 {
 			h = fmt.Sprintf("sha256 %x…", s.Hash[:4])
 		}
 		fmt.Fprintf(w, "  %-13s @%d +%d%s  %s\n", s.Kind, s.Offset, s.Length, req, h)
@@ -129,7 +129,7 @@ func inspect(w io.Writer, path string, verify, graph, meta bool) error {
 	return nil
 }
 
-func printGraph(w io.Writer, g *mmf.Graph) {
+func printGraph(w io.Writer, g *mim.Graph) {
 	fmt.Fprintf(w, "graph: primitives v%d, stdlib v%d, %d values, %d subgraphs, %d composites\n",
 		g.PrimitiveVersion, g.StdlibVersion, len(g.Values), len(g.Subgraphs), len(g.Composites))
 	for i, s := range g.SymDims {
@@ -164,17 +164,17 @@ func printGraph(w io.Writer, g *mmf.Graph) {
 			attrs := make([]string, len(op.Attrs))
 			for i, a := range op.Attrs {
 				switch a.Type {
-				case mmf.AttrInt:
+				case mim.AttrInt:
 					attrs[i] = fmt.Sprintf("%s=%d", a.Key, a.Int)
-				case mmf.AttrInts:
+				case mim.AttrInts:
 					attrs[i] = fmt.Sprintf("%s=%v", a.Key, a.Ints)
-				case mmf.AttrFloat:
+				case mim.AttrFloat:
 					attrs[i] = fmt.Sprintf("%s=%g", a.Key, a.Float)
-				case mmf.AttrString:
+				case mim.AttrString:
 					attrs[i] = fmt.Sprintf("%s=%q", a.Key, a.String)
-				case mmf.AttrDType:
+				case mim.AttrDType:
 					attrs[i] = fmt.Sprintf("%s=%s", a.Key, a.DType)
-				case mmf.AttrSubgraph:
+				case mim.AttrSubgraph:
 					attrs[i] = fmt.Sprintf("%s=subgraph %d", a.Key, a.Subgraph)
 				}
 			}

@@ -1,4 +1,4 @@
-# Contributing to mmf
+# Contributing to mim
 
 ## Running the tests
 

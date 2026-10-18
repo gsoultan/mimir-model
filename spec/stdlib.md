@@ -1,6 +1,6 @@
-# mmf standard library v0.1
+# mim standard library v0.1
 
-Status: draft. This document defines the composite operations of the mmf
+Status: draft. This document defines the composite operations of the mim
 standard library: their signatures, canonical bodies over the primitives of
 spec/primitives.md, and their accuracy tolerances. The encoding of `call`
 nodes and of a model file's composites table is defined in spec/graph.md.
@@ -735,7 +735,7 @@ normative instead; a runtime MUST implement them directly.
 
 Sorting stays reference-only, and there is no `sort` primitive. Under the
 admission rule (spec/primitives.md section 8) a sort is not a primitive,
-since a selection loop expresses it, and the models mmf targets use top_k
+since a selection loop expresses it, and the models mim targets use top_k
 and argsort only at the edges of a graph (sampling, routing in a mixture of
 experts), where a runtime implements them in a few lines. A later version
 may publish selection-loop bodies as new composite versions, which would

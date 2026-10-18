@@ -1,4 +1,4 @@
-# mmf metadata section v0.1
+# mim metadata section v0.1
 
 Status: draft. This document defines the metadata section (section kind 2):
 a typed key-value store for everything that is neither a tensor nor part of
@@ -12,7 +12,7 @@ All integers are little-endian.
 
 | offset | size | field |
 | --- | --- | --- |
-| 0 | 4 | magic `MMFM` |
+| 0 | 4 | magic `MIMM` (readers also accept the legacy `MMFM`) |
 | 4 | 4 | entry count (at most 2^24) |
 | 8 | 8 | string pool length |
 | 16 | 32 × count | entries, sorted by key (bytewise ascending) |

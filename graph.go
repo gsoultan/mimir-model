@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,7 +11,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-package mmf
+package mim
 
 import (
 	"math"
@@ -201,7 +201,8 @@ type Graph struct {
 func (g *Graph) Main() *Subgraph { return &g.Subgraphs[0] }
 
 const (
-	graphMagic       = "MMFG"
+	graphMagic       = "MIMG"
+	graphMagicLegacy = "MMFG" // before the rename from mmf
 	graphHeaderSize  = 16
 	graphTables      = 11
 	graphDirSize     = graphHeaderSize + graphTables*16
@@ -385,7 +386,7 @@ type graphDecoder struct {
 
 func (d *graphDecoder) decode() (*Graph, error) {
 	b := d.b
-	if len(b) < graphDirSize || string(b[:4]) != graphMagic {
+	if len(b) < graphDirSize || string(b[:4]) != graphMagic && string(b[:4]) != graphMagicLegacy {
 		return nil, errf(CodeBadGraph, "missing header")
 	}
 	if le.Uint16(b[4:]) != FormatMajor {
