@@ -17,7 +17,7 @@ import (
 	"math"
 	"math/bits"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // floatFormat describes a binary floating-point encoding.

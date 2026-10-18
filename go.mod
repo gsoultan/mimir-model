@@ -1,3 +1,3 @@
-module github.com/gsoultan/mim
+module github.com/gsoultan/mimir-model
 
 go 1.22

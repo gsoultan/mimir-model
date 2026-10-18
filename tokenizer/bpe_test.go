@@ -17,7 +17,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // The expected words are those of the pre-tokenizers' regular expressions

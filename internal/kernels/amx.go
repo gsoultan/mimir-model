@@ -17,7 +17,7 @@ import (
 	"encoding/binary"
 	"unsafe"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // AMX kernels for activations in blocks of 256. On CPUs with Intel AMX

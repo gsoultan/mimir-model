@@ -18,7 +18,7 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // AVX-512 VNNI kernels for activations in blocks of 256, for CPUs that

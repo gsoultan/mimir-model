@@ -19,7 +19,7 @@ import (
 	"math"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // ggmlTypes maps ggml tensor types to mim dtypes. The block types have the

@@ -18,9 +18,9 @@ import (
 	"math"
 	"sync"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/internal/kernels"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/internal/kernels"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // Fast paths (spec/stdlib.md section 1.2). Each one computes a composite

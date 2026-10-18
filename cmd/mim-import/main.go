@@ -49,8 +49,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/importer"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/importer"
 )
 
 func main() {

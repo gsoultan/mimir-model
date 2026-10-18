@@ -48,9 +48,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/importer"
-	"github.com/gsoultan/mim/interp"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/importer"
+	"github.com/gsoultan/mimir-model/interp"
 )
 
 func main() {

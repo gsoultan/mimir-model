@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // copyElem copies element j of src to element i of dst; both have dtype dt.

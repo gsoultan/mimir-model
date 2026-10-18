@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // Graph construction for decoder-only transformers in the Llama family.

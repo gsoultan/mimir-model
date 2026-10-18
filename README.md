@@ -11,6 +11,9 @@ mmf before; readers still accept files written under that name.
 > design rationale is in [docs/design-notes.md](docs/design-notes.md) and
 > [docs/adr](docs/adr); the normative text is in [spec](spec).
 
+The Go module is `github.com/gsoultan/mimir-model` and its package is named
+`mim`: `import mim "github.com/gsoultan/mimir-model"`.
+
 ## In one paragraph
 
 A model file is a binary container: a 64-byte preamble, a binary index, a
