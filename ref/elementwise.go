@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // broadcastShape applies spec/primitives.md section 3.1 to equal-rank shapes.

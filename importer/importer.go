@@ -30,7 +30,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // Tensor is one tensor of a source file. Data aliases the source bytes.

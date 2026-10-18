@@ -16,8 +16,8 @@ package interp
 import (
 	"fmt"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // convParams are the attributes of conv2d.v1 and the shapes they imply.

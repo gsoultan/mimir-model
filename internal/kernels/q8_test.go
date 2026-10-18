@@ -19,7 +19,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 func TestQuantizeQ8(t *testing.T) {

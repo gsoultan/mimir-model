@@ -20,7 +20,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // fma32 returns a*b+c rounded once to float32.

@@ -17,8 +17,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 func intsAttr(k string, v ...int64) mim.Attr { return mim.Attr{Key: k, Type: mim.AttrInts, Ints: v} }

@@ -24,9 +24,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/interp"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/interp"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 var updateONNX = flag.Bool("update-onnx", false, "rewrite testdata/onnx/tiny-cnn.mim")

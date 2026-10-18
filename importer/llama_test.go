@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 func llamaFixture(t *testing.T) *Source {

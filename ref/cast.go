@@ -16,7 +16,7 @@ package ref
 import (
 	"math"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // isStorage reports whether dt is a storage float (spec/primitives.md 2.2).

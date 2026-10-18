@@ -20,7 +20,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // ONNX import covers the operators of a convolutional network in float32:

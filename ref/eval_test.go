@@ -17,7 +17,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 func f32s(shape []int, v ...float32) *Tensor {
