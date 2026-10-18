@@ -9,14 +9,14 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mim import dtypes as D
-from mim import container as C
-from mim.container import File
-from mim.errors import MIMError
-from mim.executor import Program
-from mim.metadata import decode_metadata
-from mim.tensor import Tensor
-from mim.writer import CONST, INPUT, OUTPUT, WEIGHT, GraphBuilder, Writer, encode_metadata
+from mlm import dtypes as D
+from mlm import container as C
+from mlm.container import File
+from mlm.errors import MIMError
+from mlm.executor import Program
+from mlm.metadata import decode_metadata
+from mlm.tensor import Tensor
+from mlm.writer import CONST, INPUT, OUTPUT, WEIGHT, GraphBuilder, Writer, encode_metadata
 
 
 def f32(*a):

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -19,7 +19,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 func TestQuantizeQ8(t *testing.T) {
@@ -163,9 +163,9 @@ func TestQuantQ8(t *testing.T) {
 // offsets returns, for each weight of a Q4_K row, the magnitude of the
 // offset dmin*m its decode subtracts (zero for other dtypes): the decode of
 // the row with every quant set to zero.
-func offsets(dt mim.DType, row []byte, k int) []float64 {
+func offsets(dt mlm.DType, row []byte, k int) []float64 {
 	o := make([]float64, k)
-	if dt != mim.Q4_K {
+	if dt != mlm.Q4_K {
 		return o
 	}
 	z := append([]byte{}, row...)
@@ -173,7 +173,7 @@ func offsets(dt mim.DType, row []byte, k int) []float64 {
 		clear(z[b+16 : b+144])
 	}
 	w := make([]float32, k)
-	mim.Dequantize(dt, z, w)
+	mlm.Dequantize(dt, z, w)
 	for i, v := range w {
 		o[i] = math.Abs(float64(v))
 	}
@@ -183,20 +183,20 @@ func offsets(dt mim.DType, row []byte, k int) []float64 {
 func TestRowDotQ8(t *testing.T) {
 	rng := rand.New(rand.NewSource(7))
 	for _, c := range []struct {
-		dt    mim.DType
+		dt    mlm.DType
 		block int
-	}{{mim.Q4_K, 32}, {mim.Q6_K, 32}, {mim.Q8_0, 32}, {mim.Q4_K, 256}, {mim.Q6_K, 256}} {
+	}{{mlm.Q4_K, 32}, {mlm.Q6_K, 32}, {mlm.Q8_0, 32}, {mlm.Q4_K, 256}, {mlm.Q6_K, 256}} {
 		dt := c.dt
 		if !FusedQ8Blocks(dt, c.block) {
 			continue
 		}
 		for _, k := range []int{256, 2048, 5632} {
 			row := randomRows(rng, dt, 1, k)
-			if dt == mim.Q8_0 {
+			if dt == mlm.Q8_0 {
 				row[2] = 0x80 // a weight of -128
 			}
 			w := make([]float32, k)
-			mim.Dequantize(dt, row, w)
+			mlm.Dequantize(dt, row, w)
 			off := offsets(dt, row, k)
 			r := NewRowDot(dt, k)
 			r.LoadQ8(row)
@@ -237,7 +237,7 @@ func TestDotQ8x4(t *testing.T) {
 	rng := rand.New(rand.NewSource(10))
 	for _, kb := range [][2]int{{256, 32}, {2048, 32}, {5632, 32}, {256, 256}, {2048, 256}, {5632, 256}} {
 		k, block := kb[0], kb[1]
-		if !FusedQ8Blocks(mim.Q4_K, block) || (block == 32 && !FusedQ8x4(mim.Q4_K)) {
+		if !FusedQ8Blocks(mlm.Q4_K, block) || (block == 32 && !FusedQ8x4(mlm.Q4_K)) {
 			continue
 		}
 		const n = 6
@@ -255,9 +255,9 @@ func TestDotQ8x4(t *testing.T) {
 			}
 		}
 		for trial := 0; trial < 6; trial++ {
-			dt, bad := mim.Q4_K, 2 // dmin of the first block
+			dt, bad := mlm.Q4_K, 2 // dmin of the first block
 			if trial >= 3 {
-				dt, bad = mim.Q6_K, 208 // d of the first block
+				dt, bad = mlm.Q6_K, 208 // d of the first block
 			}
 			row := randomRows(rng, dt, 1, k)
 			if trial%3 == 2 {
@@ -285,9 +285,9 @@ func TestDotQ8x4(t *testing.T) {
 func TestDotQ8RejectsNonFiniteScales(t *testing.T) {
 	rng := rand.New(rand.NewSource(8))
 	for _, c := range []struct {
-		dt  mim.DType
+		dt  mlm.DType
 		off int
-	}{{mim.Q4_K, 0}, {mim.Q4_K, 2}, {mim.Q6_K, 208}, {mim.Q8_0, 0}} {
+	}{{mlm.Q4_K, 0}, {mlm.Q4_K, 2}, {mlm.Q6_K, 208}, {mlm.Q8_0, 0}} {
 		row := randomRows(rng, c.dt, 1, 512)
 		size := int(c.dt.BlockBytes())
 		row[size+c.off], row[size+c.off+1] = 0x00, 0x7C // +inf in the second block
@@ -314,7 +314,7 @@ func BenchmarkRowDotQ8(b *testing.B) {
 	const k = 2048
 	var a Q8
 	a.Quantize(randomVec(rng, k))
-	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K, mim.Q8_0} {
+	for _, dt := range []mlm.DType{mlm.Q4_K, mlm.Q6_K, mlm.Q8_0} {
 		row := randomRows(rng, dt, 1, k)
 		r := NewRowDot(dt, k)
 		if FusedQ8(dt) {

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -30,13 +30,13 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // Tensor is one tensor of a source file. Data aliases the source bytes.
 type Tensor struct {
 	Name  string
-	DType mim.DType
+	DType mlm.DType
 	Shape []uint64 // row-major, outermost dimension first
 	Data  []byte
 }
@@ -45,10 +45,10 @@ type Tensor struct {
 type Source struct {
 	Format   string // "gguf", "safetensors" or "onnx"
 	Tensors  []Tensor
-	Metadata mim.Metadata
+	Metadata mlm.Metadata
 	// Graph is an optional graph built by the importer (see BuildLlama).
 	// The Ref of its weight, const and variable values indexes Tensors.
-	Graph *mim.Graph
+	Graph *mlm.Graph
 }
 
 // Detect returns "gguf", "safetensors" or "" for the leading bytes of a file.
@@ -89,7 +89,7 @@ func Merge(srcs ...*Source) (*Source, error) {
 			return nil, fmt.Errorf("a %s source with a graph cannot be merged with others", s.Format)
 		}
 	}
-	out := &Source{Format: srcs[0].Format, Metadata: mim.Metadata{}}
+	out := &Source{Format: srcs[0].Format, Metadata: mlm.Metadata{}}
 	seen := map[string]bool{}
 	for _, s := range srcs {
 		if s.Format != out.Format {
@@ -112,7 +112,7 @@ func Merge(srcs ...*Source) (*Source, error) {
 // AddTo adds the source's tensors, a metadata section and, when the source
 // has one, its graph to w. Tensors are added in name order so the weights
 // region is laid out deterministically.
-func (s *Source) AddTo(w *mim.Writer) error {
+func (s *Source) AddTo(w *mlm.Writer) error {
 	order := make([]int, len(s.Tensors))
 	for i := range order {
 		order[i] = i
@@ -128,9 +128,9 @@ func (s *Source) AddTo(w *mim.Writer) error {
 	}
 	if s.Graph != nil {
 		g := *s.Graph
-		g.Values = append([]mim.Value(nil), s.Graph.Values...)
+		g.Values = append([]mlm.Value(nil), s.Graph.Values...)
 		for i, v := range g.Values {
-			if v.Kind != mim.KindWeight && v.Kind != mim.KindConst && v.Kind != mim.KindVariable || v.Zero {
+			if v.Kind != mlm.KindWeight && v.Kind != mlm.KindConst && v.Kind != mlm.KindVariable || v.Zero {
 				continue
 			}
 			if int(v.Ref) >= len(pos) {
@@ -142,11 +142,11 @@ func (s *Source) AddTo(w *mim.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := w.AddSection(mim.SectionGraph, true, enc); err != nil {
+		if err := w.AddSection(mlm.SectionGraph, true, enc); err != nil {
 			return err
 		}
 	}
-	md := mim.Metadata{}
+	md := mlm.Metadata{}
 	for k, v := range s.Metadata {
 		md[k] = v
 	}
@@ -155,16 +155,16 @@ func (s *Source) AddTo(w *mim.Writer) error {
 	if err != nil {
 		return err
 	}
-	return w.AddSection(mim.SectionMetadata, false, enc)
+	return w.AddSection(mlm.SectionMetadata, false, enc)
 }
 
 // checkTensor verifies that a tensor's data length matches its dtype and
 // shape.
 func checkTensor(t Tensor) error {
-	if len(t.Shape) > mim.MaxRank {
-		return fmt.Errorf("tensor %q: rank %d exceeds %d", t.Name, len(t.Shape), mim.MaxRank)
+	if len(t.Shape) > mlm.MaxRank {
+		return fmt.Errorf("tensor %q: rank %d exceeds %d", t.Name, len(t.Shape), mlm.MaxRank)
 	}
-	n, err := mim.ByteSize(t.DType, t.Shape)
+	n, err := mlm.ByteSize(t.DType, t.Shape)
 	if err != nil {
 		return fmt.Errorf("tensor %q: %w", t.Name, err)
 	}

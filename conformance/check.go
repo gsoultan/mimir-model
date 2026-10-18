@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -19,8 +19,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // maxReported is how many mismatching elements a failure lists.
@@ -79,7 +79,7 @@ func equalShape(a, b []int) bool {
 }
 
 // checkElem returns "" when element i conforms, otherwise a description.
-func checkElem(c Check, dt mim.DType, i int, got, want uint64) string {
+func checkElem(c Check, dt mlm.DType, i int, got, want uint64) string {
 	isF := ref.IsFloat(dt)
 	switch c.Kind {
 	case "bits":
@@ -109,7 +109,7 @@ func checkElem(c Check, dt mim.DType, i int, got, want uint64) string {
 	return ""
 }
 
-func ulpOrZero(dt mim.DType, w float64) float64 {
+func ulpOrZero(dt mlm.DType, w float64) float64 {
 	if math.IsNaN(w) || math.IsInf(w, 0) {
 		return 0
 	}
@@ -144,7 +144,7 @@ func within(g, w, bound, maxAbs float64) string {
 
 // EvalFunc runs one primitive the way a runtime would. It receives the
 // opcode, attributes, inputs and the declared output dtype and shape.
-type EvalFunc func(op mim.Opcode, attrs []mim.Attr, in []*ref.Tensor, outDType mim.DType, outShape []int) (*ref.Tensor, error)
+type EvalFunc func(op mlm.Opcode, attrs []mlm.Attr, in []*ref.Tensor, outDType mlm.DType, outShape []int) (*ref.Tensor, error)
 
 // Failure is one case a runtime did not pass.
 type Failure struct {
@@ -184,7 +184,7 @@ func Run(cases []Case, eval EvalFunc, m Mode) Report {
 	return r
 }
 
-func safeEval(eval EvalFunc, c *Case, dt mim.DType, shape []int) (t *ref.Tensor, err error) {
+func safeEval(eval EvalFunc, c *Case, dt mlm.DType, shape []int) (t *ref.Tensor, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("panic: %v", p)

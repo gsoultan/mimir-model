@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 func copyFixture(t *testing.T, dir, name string) string {
@@ -47,7 +47,7 @@ func TestRun(t *testing.T) {
 		if !strings.Contains(out.String(), "open+read") {
 			t.Errorf("no benchmark table in:\n%s", out.String())
 		}
-		f, err := mim.Open(defaultOutput(in))
+		f, err := mlm.Open(defaultOutput(in))
 		if err != nil {
 			t.Fatal(err)
 		}

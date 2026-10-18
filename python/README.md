@@ -7,9 +7,9 @@ and runs graphs with variables, `while`, `if` and model-local composites.
 Its only dependency is NumPy.
 
 ```python
-from mim.container import File
-from mim.executor import Program
-from mim.tensor import Tensor
+from mlm.container import File
+from mlm.executor import Program
+from mlm.tensor import Tensor
 
 with File.open("model.mim") as f:          # mmap, validate, no copies
     print(f.metadata()["general.name"])     # ("string", "...")
@@ -19,16 +19,16 @@ with File.open("model.mim") as f:          # mmap, validate, no copies
 
 ## Writing files and exporting from PyTorch
 
-`mim.writer` writes files: `Writer` packs tensors canonically, sorts the
+`mlm.writer` writes files: `Writer` packs tensors canonically, sorts the
 tensor table, hashes every section and writes atomically;
 `encode_metadata` and `GraphBuilder` produce the metadata and graph
 sections.
 
-`mim.pytorch` exports a PyTorch model through `torch.export`:
+`mlm.pytorch` exports a PyTorch model through `torch.export`:
 
 ```python
 from torch.export import Dim
-from mim.pytorch import export
+from mlm.pytorch import export
 
 model.eval()
 export(model, (x,), "model.mim", dynamic_shapes={"x": {0: Dim("batch", max=64)}})
@@ -39,7 +39,7 @@ the output runs on any mim runtime. Parameters are stored byte for byte
 under their state-dict names, buffers become constants, and operations
 that depend only on buffers are computed at export time. Symbolic
 dimensions keep the names of the `Dim` objects. An operator the exporter
-cannot express raises `ExportError` naming it; `mim.pytorch.SUPPORTED`
+cannot express raises `ExportError` naming it; `mlm.pytorch.SUPPORTED`
 lists the ones it handles. The exporter needs PyTorch 2.6 or later
 (`pip install "mim[torch]"`); the rest of the package does not.
 
@@ -94,4 +94,4 @@ version (including the tiny Llama, whose logits must match the Go
 executor's), the tiny Llama's greedy continuation against the float64
 oracle of `tools/gen_llama_testdata.py`, and the CNN in `testdata/onnx`,
 converted from ONNX by the Go importer, against onnxruntime, and the
-models in `testdata/pytorch`, exported by `mim.pytorch`, against PyTorch.
+models in `testdata/pytorch`, exported by `mlm.pytorch`, against PyTorch.

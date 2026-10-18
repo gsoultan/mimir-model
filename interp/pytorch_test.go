@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -21,8 +21,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // The files in testdata/pytorch were exported from PyTorch by the Python
@@ -50,7 +50,7 @@ type torchExpected struct {
 
 func (a torchArray) tensor(t *testing.T) *ref.Tensor {
 	t.Helper()
-	dt := map[string]mim.DType{"f32": mim.F32, "i64": mim.I64}[a.DType]
+	dt := map[string]mlm.DType{"f32": mlm.F32, "i64": mlm.I64}[a.DType]
 	b, err := base64.StdEncoding.DecodeString(a.Data)
 	if err != nil || dt == 0 {
 		t.Fatalf("array %s%v: %v", a.DType, a.Shape, err)
@@ -78,7 +78,7 @@ func TestPyTorchExports(t *testing.T) {
 	}
 	for _, m := range e.Models {
 		t.Run(m.Name, func(t *testing.T) {
-			f, err := mim.Open(filepath.Join(dir, m.MIM))
+			f, err := mlm.Open(filepath.Join(dir, m.MIM))
 			if err != nil {
 				t.Fatal(err)
 			}

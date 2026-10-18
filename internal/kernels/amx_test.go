@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,14 +18,14 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // TestTileDot checks that the AMX and VNNI kernels return what
 // RowDot.DotQ8 returns, bit for bit, for every row of activations they
 // are given.
 func TestTileDot(t *testing.T) {
-	if !TileQ8(mim.Q4_K) {
+	if !TileQ8(mlm.Q4_K) {
 		t.Skip("no AMX or VNNI kernels on this machine")
 	}
 	testTileDot(t)
@@ -40,7 +40,7 @@ func TestTileDot(t *testing.T) {
 
 func testTileDot(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
-	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K} {
+	for _, dt := range []mlm.DType{mlm.Q4_K, mlm.Q6_K} {
 		for _, k := range []int{256, 2048, 5632} {
 			for _, rows := range []int{1, 5, 16, 21, 37} {
 				var b Q8Batch
@@ -66,7 +66,7 @@ func testTileDot(t *testing.T) {
 				var a TileActs
 				a.Set(&b, use)
 				w := randomRows(rng, dt, TileRows, k)
-				if k == 2048 && dt == mim.Q4_K {
+				if k == 2048 && dt == mlm.Q4_K {
 					// The largest integer sums: every scale, offset and quant at its
 					// maximum in row 1.
 					rb := int(uint64(k) / 256 * dt.BlockBytes())
@@ -97,7 +97,7 @@ func testTileDot(t *testing.T) {
 				}
 				// A scale that is not finite, in the last row's last block.
 				bad := len(w) - int(dt.BlockBytes())
-				if dt == mim.Q6_K {
+				if dt == mlm.Q6_K {
 					bad += 208
 				}
 				w[bad], w[bad+1] = 0x00, 0x7C
@@ -110,12 +110,12 @@ func testTileDot(t *testing.T) {
 }
 
 func BenchmarkTileDot(b *testing.B) {
-	if !TileQ8(mim.Q4_K) {
+	if !TileQ8(mlm.Q4_K) {
 		b.Skip("no AMX or VNNI kernels on this machine")
 	}
 	rng := rand.New(rand.NewSource(12))
 	const k = 2048
-	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K} {
+	for _, dt := range []mlm.DType{mlm.Q4_K, mlm.Q6_K} {
 		for _, rows := range []int{16, 32, 64} {
 			var batch Q8Batch
 			batch.Reset(k, rows)
@@ -170,12 +170,12 @@ var streamK = 4096
 // BenchmarkTileDotStream runs the tile kernels over a weight matrix larger
 // than the caches, 16 rows at a time, as a prompt's matrix product does.
 func BenchmarkTileDotStream(b *testing.B) {
-	if !TileQ8(mim.Q4_K) {
+	if !TileQ8(mlm.Q4_K) {
 		b.Skip("no AMX or VNNI kernels on this machine")
 	}
 	rng := rand.New(rand.NewSource(14))
 	k, n := streamK, 8192*4096/streamK
-	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K} {
+	for _, dt := range []mlm.DType{mlm.Q4_K, mlm.Q6_K} {
 		w := randomRows(rng, dt, TileRows, k)
 		rb := len(w) / TileRows
 		big := make([]byte, n*rb)

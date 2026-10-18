@@ -2,7 +2,7 @@
 
     import torch
     from torch.export import Dim
-    from mim.pytorch import export
+    from mlm.pytorch import export
 
     model.eval()
     export(model, (x,), "model.mim", dynamic_shapes={"x": {0: Dim("batch", max=64)}})

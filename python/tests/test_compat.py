@@ -5,7 +5,7 @@ import os
 import unittest
 
 import _paths  # noqa: F401
-from mim import compat
+from mlm import compat
 
 
 class TestCompat(unittest.TestCase):

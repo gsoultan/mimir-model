@@ -7,9 +7,9 @@ import struct
 import unittest
 
 import _paths  # noqa: F401
-from mim.container import TRAINING, File
-from mim.errors import MIMError
-from mim.training import COUNTERS, PARAMS, STATES, STRINGS, decode_training
+from mlm.container import TRAINING, File
+from mlm.errors import MIMError
+from mlm.training import COUNTERS, PARAMS, STATES, STRINGS, decode_training
 
 PATH = os.path.join(_paths.TESTDATA, "compat", "0.2-0.1", "training.mim")
 

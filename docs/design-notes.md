@@ -123,7 +123,7 @@ tests.
 Every step of the adoption plan above has landed, and v0.1 is tagged. The
 gap that is left is speed on a CPU against llama.cpp on the same Q4_K_M
 model (docs/benchmarks.md): generation was 1.7 times slower and the prompt
-4 to 5 times slower. A profile of mim-run showed where the time goes: the
+4 to 5 times slower. A profile of mlm-run showed where the time goes: the
 8-bit matrix product kernels took 65% of the CPU, the cores sat idle or
 woke up threads for another 20%, and the kernels read the weights from
 memory more slowly than the machine allows.
@@ -187,7 +187,7 @@ llama.cpp on the same machine, and recorded in docs/benchmarks.md.
 
 With every step of the speed plan done, a benchmark on a Xeon without AMX
 (docs/benchmarks.md, 'Long prompts') showed a gap the 21-token prompt had
-hidden: with a 741-token prompt mim-run read 39 tokens per second against
+hidden: with a 741-token prompt mlm-run read 39 tokens per second against
 llama.cpp's 123, and its memory grew to 4.5 GB.
 
 1. **Long prompts.** Matrix products in blocks of activations that fit in
@@ -208,7 +208,7 @@ llama.cpp's 123, and its memory grew to 4.5 GB.
 3. **A key-value cache in f16.** The cache variables in f16 instead of
    f32: half the memory (46 MiB instead of 92 at a context of 2048 for
    TinyLlama, and proportionally more at long contexts), and half the
-   bytes attention reads per token. Done: `mim-import` writes an f16 cache
+   bytes attention reads per token. Done: `mlm-import` writes an f16 cache
    by default, read by `attention.v2`, with the same speed and 93 MiB less
    memory at a 741-token prompt (docs/benchmarks.md, 'A key-value cache in
    f16').

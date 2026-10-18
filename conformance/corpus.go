@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -32,8 +32,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // Mode is a runtime's subnormal handling for float dtypes
@@ -65,9 +65,9 @@ type Expected struct {
 type Case struct {
 	File     string
 	Op       string
-	Opcode   mim.Opcode
+	Opcode   mlm.Opcode
 	Name     string
-	Attrs    []mim.Attr
+	Attrs    []mlm.Attr
 	Inputs   []*ref.Tensor
 	Output   Expected  // IEEE mode
 	FlushOut *Expected // flush mode, when it differs from IEEE mode
@@ -162,7 +162,7 @@ func LoadFile(path string) ([]Case, error) {
 	if f.Format != "mim-conformance" || f.Version != 1 {
 		return nil, fmt.Errorf("%s: unsupported corpus format %q version %d", path, f.Format, f.Version)
 	}
-	op := mim.Opcode(f.Opcode)
+	op := mlm.Opcode(f.Opcode)
 	if op.String() != f.Op {
 		return nil, fmt.Errorf("%s: opcode %d is not %q", path, f.Opcode, f.Op)
 	}
@@ -227,27 +227,27 @@ func decodeCase(jc jsonCase) (Case, error) {
 	return c, nil
 }
 
-func decodeAttr(key string, ja jsonAttr) (mim.Attr, error) {
-	a := mim.Attr{Key: key}
+func decodeAttr(key string, ja jsonAttr) (mlm.Attr, error) {
+	a := mlm.Attr{Key: key}
 	switch {
 	case ja.Int != nil:
-		a.Type, a.Int = mim.AttrInt, *ja.Int
+		a.Type, a.Int = mlm.AttrInt, *ja.Int
 	case ja.Ints != nil:
-		a.Type, a.Ints = mim.AttrInts, ja.Ints
+		a.Type, a.Ints = mlm.AttrInts, ja.Ints
 	case ja.Float != nil:
 		v, err := decodeF64s(*ja.Float)
 		if err != nil || len(v) != 1 {
 			return a, fmt.Errorf("attribute %q: bad float", key)
 		}
-		a.Type, a.Float = mim.AttrFloat, v[0]
+		a.Type, a.Float = mlm.AttrFloat, v[0]
 	case ja.String != nil:
-		a.Type, a.String = mim.AttrString, *ja.String
+		a.Type, a.String = mlm.AttrString, *ja.String
 	case ja.DType != nil:
-		dt, ok := mim.ParseDType(*ja.DType)
+		dt, ok := mlm.ParseDType(*ja.DType)
 		if !ok {
 			return a, fmt.Errorf("attribute %q: unknown dtype %q", key, *ja.DType)
 		}
-		a.Type, a.DType = mim.AttrDType, dt
+		a.Type, a.DType = mlm.AttrDType, dt
 	default:
 		return a, fmt.Errorf("attribute %q has no value", key)
 	}
@@ -255,7 +255,7 @@ func decodeAttr(key string, ja jsonAttr) (mim.Attr, error) {
 }
 
 func decodeTensor(jt jsonTensor) (*ref.Tensor, error) {
-	dt, ok := mim.ParseDType(jt.DType)
+	dt, ok := mlm.ParseDType(jt.DType)
 	if !ok {
 		return nil, fmt.Errorf("unknown dtype %q", jt.DType)
 	}

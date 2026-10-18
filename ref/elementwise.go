@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // broadcastShape applies spec/primitives.md section 3.1 to equal-rank shapes.
@@ -75,16 +75,16 @@ func broadcastMap(out, in []int) []int {
 // Every float dtype is a subset of float64, and for f32, f16 and bf16 the
 // float64 result rounded once to the output dtype is correctly rounded for
 // the exact operations and within the primitive bounds for the others.
-var unaryFloat = map[mim.Opcode]func(float64) float64{
-	mim.OpRecip: func(x float64) float64 { return 1 / x },
-	mim.OpSqrt:  math.Sqrt,
-	mim.OpExp2:  math.Exp2,
-	mim.OpLog2:  math.Log2,
-	mim.OpSin:   math.Sin,
-	mim.OpTrunc: math.Trunc,
+var unaryFloat = map[mlm.Opcode]func(float64) float64{
+	mlm.OpRecip: func(x float64) float64 { return 1 / x },
+	mlm.OpSqrt:  math.Sqrt,
+	mlm.OpExp2:  math.Exp2,
+	mlm.OpLog2:  math.Log2,
+	mlm.OpSin:   math.Sin,
+	mlm.OpTrunc: math.Trunc,
 }
 
-func evalUnary(op mim.Opcode, x *Tensor) (*Tensor, error) {
+func evalUnary(op mlm.Opcode, x *Tensor) (*Tensor, error) {
 	dt := x.DType
 	y, err := New(dt, x.Shape)
 	if err != nil {
@@ -92,7 +92,7 @@ func evalUnary(op mim.Opcode, x *Tensor) (*Tensor, error) {
 	}
 	n := x.NumElems()
 	switch {
-	case isArith(dt) && op == mim.OpNeg:
+	case isArith(dt) && op == mlm.OpNeg:
 		sb := floatFormats[dt].signBit()
 		for i := 0; i < n; i++ {
 			y.SetBits(i, x.Bits(i)^sb)
@@ -105,11 +105,11 @@ func evalUnary(op mim.Opcode, x *Tensor) (*Tensor, error) {
 		for i := 0; i < n; i++ {
 			y.SetBits(i, RoundFloat(dt, fn(DecodeFloat(dt, x.Bits(i))), false))
 		}
-	case IsInt(dt) && op == mim.OpNeg:
+	case IsInt(dt) && op == mlm.OpNeg:
 		for i := 0; i < n; i++ {
 			y.SetBits(i, mask(dt, -x.Bits(i)))
 		}
-	case IsInt(dt) && op == mim.OpTrunc:
+	case IsInt(dt) && op == mlm.OpTrunc:
 		copy(y.Data, x.Data)
 	default:
 		return nil, fmt.Errorf("%s: unsupported dtype %s", op, dt)
@@ -143,25 +143,25 @@ func floatPow(a, b float64) float64 {
 	return pow64(a, b)
 }
 
-var binaryFloat = map[mim.Opcode]func(a, b float64) float64{
-	mim.OpAdd: func(a, b float64) float64 { return a + b },
-	mim.OpMul: func(a, b float64) float64 { return a * b },
-	mim.OpMax: floatMax,
-	mim.OpPow: floatPow,
+var binaryFloat = map[mlm.Opcode]func(a, b float64) float64{
+	mlm.OpAdd: func(a, b float64) float64 { return a + b },
+	mlm.OpMul: func(a, b float64) float64 { return a * b },
+	mlm.OpMax: floatMax,
+	mlm.OpPow: floatPow,
 }
 
 // binaryInt computes an integer primitive on bit patterns of dtype dt. The
 // result is masked by the caller. ok is false when the result is
 // unspecified (division by zero), in which case 0 is stored.
-func binaryInt(op mim.Opcode, dt mim.DType, a, b uint64) (r uint64, ok bool) {
+func binaryInt(op mlm.Opcode, dt mlm.DType, a, b uint64) (r uint64, ok bool) {
 	w := uint64(intWidth(dt))
 	signed := isSigned(dt)
 	switch op {
-	case mim.OpAdd:
+	case mlm.OpAdd:
 		return a + b, true
-	case mim.OpMul:
+	case mlm.OpMul:
 		return a * b, true
-	case mim.OpMax:
+	case mlm.OpMax:
 		if signed {
 			if sext(dt, a) > sext(dt, b) {
 				return a, true
@@ -172,33 +172,33 @@ func binaryInt(op mim.Opcode, dt mim.DType, a, b uint64) (r uint64, ok bool) {
 			return a, true
 		}
 		return b, true
-	case mim.OpIdiv, mim.OpImod:
+	case mlm.OpIdiv, mlm.OpImod:
 		if b == 0 {
 			return 0, false
 		}
 		if !signed {
-			if op == mim.OpIdiv {
+			if op == mlm.OpIdiv {
 				return a / b, true
 			}
 			return a % b, true
 		}
 		sa, sb := sext(dt, a), sext(dt, b)
 		if sb == -1 { // avoids the MIN / -1 trap; wraps as the spec requires
-			if op == mim.OpIdiv {
+			if op == mlm.OpIdiv {
 				return uint64(-sa), true
 			}
 			return 0, true
 		}
-		if op == mim.OpIdiv {
+		if op == mlm.OpIdiv {
 			return uint64(sa / sb), true
 		}
 		return uint64(sa % sb), true
-	case mim.OpShl:
+	case mlm.OpShl:
 		if b >= w {
 			return 0, true
 		}
 		return a << b, true
-	case mim.OpShr:
+	case mlm.OpShr:
 		if signed {
 			if b >= w {
 				b = w - 1
@@ -209,18 +209,18 @@ func binaryInt(op mim.Opcode, dt mim.DType, a, b uint64) (r uint64, ok bool) {
 			return 0, true
 		}
 		return a >> b, true
-	case mim.OpAnd:
+	case mlm.OpAnd:
 		return a & b, true
-	case mim.OpOr:
+	case mlm.OpOr:
 		return a | b, true
-	case mim.OpXor:
+	case mlm.OpXor:
 		return a ^ b, true
-	case mim.OpCmplt:
+	case mlm.OpCmplt:
 		if signed {
 			return b2u(sext(dt, a) < sext(dt, b)), true
 		}
 		return b2u(a < b), true
-	case mim.OpCmpeq:
+	case mlm.OpCmpeq:
 		return b2u(a == b), true
 	}
 	return 0, false
@@ -233,7 +233,7 @@ func b2u(b bool) uint64 {
 	return 0
 }
 
-func evalBinary(op mim.Opcode, a, b *Tensor, outDType mim.DType, shape []int) (*Tensor, error) {
+func evalBinary(op mlm.Opcode, a, b *Tensor, outDType mlm.DType, shape []int) (*Tensor, error) {
 	dt := a.DType
 	y, err := New(outDType, shape)
 	if err != nil {
@@ -243,9 +243,9 @@ func evalBinary(op mim.Opcode, a, b *Tensor, outDType mim.DType, shape []int) (*
 	for i := range ma {
 		x, z := a.Bits(ma[i]), b.Bits(mb[i])
 		switch {
-		case isArith(dt) && (op == mim.OpCmplt || op == mim.OpCmpeq):
+		case isArith(dt) && (op == mlm.OpCmplt || op == mlm.OpCmpeq):
 			u, v := DecodeFloat(dt, x), DecodeFloat(dt, z)
-			if op == mim.OpCmplt {
+			if op == mlm.OpCmplt {
 				y.SetBits(i, b2u(u < v))
 			} else {
 				y.SetBits(i, b2u(u == v))
@@ -253,21 +253,21 @@ func evalBinary(op mim.Opcode, a, b *Tensor, outDType mim.DType, shape []int) (*
 		case isArith(dt):
 			r := binaryFloat[op](DecodeFloat(dt, x), DecodeFloat(dt, z))
 			y.SetBits(i, RoundFloat(dt, r, false))
-		case dt == mim.Bool:
+		case dt == mlm.Bool:
 			u, v := b2u(x != 0), b2u(z != 0)
 			switch op {
-			case mim.OpAnd:
+			case mlm.OpAnd:
 				y.SetBits(i, u&v)
-			case mim.OpOr:
+			case mlm.OpOr:
 				y.SetBits(i, u|v)
-			case mim.OpXor:
+			case mlm.OpXor:
 				y.SetBits(i, u^v)
-			case mim.OpCmpeq:
+			case mlm.OpCmpeq:
 				y.SetBits(i, b2u(u == v))
 			}
 		default:
 			r, _ := binaryInt(op, dt, x, z)
-			if outDType == mim.Bool {
+			if outDType == mlm.Bool {
 				y.SetBits(i, r)
 			} else {
 				y.SetBits(i, mask(dt, r))

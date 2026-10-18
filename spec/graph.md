@@ -189,5 +189,5 @@ is checked separately from the structural rules above.
 
 - A composite body is referenced from `call` by `(name, version)`; the
   standard library's own bodies are not stored in model files.
-- The text form printed by `mim-inspect` is for humans and tools; the binary
+- The text form printed by `mlm-inspect` is for humans and tools; the binary
   form is the only normative one.

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -16,8 +16,8 @@ package interp
 import (
 	"fmt"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	"github.com/gsoultan/mlm"
+	"github.com/gsoultan/mlm/ref"
 )
 
 // convParams are the attributes of conv2d.v1 and the shapes they imply.
@@ -28,7 +28,7 @@ type convParams struct {
 	ho, wo                    int
 }
 
-func readConv(list []mim.Attr, in []*ref.Tensor, dts []mim.DType) (*convParams, error) {
+func readConv(list []mlm.Attr, in []*ref.Tensor, dts []mlm.DType) (*convParams, error) {
 	a, err := readAttrs(list, "strides", "dilations", "pads", "groups")
 	if err != nil {
 		return nil, err
@@ -45,7 +45,7 @@ func readConv(list []mim.Attr, in []*ref.Tensor, dts []mim.DType) (*convParams, 
 		if v == nil {
 			return def, nil
 		}
-		if v.Type != mim.AttrInts || len(v.Ints) != n {
+		if v.Type != mlm.AttrInts || len(v.Ints) != n {
 			return nil, fmt.Errorf("conv2d.v1: attribute %q must be %d ints", key, n)
 		}
 		out := make([]int, n)
@@ -109,9 +109,9 @@ func (b *body) shrink(x *ref.Tensor, ax, begin, end int) *ref.Tensor {
 		es[i] = -1
 	}
 	bs[ax], es[ax], s[ax] = int64(begin), int64(end), end-begin
-	return b.eval(mim.OpShrink, []mim.Attr{
-		{Key: "begin", Type: mim.AttrInts, Ints: bs},
-		{Key: "end", Type: mim.AttrInts, Ints: es},
+	return b.eval(mlm.OpShrink, []mlm.Attr{
+		{Key: "begin", Type: mlm.AttrInts, Ints: bs},
+		{Key: "end", Type: mlm.AttrInts, Ints: es},
 	}, x.DType, s, x)
 }
 
@@ -129,7 +129,7 @@ func (b *body) takeStrided(x *ref.Tensor, ax, start, n, step int) *ref.Tensor {
 }
 
 // conv2dV1 evaluates the canonical body of spec/stdlib.md section 3.5.
-func conv2dV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
+func conv2dV1(list []mlm.Attr, in []*ref.Tensor, dts []mlm.DType, _ [][]int) ([]*ref.Tensor, error) {
 	p, err := readConv(list, in, dts)
 	if err != nil {
 		return nil, err
@@ -140,12 +140,12 @@ func conv2dV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]
 	x, w := b.cast(in[0], cd), b.cast(in[1], cd)
 	cg, fg := p.c/p.g, p.f/p.g
 	hp, wp := p.h+p.top+p.bottom+p.sh-1, p.w+p.left+p.right+p.sw-1
-	xp := b.eval(mim.OpPad, []mim.Attr{{Key: "pads", Type: mim.AttrInts,
+	xp := b.eval(mlm.OpPad, []mlm.Attr{{Key: "pads", Type: mlm.AttrInts,
 		Ints: ints([]int{0, 0, 0, 0, p.top, p.bottom + p.sh - 1, p.left, p.right + p.sw - 1})}},
 		cd, []int{p.nb, p.c, hp, wp}, x)
 	xg := b.reshape(xp, []int{p.nb, p.g, cg, 1, hp, wp})
 	wg := b.reshape(w, []int{p.g, fg, cg, p.kh, p.kw})
-	wg = b.eval(mim.OpPermute, []mim.Attr{{Key: "perm", Type: mim.AttrInts, Ints: []int64{0, 2, 1, 3, 4}}},
+	wg = b.eval(mlm.OpPermute, []mlm.Attr{{Key: "perm", Type: mlm.AttrInts, Ints: []int64{0, 2, 1, 3, 4}}},
 		cd, []int{p.g, cg, fg, p.kh, p.kw}, wg)
 	wg = b.reshape(wg, []int{1, p.g, cg, fg, p.kh, p.kw})
 	var acc *ref.Tensor
@@ -154,11 +154,11 @@ func conv2dV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]
 			xs := b.takeStrided(xg, 4, i*p.dh, p.ho, p.sh)
 			xs = b.takeStrided(xs, 5, j*p.dw, p.wo, p.sw)
 			ws := b.shrink(b.shrink(wg, 4, i, i+1), 5, j, j+1)
-			t := b.reduce("add", b.bin(mim.OpMul, xs, ws), []int{2})
+			t := b.reduce("add", b.bin(mlm.OpMul, xs, ws), []int{2})
 			if acc == nil {
 				acc = t
 			} else {
-				acc = b.bin(mim.OpAdd, acc, t)
+				acc = b.bin(mlm.OpAdd, acc, t)
 			}
 			if b.err != nil {
 				return nil, b.err
@@ -167,7 +167,7 @@ func conv2dV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]
 	}
 	y := b.reshape(acc, []int{p.nb, p.f, p.ho, p.wo})
 	if len(in) == 3 {
-		y = b.bin(mim.OpAdd, y, b.reshape(b.cast(in[2], cd), []int{1, p.f, 1, 1}))
+		y = b.bin(mlm.OpAdd, y, b.reshape(b.cast(in[2], cd), []int{1, p.f, 1, 1}))
 	}
 	return []*ref.Tensor{b.cast(y, dt)}, b.err
 }
@@ -175,8 +175,8 @@ func conv2dV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]
 // fastConv2d computes a float32 convolution directly, summing each output
 // element's receptive field in float64 and rounding once, which is well
 // within the composite's tolerance.
-func fastConv2d(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	if len(in) < 2 || in[0].DType != mim.F32 {
+func fastConv2d(list []mlm.Attr, in []*ref.Tensor, dts []mlm.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(in) < 2 || in[0].DType != mlm.F32 {
 		return nil, false, nil
 	}
 	p, err := readConv(list, in, dts)

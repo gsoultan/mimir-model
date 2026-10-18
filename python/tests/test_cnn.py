@@ -9,10 +9,10 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mim import dtypes as D
-from mim.container import File
-from mim.executor import Program
-from mim.tensor import Tensor
+from mlm import dtypes as D
+from mlm.container import File
+from mlm.executor import Program
+from mlm.tensor import Tensor
 
 DIR = os.path.join(_paths.TESTDATA, "onnx")
 

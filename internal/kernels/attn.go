@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mim, created and owned by Gembit Soultan Shirazi.
+// This file is part of mlm, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,7 +17,7 @@ import (
 	"encoding/binary"
 	"math"
 
-	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mlm"
 )
 
 // Kernels for the attention fast path: the scores of one query against a
@@ -123,6 +123,6 @@ func WeightedSumF16(p []float32, v []byte, acc []float32) {
 // f16Row converts len(dst) f16 values from b.
 func f16Row(b []byte, dst []float32) {
 	for i := range dst {
-		dst[i] = mim.F16ToF32(binary.LittleEndian.Uint16(b[2*i:]))
+		dst[i] = mlm.F16ToF32(binary.LittleEndian.Uint16(b[2*i:]))
 	}
 }
