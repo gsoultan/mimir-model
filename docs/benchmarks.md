@@ -543,3 +543,71 @@ random-weight figures of the previous sections within the machine's
 run-to-run spread: mlm-run generates 1.3 to 1.5 times faster than
 llama.cpp, reads prompts 1.1 to 1.6 times faster, and peaks at about
 half its memory.
+
+## Masks, attention and copies
+
+The real TinyLlama 1.1B Chat v1.0 and Mistral 7B Instruct v0.3, Q4_K_M
+from Hugging Face (TheBloke's and bartowski's files), imported with
+`mlm-import -graph -ctx 2048` and `-ctx 4096`. Same machine as the 7 to 8B
+models (4 cores of an Intel Xeon at 2.1 GHz with AMX, 15 GiB, Go 1.24,
+llama-cpp-python 0.3.16 built on the machine). "before" is mlm-run at the
+head of #28, "after" this change; the two ran alternately, in a fresh
+process each, median of 11 runs for TinyLlama's short prompt, 5 for its
+long one and for Mistral's short one, 3 for Mistral's long one. llama.cpp
+ran through `tools/bench_generate.py` with the same prompts, median of 5
+and 3 runs.
+
+| model | prompt | llama.cpp | mlm-run before | mlm-run after |
+| --- | ---: | ---: | ---: | ---: |
+| TinyLlama 1.1B | 19 | 164.5 to 185.1 tok/s | 142.5 tok/s | 185.5 tok/s |
+| TinyLlama 1.1B | 721 | 216.9 tok/s | 241.4 tok/s | 303.8 tok/s |
+| Mistral 7B | 19 | 29.5 tok/s | 34.0 tok/s | 35.8 tok/s |
+| Mistral 7B | 181 | 44.0 tok/s | 59.4 tok/s | 72.7 tok/s |
+
+| model | prompt | llama.cpp | mlm-run before | mlm-run after |
+| --- | ---: | ---: | ---: | ---: |
+| TinyLlama 1.1B, generation | 19 | 28.7 to 29.0 tok/s | 40.0 tok/s | 42.0 tok/s |
+| TinyLlama 1.1B, generation | 721 | 27.9 tok/s | 35.2 tok/s | 38.8 tok/s |
+| Mistral 7B, generation | 19 | 5.1 tok/s | 7.0 tok/s | 7.1 tok/s |
+| Mistral 7B, generation | 181 | 4.8 tok/s | 7.2 tok/s | 7.4 tok/s |
+
+The two llama.cpp figures for TinyLlama's short prompt are two sets of
+runs; the machine is shared, and repeated sets vary by 10 to 15%. Every
+result of mlm-run is the same, bit for bit, before and after. A timing of
+each op of the graph (summed over a run) showed what the matrix products
+had hidden:
+
+- **The attention mask.** The importer builds it once per run with a
+  `cmplt` of the query positions against every cache position and an
+  `xor`, which went through the reference kernel's generic loop, about
+  100 ns an element: 8 ms of TinyLlama's 19-token prompt, 8%, and 0.8 ms of
+  every generated token. A fast path for comparisons of integers and
+  logical operations on booleans, with broadcasting, takes 0.6 ms.
+- **Attention on long prompts**, 20% of the 741-token prompt. The largest
+  score of each row came from a Go loop that cost as much as the scores;
+  it is now `kernels.MaxF32` (AVX2 and NEON). With 8 or more query
+  positions the f16 keys and values a query can see are converted to
+  float32 once per call, instead of by the kernels for each query row of
+  each head; the float32 kernels return the same bits. Rows the mask
+  allows whole are checked once rather than for every head. Attention
+  went from 567 to 438 ms of that prompt.
+- **Copies.** A reshape copied its input; one whose result is used only
+  within the run now shares its bytes (2.7% of a long prompt). One whose
+  result is an output of the graph or a variable's next value still
+  copies, so a tensor a caller holds never changes when the cache is
+  later written in place. The residual additions run on every core, and
+  attention takes its scratch space from a pool instead of allocating a
+  cache-long buffer per piece of heads, per layer and token.
+- **AMX results.** Each activation row's 16 results from a tile product
+  are written as one 64-byte run of the output instead of one float in
+  each of 16 rows.
+
+Mistral's short prompt gains least: 80% of it is the AMX kernels, which
+this change does not touch. Measured in a fresh process, it is also
+sensitive to the page cache: on this 15 GiB machine, a llama.cpp run
+(8.7 GiB peak) evicts part of the 4.4 GB mim file, and the next mlm-run
+reads it back from disk during its first prompt, which is how
+`bench_generate.py`, running both one after the other, can report 31 tok/s
+where runs of mlm-run alone give 35 to 40. With the file evicted
+completely, the 19-token prompt takes 2.0 s, the time to read 4.4 GB from
+this machine's disk; `madvise(MADV_WILLNEED)` at open did not change it.
