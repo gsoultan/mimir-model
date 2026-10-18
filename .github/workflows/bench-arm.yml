@@ -40,7 +40,7 @@ jobs:
         run: python -m pip install numpy==2.2.6 gguf==0.19.0 llama-cpp-python==0.3.16
 
       - name: kernel benchmarks
-        run: go test -run xxx -bench 'RowDot' ./internal/kernels
+        run: go test -run xxx -bench 'RowDot|Attention|SiluMul' ./internal/kernels
 
       - name: models
         run: |
@@ -54,3 +54,9 @@ jobs:
 
       - name: generation, 741-token prompt
         run: python -I tools/bench_generate.py --runs 3 --repeat 20 --mmf-run "$RUNNER_TEMP/mmf-run" "$RUNNER_TEMP/bench/tinyllama-rand-q4km.gguf" "$RUNNER_TEMP/bench/q4km-a8k.mmf"
+
+      - name: profile, 741-token prompt
+        run: |
+          prompt="$(python -c 'print(" ".join(["Once upon a time there was a little girl who lived in a village near the forest."] * 20))')"
+          "$RUNNER_TEMP/mmf-run" -m "$RUNNER_TEMP/bench/q4km-a8k.mmf" -p "$prompt" -n 64 -cpuprofile "$RUNNER_TEMP/cpu.prof" > /dev/null
+          go tool pprof -top -nodecount 30 "$RUNNER_TEMP/mmf-run" "$RUNNER_TEMP/cpu.prof"
