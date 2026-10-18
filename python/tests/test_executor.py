@@ -32,7 +32,7 @@ class TestSession(unittest.TestCase):
     def setUp(self):
         self.f = File.open(GRAPH)
         self.p = Program.load(self.f)
-        (_, self.e), = [x for x in compat.load(os.path.join(_paths.TESTDATA, "compat")) if x[1]["file"] == "graph.mim"]
+        (_, self.e), = [x for x in compat.load(os.path.join(_paths.TESTDATA, "compat")) if x[0] == os.path.dirname(GRAPH) and x[1]["file"] == "graph.mim"]
         self.inputs = {k: compat.tensor_of(v) for k, v in self.e["runs"][0]["inputs"].items()}
 
     def tearDown(self):

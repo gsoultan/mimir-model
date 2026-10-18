@@ -300,6 +300,21 @@ class File:
         s = self.section(GRAPH)
         return decode_graph(self.section_bytes(s)) if s else None
 
+    def training(self):
+        """The training section, decoded, with every tensor it names checked
+        against the tensor table; None when the file has none."""
+        from .training import decode_training
+
+        s = self.section(TRAINING)
+        if not s:
+            return None
+        t = decode_training(self.section_bytes(s))
+        names = [p[0] for p in t["parameters"]] + [x[1] for p in t["parameters"] for x in p[2]] + [x[1] for x in t["extras"]]
+        for n in names:
+            if self.tensor(n) is None:
+                raise MIMError("bad-training", f"tensor {n!r} is not in the tensor table")
+        return t
+
 
 def parse(data):
     return File(data)

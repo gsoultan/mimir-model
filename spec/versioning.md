@@ -13,7 +13,7 @@ A mim file carries three version numbers. They change independently.
 
 | part | where stored | current |
 |---|---|---|
-| container | preamble `major.minor` (spec/container.md) | 0.1 |
+| container | preamble `major.minor` (spec/container.md) | 0.2 |
 | primitives | graph section header (spec/graph.md) | 0.1 |
 | standard library | per composite, as the suffix of its name `name.vN` (spec/stdlib.md) | per composite |
 
@@ -120,6 +120,9 @@ major version and an ADR.
   binary64, bytes as hex, floats as a list of such hex strings);
 - `graph`: the names of the main graph's inputs and outputs, when the file
   has a graph;
+- `training`: for a file with a training section (spec/training.md), its
+  optimizer, counters, hyperparameters (values as the hex of their
+  little-endian binary64), parameters with their states, and extras;
 - `runs`: for a file with a graph, a sequence of runs in one session, so
   variables carry over. Each run gives its inputs and expected outputs as
   tensors in the format of the conformance corpus (spec/conformance.md

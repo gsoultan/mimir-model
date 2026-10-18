@@ -1,0 +1,368 @@
+{
+ "format": "mim-compat",
+ "version": 1,
+ "file": "dtypes.mim",
+ "container": {
+  "major": 0,
+  "minor": 2,
+  "data_alignment": 16384
+ },
+ "sections": [
+  {
+   "kind": 1,
+   "required": true,
+   "hash_algorithm": 1,
+   "length": 1052680
+  },
+  {
+   "kind": 2,
+   "required": false,
+   "hash_algorithm": 1,
+   "length": 649
+  },
+  {
+   "kind": 77,
+   "required": false,
+   "hash_algorithm": 1,
+   "length": 58
+  }
+ ],
+ "tensors": [
+  {
+   "name": "dtype.affine4_g64",
+   "dtype": "affine4_g64",
+   "shape": [
+    2,
+    64
+   ],
+   "offset": 1984,
+   "sha256": "114dda8c0a5a4c61a8d779d7bf9f6fd6b18c08d836a8693e684fdf53c0e73389"
+  },
+  {
+   "name": "dtype.bf16",
+   "dtype": "bf16",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1920,
+   "sha256": "728c0144c140834152bd270bce7feae859f29ed8f8757c7d46251a0f95aca2b0"
+  },
+  {
+   "name": "dtype.bool",
+   "dtype": "bool",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1856,
+   "sha256": "52217da89de802703cfc92d35e40ecdd5be45a1af977ef5d4be33892562749a1"
+  },
+  {
+   "name": "dtype.f16",
+   "dtype": "f16",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1792,
+   "sha256": "db08ecfcfb5269ca76346b35cc35b1ebeac8f268f1c734705291273bdb90ab44"
+  },
+  {
+   "name": "dtype.f32",
+   "dtype": "f32",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1728,
+   "sha256": "aba865e97c5979b72974ccc7e3df4c562ec8d08bf1b0716bb03cbc766bc04770"
+  },
+  {
+   "name": "dtype.f64",
+   "dtype": "f64",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1664,
+   "sha256": "f6cfe2660d7176527feb5fea015e5af63a3567442c9c32f00f057bf28e8e1c8f"
+  },
+  {
+   "name": "dtype.f8_e4m3",
+   "dtype": "f8_e4m3",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1600,
+   "sha256": "b0790b4b3ff7ca8c525c0e4f6695518d2bed62b88cabd922e40eae29664b0a3d"
+  },
+  {
+   "name": "dtype.f8_e5m2",
+   "dtype": "f8_e5m2",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1536,
+   "sha256": "78bcb1df92955bfae2fa06bc94f19c4a872480e60bd085e98b968ca8678a40d6"
+  },
+  {
+   "name": "dtype.i16",
+   "dtype": "i16",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1472,
+   "sha256": "34294a0cd4cf6a17db88069571fd413f320f01e31fe60b509a85195afe4317d6"
+  },
+  {
+   "name": "dtype.i32",
+   "dtype": "i32",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1408,
+   "sha256": "9758e8aaa405bbc73051f27f47b83a0d05833c2d998d98b0b477cb2081e5d272"
+  },
+  {
+   "name": "dtype.i64",
+   "dtype": "i64",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1344,
+   "sha256": "26096cf1550a2695d508978aaa8cc1be6269d6579d2420c0a5e9d5b79d739422"
+  },
+  {
+   "name": "dtype.i8",
+   "dtype": "i8",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 1280,
+   "sha256": "0346fa4ea202bacb8dbb8329ef57b479d3380312d9c7c51bf72a5a65e47c5bd1"
+  },
+  {
+   "name": "dtype.mxfp4",
+   "dtype": "mxfp4",
+   "shape": [
+    2,
+    32
+   ],
+   "offset": 1216,
+   "sha256": "d7752f0940af6f6e915001cb1ea4c8e05f663cee494f2900c1eea18df62a39e3"
+  },
+  {
+   "name": "dtype.q4_0",
+   "dtype": "q4_0",
+   "shape": [
+    2,
+    32
+   ],
+   "offset": 1152,
+   "sha256": "907ac4b209d863b4c6a4d8eff115fefb4e862cfb5c3fa54ceac9f36f85b7bfde"
+  },
+  {
+   "name": "dtype.q4_k",
+   "dtype": "q4_k",
+   "shape": [
+    2,
+    256
+   ],
+   "offset": 832,
+   "sha256": "b9b464748fe4899700377536e455b32b30621634880386781d31923052920032"
+  },
+  {
+   "name": "dtype.q6_k",
+   "dtype": "q6_k",
+   "shape": [
+    2,
+    256
+   ],
+   "offset": 384,
+   "sha256": "c7e35bbebed7b2dfb4a629569cef2633dd817abc0ff4825aa5848b1e28506ee6"
+  },
+  {
+   "name": "dtype.q8_0",
+   "dtype": "q8_0",
+   "shape": [
+    2,
+    32
+   ],
+   "offset": 256,
+   "sha256": "c64745865a4f0f96d3fe189ebcd2ce038deedc266771f9f46a13e4e8bb6a7b33"
+  },
+  {
+   "name": "dtype.u16",
+   "dtype": "u16",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 192,
+   "sha256": "376b83c677a5f02d9601c4ef162f9433cf10dc76e5f7516edb01ea143c3572b9"
+  },
+  {
+   "name": "dtype.u32",
+   "dtype": "u32",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 128,
+   "sha256": "e42ae783bfb1485caf0e3c64c2cb9445b02b29057bca68660ab3a9334c167bf8"
+  },
+  {
+   "name": "dtype.u64",
+   "dtype": "u64",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 64,
+   "sha256": "3715d105a0f8d5371b321cbe1227d65bd81da41d8fc72c60b7c87d7e8454863d"
+  },
+  {
+   "name": "dtype.u8",
+   "dtype": "u8",
+   "shape": [
+    2,
+    3
+   ],
+   "offset": 0,
+   "sha256": "727555b1e77dc22bdbec1f0e9fbaf657b01659e5f77021b16e4c1c59112b4819"
+  },
+  {
+   "name": "empty.f32",
+   "dtype": "f32",
+   "shape": [
+    0,
+    4
+   ],
+   "offset": 2176,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "name": "large.u8",
+   "dtype": "u8",
+   "shape": [
+    1048576
+   ],
+   "offset": 4096,
+   "sha256": "299c5278d7e1a5e788c5e817eece6f560ef149799163fb2731fa03185a195542"
+  },
+  {
+   "name": "rank8.u8",
+   "dtype": "u8",
+   "shape": [
+    1,
+    2,
+    1,
+    2,
+    1,
+    2,
+    1,
+    2
+   ],
+   "offset": 2176,
+   "sha256": "85505ea8f8b5ba5911c9944cf215b54fe198abc15bce389948356b89e7cc571d"
+  },
+  {
+   "name": "scalar.f32",
+   "dtype": "f32",
+   "shape": [],
+   "offset": 2112,
+   "sha256": "ef40f44066b119e7cc1dbefdb71c5d1e251d18c6d06263b2ee5d1ad9f4a83fb9"
+  },
+  {
+   "name": "unicode.名前",
+   "dtype": "i32",
+   "shape": [
+    2
+   ],
+   "offset": 1052672,
+   "sha256": "c71b399603194097b72411887aba3a86a7656a76ae463d085bf1216554711836"
+  }
+ ],
+ "metadata": [
+  {
+   "key": "general.name",
+   "type": "string",
+   "value": "compat dtypes"
+  },
+  {
+   "key": "test.bool",
+   "type": "bool",
+   "value": true
+  },
+  {
+   "key": "test.bytes",
+   "type": "bytes",
+   "value": "0001feff"
+  },
+  {
+   "key": "test.empty.ints",
+   "type": "ints",
+   "value": []
+  },
+  {
+   "key": "test.float",
+   "type": "float",
+   "value": "0000000000000080"
+  },
+  {
+   "key": "test.float.nan",
+   "type": "float",
+   "value": "010000000000f87f"
+  },
+  {
+   "key": "test.floats",
+   "type": "floats",
+   "value": [
+    "000000000000f07f",
+    "000000000000f83f",
+    "e105be396b290080"
+   ]
+  },
+  {
+   "key": "test.int",
+   "type": "int",
+   "value": -9223372036854775808
+  },
+  {
+   "key": "test.ints",
+   "type": "ints",
+   "value": [
+    -1,
+    0,
+    9223372036854775807
+   ]
+  },
+  {
+   "key": "test.string",
+   "type": "string",
+   "value": "héllo, 世界"
+  },
+  {
+   "key": "test.strings",
+   "type": "strings",
+   "value": [
+    "",
+    "a",
+    "ü"
+   ]
+  },
+  {
+   "key": "test.uint",
+   "type": "uint",
+   "value": 18446744073709551615
+  }
+ ],
+ "notes": "One tensor of every dtype, a 1 MiB tensor (4 KiB alignment), every metadata type, and an optional section of unknown kind 77 that a reader skips."
+}

@@ -1,4 +1,4 @@
-# Mimir Model (mim) container v0.1
+# Mimir Model (mim) container v0.2
 
 Status: draft. This document defines the byte layout of a mim file: the
 preamble, the index, the section table, the tensor index and the weights
@@ -51,8 +51,8 @@ shorter than 64 bytes is rejected with `truncated`.
 | offset | size | field | value and constraint |
 |---|---|---|---|
 | 0 | 4 | magic | bytes `4D 49 4D 00` (`"MIM\0"`). Readers also accept `4D 4D 46 00` (`"MMF\0"`), the magic of files written before the format was renamed from mmf; writers MUST NOT write it. Otherwise `bad-magic`. |
-| 4 | 2 | major | u16 container major version. v0.1 readers accept 0 only; otherwise `unsupported-version`. |
-| 6 | 2 | minor | u16 container minor version. Any value is accepted (spec/versioning.md). The reference writer writes 1. |
+| 4 | 2 | major | u16 container major version. v0 readers accept 0 only; otherwise `unsupported-version`. |
+| 6 | 2 | minor | u16 container minor version. Any value is accepted (spec/versioning.md). The reference writer writes 2. Minor 2 defines the training section (kind 5); minor 1 files are the same layout without it. |
 | 8 | 4 | byte order mark | u32 `0x0A0B0C0D`, stored as bytes `0D 0C 0B 0A`. A reader that decodes `0x0D0C0B0A` is looking at a file written big-endian and MUST report `big-endian`. Any other value is `bad-byte-order-mark`. v0 is little-endian only. |
 | 12 | 4 | data alignment | u32. MUST be a power of two, at least 4096 (`MinDataAlignment = 4 KiB`) and at most 16777216 (`MaxDataAlignment = 16 MiB`). Otherwise `bad-alignment`. The reference writer defaults to 16384 (`DefaultDataAlignment = 16 KiB`). |
 | 16 | 8 | index offset | u64. MUST be at least 64 and a multiple of 8 (`SectionAlignment`). Otherwise `misaligned`. The reference writer writes 64. |
@@ -150,13 +150,15 @@ no separators and no unused bytes.
 | 2 | metadata | defined elsewhere | key-value metadata, spec/metadata.md |
 | 3 | graph | defined elsewhere | the model graph, spec/graph.md |
 | 4 | repack-cache | reserved | kernel-specific weight layouts; layout not yet specified (ADR 0004) |
-| 5 | training | reserved | optimizer state and training progress; layout not yet specified |
+| 5 | training | defined elsewhere | optimizer state and training progress, spec/training.md (since container 0.2) |
 
 Kinds 1 to 5 are "known". A file MUST contain at most one section of each
 known kind; a second one is `duplicate`. A file MUST contain a weights
-section; a file without one is `missing-section`. Reserved kinds are known
-for the purposes of the duplicate check even though their contents are not
-yet specified.
+section; a file without one is `missing-section`. Reserved kinds, and kinds
+defined in a document a reader does not implement, are known for the
+purposes of the duplicate check; a reader that does not decode such a
+section skips it, which it can because none of them carries the required
+flag.
 
 An entry with a kind outside 1 to 5 is an unknown section. A reader MUST
 reject a file whose unknown section has the required flag set
@@ -354,6 +356,7 @@ codes are strings so that two readers in different languages can be compared.
 | `bad-hash-algorithm` | the hash algorithm is not 0 or 1 |
 | `bad-metadata` | reserved for the metadata section parser (spec/metadata.md) |
 | `bad-graph` | reserved for the graph section parser (spec/graph.md) |
+| `bad-training` | reserved for the training section parser (spec/training.md) |
 | `not-found` | reserved for lookups of a missing tensor or section by name by API layers; not a parse error |
 | `unsupported-dtype` | reserved for runtimes that know a dtype id but cannot operate on it; not a parse error |
 
