@@ -204,3 +204,122 @@ func TestFastCastF16(t *testing.T) {
 		}
 	}
 }
+
+// TestBoolBinary checks the comparison and logical fast paths against the
+// reference kernels, bit for bit, with operands broadcast along every
+// combination of axes.
+func TestBoolBinary(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	out := []int{2, 3, 5}
+	cases := []struct {
+		opc mlm.Opcode
+		dt  mlm.DType
+	}{
+		{mlm.OpCmplt, mlm.I64}, {mlm.OpCmpeq, mlm.I64}, {mlm.OpCmplt, mlm.I32}, {mlm.OpCmpeq, mlm.I32},
+		{mlm.OpAnd, mlm.Bool}, {mlm.OpOr, mlm.Bool}, {mlm.OpXor, mlm.Bool}, {mlm.OpCmpeq, mlm.Bool},
+	}
+	random := func(dt mlm.DType, shape []int) *ref.Tensor {
+		x, err := ref.New(dt, shape)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range x.NumElems() {
+			switch dt {
+			case mlm.Bool:
+				x.SetBits(i, uint64(rng.Intn(2)))
+			default:
+				x.SetBits(i, uint64(int64(rng.Intn(7)-3)))
+			}
+		}
+		return x
+	}
+	for _, c := range cases {
+		for ma := range 8 {
+			for mb := range 8 {
+				if ma&mb != 0 {
+					continue // the output would have size 1 there
+				}
+				sa, sb := append([]int{}, out...), append([]int{}, out...)
+				for k := range out {
+					if ma>>k&1 != 0 {
+						sa[k] = 1
+					}
+					if mb>>k&1 != 0 {
+						sb[k] = 1
+					}
+				}
+				in := []*ref.Tensor{random(c.dt, sa), random(c.dt, sb)}
+				want, err := ref.Eval(c.opc, nil, in, mlm.Bool, out)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, ok := fastBoolBinary(c.opc, in, mlm.Bool, out)
+				if !ok {
+					t.Fatalf("%s %s %v %v: not handled", c.opc, c.dt, sa, sb)
+				}
+				if !bytes.Equal(got.Data, want.Data) || !sameInts(got.Shape, want.Shape) {
+					t.Errorf("%s %s %v %v: %v, want %v", c.opc, c.dt, sa, sb, got.Data, want.Data)
+				}
+			}
+		}
+	}
+	if _, ok := fastBoolBinary(mlm.OpCmplt, []*ref.Tensor{random(mlm.Bool, out), random(mlm.Bool, out)}, mlm.Bool, out); ok {
+		t.Error("cmplt on bool tensors handled")
+	}
+}
+
+// TestReshapeView checks that a reshape whose result stays inside the run
+// shares its input's bytes, and that one whose result is an output of the
+// graph or a variable's next value copies them, so that nothing the caller
+// holds changes when an in-place scatter later writes the cache.
+func TestReshapeView(t *testing.T) {
+	b := newGB()
+	cache := b.stored("k_cache", mlm.KindVariable, mlm.F32, []uint64{1, 4, 2}, make([]byte, 32))
+	pos := b.input(0, "pos", mlm.I64, 1)
+	kt := b.input(0, "k_t", mlm.F32, 1, 1, 2)
+	knew := b.val("k_new", mlm.F32, mlm.KindIntermediate, 1, 4, 2)
+	flat := b.val("flat", mlm.F32, mlm.KindIntermediate, 8)
+	twice := b.val("twice", mlm.F32, mlm.KindIntermediate, 8)
+	shown := b.val("shown", mlm.F32, mlm.KindIntermediate, 4, 2)
+	shape := func(d ...int64) mlm.Attr { return mlm.Attr{Key: "shape", Type: mlm.AttrInts, Ints: d} }
+	b.op(0, mlm.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.op(0, mlm.OpReshape, []uint32{knew}, []uint32{flat}, shape(8))
+	b.op(0, mlm.OpAdd, []uint32{flat, flat}, []uint32{twice})
+	b.op(0, mlm.OpReshape, []uint32{knew}, []uint32{shown}, shape(4, 2))
+	b.output(0, twice)
+	b.output(0, shown)
+	b.g.Updates = []mlm.Update{{Variable: cache, Value: knew}}
+	p := b.load(t)
+	if len(p.views) != 1 || len(p.inplace) != 1 {
+		t.Fatalf("%d reshapes may share their input and %d scatters run in place, want 1 and 1", len(p.views), len(p.inplace))
+	}
+	p.FastPaths = true
+	s := p.NewSession()
+	var held []*ref.Tensor
+	for i := int64(0); i < 4; i++ {
+		v := float32(i + 1)
+		out, err := s.Run(map[string]*ref.Tensor{"pos": i64t([]int{1}, i), "k_t": f32t([]int{1, 1, 2}, v, -v)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := f32s(out["twice"])[2*i], 2*float64(v); got != want {
+			t.Errorf("step %d: twice[%d] = %v, want %v", i, 2*i, got, want)
+		}
+		held = append(held, out["shown"])
+	}
+	// Each step's output keeps the rows written up to that step only.
+	for i, h := range held {
+		for j, x := range f32s(h) {
+			want := 0.0
+			if row := j / 2; row <= i {
+				want = float64(row + 1)
+				if j%2 == 1 {
+					want = -want
+				}
+			}
+			if x != want {
+				t.Errorf("output of step %d changed: element %d is %v, want %v", i, j, x, want)
+			}
+		}
+	}
+}

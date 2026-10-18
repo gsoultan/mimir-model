@@ -79,6 +79,65 @@ scdone:
 	VZEROUPPER
 	RET
 
+// func maxF32AVX2(x *float32, n int) float32
+//
+// Returns the largest of the n floats at x, n a positive multiple of 8,
+// or NaN if one is NaN. VMAXPS returns its second operand when either is
+// NaN, so the NaNs are counted apart, by comparing each vector with
+// itself.
+TEXT ·maxF32AVX2(SB), NOSPLIT, $0-20
+	MOVQ    x+0(FP), SI
+	MOVQ    n+8(FP), CX
+	VMOVUPS (SI), Y0
+	VMOVAPS Y0, Y1
+	VCMPPS  $3, Y0, Y0, Y2 // unordered: NaN
+	VMOVAPS Y2, Y3
+	ADDQ    $32, SI
+	SUBQ    $8, CX
+
+mx16:
+	CMPQ    CX, $16
+	JL      mx8
+	VMOVUPS (SI), Y4
+	VMOVUPS 32(SI), Y5
+	VMAXPS  Y4, Y0, Y0
+	VMAXPS  Y5, Y1, Y1
+	VCMPPS  $3, Y4, Y4, Y4
+	VCMPPS  $3, Y5, Y5, Y5
+	VORPS   Y4, Y2, Y2
+	VORPS   Y5, Y3, Y3
+	ADDQ    $64, SI
+	SUBQ    $16, CX
+	JMP     mx16
+
+mx8:
+	TESTQ   CX, CX
+	JZ      mxdone
+	VMOVUPS (SI), Y4
+	VMAXPS  Y4, Y0, Y0
+	VCMPPS  $3, Y4, Y4, Y4
+	VORPS   Y4, Y2, Y2
+
+mxdone:
+	VMAXPS       Y1, Y0, Y0
+	VORPS        Y3, Y2, Y2
+	VEXTRACTF128 $1, Y0, X1
+	VMAXPS       X1, X0, X0
+	VPERMILPS    $0x4e, X0, X1
+	VMAXPS       X1, X0, X0
+	VPERMILPS    $0xb1, X0, X1
+	VMAXPS       X1, X0, X0
+	VMOVMSKPS    Y2, AX
+	TESTL        AX, AX
+	JZ           mxret
+	MOVL         $0x7fc00000, AX
+	MOVQ         AX, X0
+
+mxret:
+	VMOVSS X0, ret+16(FP)
+	VZEROUPPER
+	RET
+
 // expc holds the constants of expSumF32AVX2, eight copies of each: log2(e),
 // ln(2) in two parts, the polynomial of Cephes' expf, 1, the lower limit
 // of the arguments whose exp is a normal float32, and the exponent bias.

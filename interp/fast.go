@@ -14,6 +14,7 @@
 package interp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"sync"
@@ -515,14 +516,15 @@ func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tenso
 	// the first key a boolean mask allows: with a cache that holds several
 	// sequences, the keys of the sequences before are hidden.
 	var ends, starts []int
+	var dense []bool // the mask allows every key from start to end
 	if mask != nil && mask.DType == mlm.Bool && mst[3] == 1 {
-		ends, starts = make([]int, B*Hq*Tq), make([]int, B*Hq*Tq)
+		ends, starts, dense = make([]int, B*Hq*Tq), make([]int, B*Hq*Tq), make([]bool, B*Hq*Tq)
 		for b := 0; b < B; b++ {
 			for h := 0; h < Hq; h++ {
 				for i := 0; i < Tq; i++ {
 					at := (b*Hq+h)*Tq + i
 					if h > 0 && mst[1] == 0 {
-						ends[at], starts[at] = ends[at-h*Tq], starts[at-h*Tq]
+						ends[at], starts[at], dense[at] = ends[at-h*Tq], starts[at-h*Tq], dense[at-h*Tq]
 						continue
 					}
 					row := mask.Data[b*mst[0]+h*mst[1]+i*mst[2]:][:Tk]
@@ -534,7 +536,7 @@ func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tenso
 					for st < e && row[st] == 0 {
 						st++
 					}
-					ends[at], starts[at] = e, st
+					ends[at], starts[at], dense[at] = e, st, bytes.IndexByte(row[st:e], 0) < 0
 				}
 			}
 		}
@@ -548,15 +550,42 @@ func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tenso
 		}
 		return mask.Data[b*mst[0]+h*mst[1]+i*mst[2]:][:end]
 	}
+	// With f16 keys and values and many query positions (a prompt), the
+	// rows a query can see are converted to float32 once,
+	// instead of by the kernels for every query row. The float32 kernels
+	// give the f16 kernels' results on the converted rows, bit for bit.
+	tk := Tk
+	if kr.f16 != nil && vr.f16 != nil && Tq >= attnConvertRows {
+		if ends != nil {
+			tk = 0
+			for _, e := range ends {
+				tk = max(tk, e)
+			}
+		}
+		kf, vf := attnRows.Get().(*[]float32), attnRows.Get().(*[]float32)
+		defer attnRows.Put(kf)
+		defer attnRows.Put(vf)
+		*kf, *vf = grow(*kf, B*Hkv*tk*D), grow(*vf, B*Hkv*tk*Dv)
+		parallel(B*Hkv, func(lo, hi int) {
+			for kvh := lo; kvh < hi; kvh++ {
+				f16Rows(kr.f16[2*kvh*Tk*D:][:2*tk*D], (*kf)[kvh*tk*D:][:tk*D])
+				f16Rows(vr.f16[2*kvh*Tk*Dv:][:2*tk*Dv], (*vf)[kvh*tk*Dv:][:tk*Dv])
+			}
+		})
+		kr, vr = kvRows{f32: *kf, d: D}, kvRows{f32: *vf, d: Dv}
+	}
 	parallel(B*Hq, func(lo, hi int) {
-		sc := make([]float32, Tk)
-		acc := make([]float32, Dv)
-		kbuf, vbuf := make([]float32, D), make([]float32, Dv)
+		scr := attnScratch.Get().(*[]float32)
+		defer attnScratch.Put(scr)
+		*scr = grow(*scr, Tk+2*Dv+D)
+		buf := *scr
+		sc, acc := buf[:Tk], buf[Tk:Tk+Dv]
+		kbuf, vbuf := buf[Tk+Dv:Tk+Dv+D], buf[Tk+Dv+D:]
 		for bh := lo; bh < hi; bh++ {
 			b, h := bh/Hq, bh%Hq
 			kvh := b*Hkv + h/G
-			kb := kr.sub(kvh*Tk, Tk)
-			vb := vr.sub(kvh*Tk, Tk)
+			kb := kr.sub(kvh*tk, tk)
+			vb := vr.sub(kvh*tk, tk)
 			for i := 0; i < Tq; i++ {
 				qi := qv[(bh*Tq+i)*D:][:D]
 				end, st := Tk, 0
@@ -568,8 +597,10 @@ func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tenso
 				}
 				o := out[(bh*Tq+i)*Dv:][:Dv]
 				if vector && st < end {
+					// A row the mask allows whole is checked once, above,
+					// rather than for every head.
 					var m []byte
-					if mask != nil {
+					if mask != nil && !(dense != nil && dense[bh*Tq+i]) {
 						m = maskRow(b, h, i, end)[st:]
 					}
 					if attendRow(qi, kb.sub(st, end-st), vb.sub(st, end-st), scale, m, sc[:end-st], acc, o) {
@@ -624,6 +655,35 @@ func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tenso
 	return []*ref.Tensor{f32Tensor([]int{B, Hq, Tq, Dv}, out)}, true, nil
 }
 
+// attnScratch keeps the scores and row buffers of attentionFast between
+// calls: a call makes one set per piece of its heads, each as long as the
+// cache, for every layer and token.
+var attnScratch = sync.Pool{New: func() any { return new([]float32) }}
+
+// attnRows keeps attentionFast's float32 copies of f16 keys and values.
+var attnRows = sync.Pool{New: func() any { return new([]float32) }}
+
+// attnConvertRows is the number of query positions from which
+// attentionFast converts f16 keys and values to float32 first. A step of
+// generation, with one, would convert as many rows as it reads.
+var attnConvertRows = 8
+
+// f16Rows converts the f16 values in b to dst.
+func f16Rows(b []byte, dst []float32) {
+	b = b[:2*len(dst)]
+	for i := range dst {
+		dst[i] = mlm.F16ToF32(binary.LittleEndian.Uint16(b[2*i:]))
+	}
+}
+
+// grow returns s with length n, reallocated if it is too short.
+func grow(s []float32, n int) []float32 {
+	if cap(s) < n {
+		return make([]float32, n)
+	}
+	return s[:n]
+}
+
 // attendRow computes one row of attention with the vector kernels: o gets
 // the softmax of scale times the dot products of q with the rows of k,
 // weighting the rows of v. Every key is visible unless mask, when not nil,
@@ -637,12 +697,7 @@ func attendRow(q []float32, k, v kvRows, scale float32, mask []byte, sc, acc, o 
 		}
 	}
 	k.scores(q, scale, sc)
-	mx := float32(math.Inf(-1))
-	for _, s := range sc {
-		if s > mx || s != s {
-			mx = s
-		}
-	}
+	mx := kernels.MaxF32(sc)
 	if math.IsInf(float64(mx), 0) || mx != mx {
 		return false
 	}

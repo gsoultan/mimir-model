@@ -36,6 +36,10 @@ func (r *run) fastPrimitive(op *mlm.Op, in []*ref.Tensor, dt mlm.DType, shape []
 		return r.scatterInPlace(op, in, dt, shape)
 	case mlm.OpCast:
 		return fastCastF16(in, dt, shape)
+	case mlm.OpReshape:
+		return r.reshapeView(op, in, dt, shape)
+	case mlm.OpCmplt, mlm.OpCmpeq, mlm.OpAnd, mlm.OpOr, mlm.OpXor:
+		return fastBoolBinary(op.Opcode, in, dt, shape)
 	}
 	return nil, false
 }
@@ -62,6 +66,160 @@ func fastCastF16(in []*ref.Tensor, dt mlm.DType, shape []int) (*ref.Tensor, bool
 	return t, true
 }
 
+// reshapeViews finds the reshapes of the main graph whose result may share
+// its input's bytes instead of copying them: those whose result is not an
+// output of the graph nor a variable's next value. Nothing a run computes
+// is written to after it is made except a variable's buffer, by an
+// in-place scatter in a later run, so a view that does not outlive its run
+// sees the bytes the copy would hold.
+func reshapeViews(g *mlm.Graph) map[*mlm.Op]bool {
+	out := map[*mlm.Op]bool{}
+	if len(g.Subgraphs) == 0 {
+		return out
+	}
+	main := &g.Subgraphs[0]
+	kept := map[uint32]bool{}
+	for _, id := range main.Outputs {
+		kept[id] = true
+	}
+	for _, u := range g.Updates {
+		kept[u.Value] = true
+	}
+	for oi := range main.Ops {
+		op := &main.Ops[oi]
+		if op.Opcode == mlm.OpReshape && len(op.Outputs) == 1 && !kept[op.Outputs[0]] {
+			out[op] = true
+		}
+	}
+	return out
+}
+
+// reshapeView returns a reshape's input with the output's shape, sharing
+// its bytes, for the reshapes reshapeViews found.
+func (r *run) reshapeView(op *mlm.Op, in []*ref.Tensor, dt mlm.DType, shape []int) (*ref.Tensor, bool) {
+	if !r.p.views[op] || len(in) != 1 || in[0].DType != dt || ref.NumElems(shape) != in[0].NumElems() {
+		return nil, false
+	}
+	a := attr(op, "shape")
+	if a == nil || a.Type != mlm.AttrInts || len(a.Ints) != len(shape) {
+		return nil, false
+	}
+	for i, d := range a.Ints {
+		if d != -1 && d != int64(shape[i]) {
+			return nil, false
+		}
+	}
+	return &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: in[0].Data}, true
+}
+
+// fastBoolBinary computes a comparison of two i32 or i64 tensors, or a
+// logical operation on two bool tensors, broadcast to the output's shape,
+// as a transformer's attention mask needs once per run over every
+// position of its key-value cache. The reference kernel's generic loop
+// takes about 100 ns per element there.
+func fastBoolBinary(opc mlm.Opcode, in []*ref.Tensor, dt mlm.DType, shape []int) (*ref.Tensor, bool) {
+	if len(in) != 2 || dt != mlm.Bool || in[0].DType != in[1].DType || len(shape) == 0 {
+		return nil, false
+	}
+	var load func(t *ref.Tensor, i int) int64
+	switch in[0].DType {
+	case mlm.I64:
+		if opc != mlm.OpCmplt && opc != mlm.OpCmpeq {
+			return nil, false
+		}
+		load = func(t *ref.Tensor, i int) int64 { return int64(binary.LittleEndian.Uint64(t.Data[8*i:])) }
+	case mlm.I32:
+		if opc != mlm.OpCmplt && opc != mlm.OpCmpeq {
+			return nil, false
+		}
+		load = func(t *ref.Tensor, i int) int64 { return int64(int32(binary.LittleEndian.Uint32(t.Data[4*i:]))) }
+	case mlm.Bool:
+		if opc == mlm.OpCmplt {
+			return nil, false
+		}
+		load = func(t *ref.Tensor, i int) int64 {
+			if t.Data[i] != 0 {
+				return 1
+			}
+			return 0
+		}
+	default:
+		return nil, false
+	}
+	sa, oka := broadcastStrides(in[0].Shape, shape)
+	sb, okb := broadcastStrides(in[1].Shape, shape)
+	if !oka || !okb {
+		return nil, false
+	}
+	n := 1
+	for _, d := range shape {
+		n *= d
+	}
+	t := &ref.Tensor{DType: mlm.Bool, Shape: append([]int{}, shape...), Data: make([]byte, n)}
+	last := len(shape) - 1
+	inner, la, lb := shape[last], sa[last], sb[last]
+	if inner == 0 {
+		return t, true
+	}
+	idx := make([]int, last)
+	for o := 0; o < n; o += inner {
+		ia, ib := 0, 0
+		for k, i := range idx {
+			ia += i * sa[k]
+			ib += i * sb[k]
+		}
+		y := t.Data[o : o+inner]
+		for j := range y {
+			x, z := load(in[0], ia+j*la), load(in[1], ib+j*lb)
+			var r bool
+			switch opc {
+			case mlm.OpCmplt:
+				r = x < z
+			case mlm.OpCmpeq:
+				r = x == z
+			case mlm.OpAnd:
+				r = x&z != 0
+			case mlm.OpOr:
+				r = x|z != 0
+			case mlm.OpXor:
+				r = x^z != 0
+			}
+			if r {
+				y[j] = 1
+			}
+		}
+		for k := last - 1; k >= 0; k-- {
+			if idx[k]++; idx[k] < shape[k] {
+				break
+			}
+			idx[k] = 0
+		}
+	}
+	return t, true
+}
+
+// broadcastStrides returns the element strides of a tensor of shape in
+// read at each index of shape out, 0 along the axes it is broadcast on,
+// and false if in does not broadcast to out.
+func broadcastStrides(in, out []int) ([]int, bool) {
+	if len(in) != len(out) {
+		return nil, false
+	}
+	st := make([]int, len(in))
+	s := 1
+	for k := len(in) - 1; k >= 0; k-- {
+		switch in[k] {
+		case out[k]:
+			st[k] = s
+		case 1:
+		default:
+			return nil, false
+		}
+		s *= in[k]
+	}
+	return st, true
+}
+
 // fastAddMul adds or multiplies two f32 tensors of the output's shape.
 // Float32 addition and multiplication are correctly rounded, as the
 // primitives require.
@@ -73,17 +231,26 @@ func fastAddMul(opc mlm.Opcode, in []*ref.Tensor, dt mlm.DType, shape []int) (*r
 	a, b := f32View(in[0]), f32View(in[1])
 	y := make([]float32, len(a))
 	b = b[:len(a)]
-	if opc == mlm.OpAdd {
-		for i := range y {
-			y[i] = a[i] + b[i]
+	// A long prompt's residual additions are a few MB each: split them
+	// between the cores, in pieces of at least addMulPiece elements.
+	parallel((len(y)+addMulPiece-1)/addMulPiece, func(lo, hi int) {
+		lo, hi = lo*addMulPiece, min(len(y), hi*addMulPiece)
+		y, a, b := y[lo:hi], a[lo:hi], b[lo:hi]
+		if opc == mlm.OpAdd {
+			for i := range y {
+				y[i] = a[i] + b[i]
+			}
+		} else {
+			for i := range y {
+				y[i] = a[i] * b[i]
+			}
 		}
-	} else {
-		for i := range y {
-			y[i] = a[i] * b[i]
-		}
-	}
+	})
 	return f32Tensor(shape, y), true
 }
+
+// addMulPiece is the smallest piece of fastAddMul's work given to a core.
+const addMulPiece = 16 << 10
 
 // fastPermute handles permutations of tensors whose elements are whole
 // bytes. One that only moves axes of size 1 leaves the elements in the

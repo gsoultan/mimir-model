@@ -74,7 +74,7 @@ def measure(path, args):
         out, _, rss = run([sys.executable, "-c", LLAMA_CPP, path, str(args.tokens), str(args.threads), prompt])
         r = json.loads(out)
         return "llama.cpp", r["load"], r["prompt_tokens"] / r["prompt_s"], r["tokens"] / r["gen_s"], rss, r["prompt_tokens"]
-    _, err, rss = run([args.mim_run, "-m", path, "-p", prompt, "-n", str(args.tokens)])
+    _, err, rss = run([args.mlm_run, "-m", path, "-p", prompt, "-n", str(args.tokens)])
     m = MIM_RUN.search(err)
     if not m:
         sys.exit(f"cannot parse mlm-run output: {err}")

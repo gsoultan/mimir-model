@@ -483,18 +483,18 @@ checked against the SHA-256 the site lists:
 `Mistral-7B-Instruct-v0.3-Q4_K_M.gguf` (v0.3, with a 32,768-token
 vocabulary, where the random-weight Mistral above is v0.1) and
 `Qwen2.5-7B-Instruct-Q4_K_M.gguf`. Each was imported with
-`mmf-import -graph -ctx 4096` and ran as it was: no fixes to the
+`mlm-import -graph -ctx 4096` and ran as it was: no fixes to the
 importer, the tokenizers or the executor were needed.
 
 ```
-$ mmf-run -m llama3.mmf -p "The capital of France is" -n 32
+$ mlm-run -m llama3.mim -p "The capital of France is" -n 32
 The capital of France is Paris, which is located in the north-central part of the country. Paris is the most populous city in France and is known for its stunning architecture, art museums
 ```
 
 ### Output against llama.cpp
 
 Four prompts (a fact, the start of a Python function, a story, a
-multiplication), up to 48 greedy tokens each, with mmf-run's default
+multiplication), up to 48 greedy tokens each, with mlm-run's default
 `dequant_matmul_a8` file and with llama.cpp on the GGUF file:
 
 | model | same token ids | same top token over the prompt | identical continuations |
@@ -506,40 +506,123 @@ multiplication), up to 48 greedy tokens each, with mmf-run's default
 The tokenizers give llama.cpp's ids for every prompt. Where two
 continuations part, they part at a near-tie. For Mistral and Qwen the
 logits at each of those positions were compared in three runtimes:
-llama.cpp, mmf-run's default file, and the same model imported with
+llama.cpp, mlm-run's default file, and the same model imported with
 `-a8=false`, whose matrix products keep the activations in float32 and
 stand in for the exact result. The top two logits are within 0.25 of
-each other in all three, and llama.cpp and mmf-run are about as far from
+each other in all three, and llama.cpp and mlm-run are about as far from
 the float32 file as each other (largest logit differences of 0.3 to 0.4 for Mistral, 0.7 to 2.1 for
 Qwen, whose logits span about 40). At Mistral's Python prompt, for
 example, llama.cpp's logits for `   ` and ` if` are both 16.08, and
-mmf-run picks `   `, as the float32 file does. Every continuation reads
+mlm-run picks `   `, as the float32 file does. Every continuation reads
 as fluent text, and both runtimes answer 391 to 17 × 23.
 
 ### Speed
 
 Same machine as the 7 to 8B models above (4 cores of an Intel Xeon at
 2.1 GHz with AMX, 15 GiB, Go 1.24, llama-cpp-python 0.3.16 built on the
-machine, mmf-run at commit 9750ad3), `tools/bench_generate.py --tokens 32`,
+machine, mlm-run at commit 9750ad3), `tools/bench_generate.py --tokens 32`,
 median of 3 runs:
 
 | model | prompt | runtime | load | prompt | generation | peak RSS |
 | --- | ---: | --- | ---: | ---: | ---: | ---: |
 | Mistral 7B v0.3 | 19 | llama.cpp | 1109 ms | 30.9 tok/s | 5.1 tok/s | 8667 MiB |
-| Mistral 7B v0.3 | 19 | mmf-run | 8 ms | 35.0 tok/s | 7.4 tok/s | 4630 MiB |
+| Mistral 7B v0.3 | 19 | mlm-run | 8 ms | 35.0 tok/s | 7.4 tok/s | 4630 MiB |
 | Mistral 7B v0.3 | 181 | llama.cpp | 2118 ms | 40.3 tok/s | 5.2 tok/s | 8709 MiB |
-| Mistral 7B v0.3 | 181 | mmf-run | 10 ms | 64.1 tok/s | 7.4 tok/s | 4785 MiB |
+| Mistral 7B v0.3 | 181 | mlm-run | 10 ms | 64.1 tok/s | 7.4 tok/s | 4785 MiB |
 | Llama 3 8B | 19 | llama.cpp | 1571 ms | 30.2 tok/s | 4.9 tok/s | 9537 MiB |
-| Llama 3 8B | 19 | mmf-run | 92 ms | 34.7 tok/s | 6.5 tok/s | 5009 MiB |
+| Llama 3 8B | 19 | mlm-run | 92 ms | 34.7 tok/s | 6.5 tok/s | 5009 MiB |
 | Llama 3 8B | 181 | llama.cpp | 1359 ms | 48.7 tok/s | 4.8 tok/s | 9578 MiB |
-| Llama 3 8B | 181 | mmf-run | 82 ms | 59.2 tok/s | 6.7 tok/s | 5250 MiB |
+| Llama 3 8B | 181 | mlm-run | 82 ms | 59.2 tok/s | 6.7 tok/s | 5250 MiB |
 | Qwen2.5 7B | 18 | llama.cpp | 1184 ms | 29.1 tok/s | 5.2 tok/s | 8917 MiB |
-| Qwen2.5 7B | 18 | mmf-run | 71 ms | 35.5 tok/s | 7.5 tok/s | 4445 MiB |
+| Qwen2.5 7B | 18 | mlm-run | 71 ms | 35.5 tok/s | 7.5 tok/s | 4445 MiB |
 | Qwen2.5 7B | 180 | llama.cpp | 1219 ms | 44.9 tok/s | 5.1 tok/s | 8963 MiB |
-| Qwen2.5 7B | 180 | mmf-run | 74 ms | 73.1 tok/s | 7.6 tok/s | 4704 MiB |
+| Qwen2.5 7B | 180 | mlm-run | 74 ms | 73.1 tok/s | 7.6 tok/s | 4704 MiB |
 
 The weights' values do not change the work, so these match the
 random-weight figures of the previous sections within the machine's
-run-to-run spread: mmf-run generates 1.3 to 1.5 times faster than
+run-to-run spread: mlm-run generates 1.3 to 1.5 times faster than
 llama.cpp, reads prompts 1.1 to 1.6 times faster, and peaks at about
 half its memory.
+
+## Masks, attention and copies
+
+The real TinyLlama 1.1B Chat v1.0 and Mistral 7B Instruct v0.3, Q4_K_M
+from Hugging Face (TheBloke's and bartowski's files), imported with
+`mlm-import -graph -ctx 2048` and `-ctx 4096`. Same machine as the 7 to 8B
+models (4 cores of an Intel Xeon at 2.1 GHz with AMX, 15 GiB, Go 1.24,
+llama-cpp-python 0.3.16 built on the machine). "before" is mlm-run at the
+head of #28, "after" this change; the two ran alternately, in a fresh
+process each, median of 11 runs for TinyLlama's short prompt, 5 for its
+long one and for Mistral's short one, 3 for Mistral's long one. llama.cpp
+ran through `tools/bench_generate.py` with the same prompts, median of 5
+and 3 runs.
+
+| model | prompt | llama.cpp | mlm-run before | mlm-run after |
+| --- | ---: | ---: | ---: | ---: |
+| TinyLlama 1.1B | 19 | 164.5 to 185.1 tok/s | 142.5 tok/s | 185.5 tok/s |
+| TinyLlama 1.1B | 721 | 216.9 tok/s | 241.4 tok/s | 303.8 tok/s |
+| Mistral 7B | 19 | 29.5 tok/s | 34.0 tok/s | 35.8 tok/s |
+| Mistral 7B | 181 | 44.0 tok/s | 59.4 tok/s | 72.7 tok/s |
+
+| model | prompt | llama.cpp | mlm-run before | mlm-run after |
+| --- | ---: | ---: | ---: | ---: |
+| TinyLlama 1.1B, generation | 19 | 28.7 to 29.0 tok/s | 40.0 tok/s | 42.0 tok/s |
+| TinyLlama 1.1B, generation | 721 | 27.9 tok/s | 35.2 tok/s | 38.8 tok/s |
+| Mistral 7B, generation | 19 | 5.1 tok/s | 7.0 tok/s | 7.1 tok/s |
+| Mistral 7B, generation | 181 | 4.8 tok/s | 7.2 tok/s | 7.4 tok/s |
+
+The two llama.cpp figures for TinyLlama's short prompt are two sets of
+runs; the machine is shared, and repeated sets vary by 10 to 15%. Every
+result of mlm-run is the same, bit for bit, before and after. A timing of
+each op of the graph (summed over a run) showed what the matrix products
+had hidden:
+
+- **The attention mask.** The importer builds it once per run with a
+  `cmplt` of the query positions against every cache position and an
+  `xor`, which went through the reference kernel's generic loop, about
+  100 ns an element: 8 ms of TinyLlama's 19-token prompt, 8%, and 0.8 ms of
+  every generated token. A fast path for comparisons of integers and
+  logical operations on booleans, with broadcasting, takes 0.6 ms.
+- **Attention on long prompts**, 20% of the 741-token prompt. The largest
+  score of each row came from a Go loop that cost as much as the scores;
+  it is now `kernels.MaxF32` (AVX2 and NEON). With 8 or more query
+  positions the f16 keys and values a query can see are converted to
+  float32 once per call, instead of by the kernels for each query row of
+  each head; the float32 kernels return the same bits. Rows the mask
+  allows whole are checked once rather than for every head. Attention
+  went from 567 to 438 ms of that prompt.
+- **Copies.** A reshape copied its input; one whose result is used only
+  within the run now shares its bytes (2.7% of a long prompt). One whose
+  result is an output of the graph or a variable's next value still
+  copies, so a tensor a caller holds never changes when the cache is
+  later written in place. The residual additions run on every core, and
+  attention takes its scratch space from a pool instead of allocating a
+  cache-long buffer per piece of heads, per layer and token.
+- **AMX results.** Each activation row's 16 results from a tile product
+  are written as one 64-byte run of the output instead of one float in
+  each of 16 rows.
+
+Mistral's short prompt gains least: 80% of it is the AMX kernels, which
+this change does not touch. Measured in a fresh process, it is also
+sensitive to the page cache: on this 15 GiB machine, a llama.cpp run
+(8.7 GiB peak) evicts part of the 4.4 GB mim file, and the next mlm-run
+reads it back from disk during its first prompt, which is how
+`bench_generate.py`, running both one after the other, can report 31 tok/s
+where runs of mlm-run alone give 35 to 40. With the file evicted
+completely, the 19-token prompt takes 2.0 s, the time to read 4.4 GB from
+this machine's disk; `madvise(MADV_WILLNEED)` at open did not change it.
+
+On arm64, the `bench-arm` run on this change (the same random-weight
+TinyLlama, macOS runner, 3 cores, median of 5 runs at 38 prompt tokens
+and of 3 at 741) gave:
+
+| prompt | runtime | load | prompt | generation | peak RSS |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 38 | llama.cpp | 3383 ms | 66.7 tok/s | 40.4 tok/s | 763 MiB |
+| 38 | mlm-run | 5 ms | 87.6 tok/s | 44.0 tok/s | 672 MiB |
+| 741 | llama.cpp | 2541 ms | 75.2 tok/s | 48.5 tok/s | 817 MiB |
+| 741 | mlm-run | 5 ms | 107.0 tok/s | 49.7 tok/s | 923 MiB |
+
+Generation, 8 to 12% slower than llama.cpp's in the last arm64 table, is
+now 2 to 9% faster, and prompts 1.3 to 1.4 times faster. The runners
+differ from run to run, so compare the rows of one table, not tables.
