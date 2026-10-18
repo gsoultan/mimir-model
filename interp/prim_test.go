@@ -204,3 +204,66 @@ func TestFastCastF16(t *testing.T) {
 		}
 	}
 }
+
+// TestBoolBinary checks the comparison and logical fast paths against the
+// reference kernels, bit for bit, with operands broadcast along every
+// combination of axes.
+func TestBoolBinary(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	out := []int{2, 3, 5}
+	cases := []struct {
+		opc mlm.Opcode
+		dt  mlm.DType
+	}{
+		{mlm.OpCmplt, mlm.I64}, {mlm.OpCmpeq, mlm.I64}, {mlm.OpCmplt, mlm.I32}, {mlm.OpCmpeq, mlm.I32},
+		{mlm.OpAnd, mlm.Bool}, {mlm.OpOr, mlm.Bool}, {mlm.OpXor, mlm.Bool}, {mlm.OpCmpeq, mlm.Bool},
+	}
+	random := func(dt mlm.DType, shape []int) *ref.Tensor {
+		x, err := ref.New(dt, shape)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range x.NumElems() {
+			switch dt {
+			case mlm.Bool:
+				x.SetBits(i, uint64(rng.Intn(2)))
+			default:
+				x.SetBits(i, uint64(int64(rng.Intn(7)-3)))
+			}
+		}
+		return x
+	}
+	for _, c := range cases {
+		for ma := range 8 {
+			for mb := range 8 {
+				if ma&mb != 0 {
+					continue // the output would have size 1 there
+				}
+				sa, sb := append([]int{}, out...), append([]int{}, out...)
+				for k := range out {
+					if ma>>k&1 != 0 {
+						sa[k] = 1
+					}
+					if mb>>k&1 != 0 {
+						sb[k] = 1
+					}
+				}
+				in := []*ref.Tensor{random(c.dt, sa), random(c.dt, sb)}
+				want, err := ref.Eval(c.opc, nil, in, mlm.Bool, out)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, ok := fastBoolBinary(c.opc, in, mlm.Bool, out)
+				if !ok {
+					t.Fatalf("%s %s %v %v: not handled", c.opc, c.dt, sa, sb)
+				}
+				if !bytes.Equal(got.Data, want.Data) || !sameInts(got.Shape, want.Shape) {
+					t.Errorf("%s %s %v %v: %v, want %v", c.opc, c.dt, sa, sb, got.Data, want.Data)
+				}
+			}
+		}
+	}
+	if _, ok := fastBoolBinary(mlm.OpCmplt, []*ref.Tensor{random(mlm.Bool, out), random(mlm.Bool, out)}, mlm.Bool, out); ok {
+		t.Error("cmplt on bool tensors handled")
+	}
+}
