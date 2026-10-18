@@ -7,7 +7,7 @@ implement, faster to load, and able to hold any model, from a CNN to an LLM,
 for inference and for training. Files end in `.mim`. The format was called
 mmf before; readers still accept files written under that name.
 
-> **Status: spec v0.1 draft, with a Go reference reader and writer.** The
+> **Status: spec v0.2 draft, with a Go reference reader and writer.** The
 > design rationale is in [docs/design-notes.md](docs/design-notes.md) and
 > [docs/adr](docs/adr); the normative text is in [spec](spec).
 
@@ -32,6 +32,7 @@ treated as untrusted input throughout.
 | `spec/stdlib.md` | the standard library of named composites |
 | `spec/dtypes.md` | plain and block-quantized element types |
 | `spec/metadata.md` | the typed key-value section |
+| `spec/training.md` | the training section: optimizer state, hyperparameters and progress, for resuming training |
 | `spec/conformance.md` | the primitive conformance corpus and how results are checked |
 | `spec/versioning.md`, `spec/security.md` | compatibility promise and threat model |
 | `*.go` | reference reader and writer, zero dependencies |

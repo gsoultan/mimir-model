@@ -59,6 +59,66 @@ type Expected struct {
 	Runs      []Run      `json:"runs,omitempty"`
 	Notes     string     `json:"notes,omitempty"`
 	Graph     *GraphInfo `json:"graph,omitempty"`
+	Training  *Training  `json:"training,omitempty"`
+}
+
+// Training is the training section a reader must decode (spec/training.md),
+// with hyperparameter values as the hex of their little-endian binary64.
+type Training struct {
+	Optimizer string          `json:"optimizer"`
+	Counters  []TrainCounter  `json:"counters"`
+	Hyper     []TrainHyper    `json:"hyperparameters"`
+	Params    []TrainParam    `json:"parameters"`
+	Extras    []TrainNamedRef `json:"extras"`
+}
+
+// TrainCounter is a progress counter.
+type TrainCounter struct {
+	Name  string `json:"name"`
+	Value uint64 `json:"value"`
+}
+
+// TrainHyper is a hyperparameter of one group.
+type TrainHyper struct {
+	Name  string `json:"name"`
+	Group uint32 `json:"group"`
+	Value string `json:"value"`
+}
+
+// TrainParam is a trainable tensor with its state.
+type TrainParam struct {
+	Tensor string          `json:"tensor"`
+	Group  uint32          `json:"group"`
+	States []TrainNamedRef `json:"states"`
+}
+
+// TrainNamedRef is a state slot or an extra: a name and the tensor that
+// holds it.
+type TrainNamedRef struct {
+	Name   string `json:"name"`
+	Tensor string `json:"tensor"`
+}
+
+func describeTraining(t *mim.Training) *Training {
+	d := &Training{Optimizer: t.Optimizer, Counters: []TrainCounter{}, Hyper: []TrainHyper{},
+		Params: []TrainParam{}, Extras: []TrainNamedRef{}}
+	for _, c := range t.Counters {
+		d.Counters = append(d.Counters, TrainCounter{c.Name, c.Value})
+	}
+	for _, h := range t.Hyper {
+		d.Hyper = append(d.Hyper, TrainHyper{h.Name, h.Group, f64hex(h.Value)})
+	}
+	for _, p := range t.Params {
+		tp := TrainParam{Tensor: p.Tensor, Group: p.Group, States: []TrainNamedRef{}}
+		for _, s := range p.States {
+			tp.States = append(tp.States, TrainNamedRef{s.Slot, s.Tensor})
+		}
+		d.Params = append(d.Params, tp)
+	}
+	for _, x := range t.Extras {
+		d.Extras = append(d.Extras, TrainNamedRef{x.Name, x.Tensor})
+	}
+	return d
 }
 
 // Container is the preamble a reader must report.
@@ -171,6 +231,13 @@ func Describe(f *mim.File) (*Expected, error) {
 			gi.Outputs = append(gi.Outputs, g.Values[id].Name)
 		}
 		e.Graph = gi
+	}
+	t, err := f.Training()
+	if err != nil {
+		return nil, err
+	}
+	if t != nil {
+		e.Training = describeTraining(t)
 	}
 	return e, nil
 }
@@ -294,6 +361,9 @@ func Check(dir string, e *Expected, fast bool) error {
 	}
 	if !reflect.DeepEqual(got.Graph, e.Graph) {
 		return fmt.Errorf("graph %+v, want %+v", got.Graph, e.Graph)
+	}
+	if !reflect.DeepEqual(got.Training, e.Training) {
+		return fmt.Errorf("training %+v, want %+v", got.Training, e.Training)
 	}
 	if len(e.Runs) == 0 {
 		return nil

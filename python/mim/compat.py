@@ -83,6 +83,16 @@ def check(directory, e):
             assert g == w, f"tensor {g}, want {w}"
         md = [{"key": k, "type": typ, "value": _meta_json(typ, v)} for k, (typ, v) in f.metadata().items()]
         assert md == e["metadata"], f"metadata differs: {md} vs {e['metadata']}"
+        tr = f.training()
+        if tr is not None:
+            tr = {"optimizer": tr["optimizer"],
+                  "counters": [{"name": n, "value": v} for n, v in tr["counters"]],
+                  "hyperparameters": [{"name": n, "group": g, "value": struct.pack("<d", v).hex()}
+                                      for n, g, v in tr["hyperparameters"]],
+                  "parameters": [{"tensor": t, "group": g, "states": [{"name": s, "tensor": st} for s, st in states]}
+                                 for t, g, states in tr["parameters"]],
+                  "extras": [{"name": n, "tensor": t} for n, t in tr["extras"]]}
+        assert tr == e.get("training"), f"training {tr}, want {e.get('training')}"
         gr = f.graph()
         if gr is None:
             assert "graph" not in e, "the file has no graph"
