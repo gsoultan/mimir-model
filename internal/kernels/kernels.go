@@ -16,12 +16,13 @@
 // dtype, decoded inside the kernel.
 //
 // On amd64 with AVX2 and FMA the loops are assembly; elsewhere, or when
-// built with the purego tag, they are plain Go. Both decode every weight
-// exactly as mmf.Dequantize does, so the only difference between them is
-// the order in which the products are summed, and both stay within the
-// dequant_matmul.v1 tolerance (spec/stdlib.md section 3.3). Activations
-// are never quantized, except by the 8-bit kernels of q8.go, which also
-// have NEON versions on arm64 and AMX ones on amd64.
+// built with the purego tag, they are plain Go, except that arm64 has
+// NEON versions of the float32 kernels (vec_arm64.s). Both decode every
+// weight exactly as mmf.Dequantize does, so the only difference between
+// them is the order in which the products are summed, and both stay
+// within the dequant_matmul.v1 tolerance (spec/stdlib.md section 3.3).
+// Activations are never quantized, except by the 8-bit kernels of q8.go,
+// which also have NEON versions on arm64 and AMX ones on amd64.
 package kernels
 
 import (
@@ -31,14 +32,14 @@ import (
 )
 
 // SIMD reports whether the assembly kernels are in use.
-func SIMD() bool { return useAVX2 }
+func SIMD() bool { return vecF32 }
 
 // DotF32 returns the dot product of a and b[:len(a)].
 func DotF32(a, b []float32) float32 {
 	b = b[:len(a)]
-	if useAVX2 && len(a) >= 8 {
+	if vecF32 && len(a) >= 8 {
 		n := len(a) &^ 7
-		s := dotF32AVX2(&a[0], &b[0], n)
+		s := dotF32Vec(&a[0], &b[0], n)
 		for i := n; i < len(a); i++ {
 			s += a[i] * b[i]
 		}
@@ -68,9 +69,9 @@ func dotF32Go(a, b []float32) float32 {
 func AxpyF32(alpha float32, x, y []float32) {
 	y = y[:len(x)]
 	i := 0
-	if useAVX2 && len(x) >= 8 {
+	if vecF32 && len(x) >= 8 {
 		i = len(x) &^ 7
-		axpyF32AVX2(alpha, &x[0], &y[0], i)
+		axpyF32Vec(alpha, &x[0], &y[0], i)
 	}
 	for ; i < len(x); i++ {
 		y[i] += alpha * x[i]

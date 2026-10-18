@@ -252,9 +252,9 @@ attention, SwiGLU and embedding lookup) and for `conv2d.v1`. Each fast path is t
 its canonical body. The matrix products and attention use AVX2 kernels on
 amd64 (`internal/kernels`), decoding Q4_K, Q6_K, Q8_0, F16 and BF16 weights
 inside the dot product, with plain Go elsewhere and under the `purego`
-build tag. The 8-bit products of `dequant_matmul_a8` also have NEON kernels
-on arm64 and, for the prompt, AMX tile kernels on Intel CPUs that have
-them. On a 4-core Xeon a 1.1B Q4_K_M model generates about 37 tokens per
+build tag. On arm64, attention, SwiGLU and the 8-bit products of
+`dequant_matmul_a8` have NEON kernels, and the prompt's 8-bit products
+have AMX tile kernels on Intel CPUs that have them. On a 4-core Xeon a 1.1B Q4_K_M model generates about 37 tokens per
 second against llama.cpp's 30, and reads a 38-token prompt at 179 against
 158; 7 to 8B models generate 1.4 to 1.6 times faster than llama.cpp with
 half its memory (see [docs/benchmarks.md](docs/benchmarks.md)).

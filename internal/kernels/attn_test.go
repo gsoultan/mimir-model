@@ -195,3 +195,41 @@ func TestSiluMulF32(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkAttention times one query of one head against 1024 cached keys
+// and values in f16, head size 64: scores, softmax, weighted sum.
+func BenchmarkAttention(b *testing.B) {
+	rng := rand.New(rand.NewSource(5))
+	const d, n = 64, 1024
+	k, v := randomRows(rng, mmf.F16, n, d), randomRows(rng, mmf.F16, n, d)
+	q, sc, acc := make([]float32, d), make([]float32, n), make([]float32, d)
+	for i := range q {
+		q[i] = float32(rng.NormFloat64())
+	}
+	b.SetBytes(4 * n * d)
+	for i := 0; i < b.N; i++ {
+		ScoresF16(q, k, 0.125, sc)
+		var mx float32
+		for _, s := range sc {
+			mx = max(mx, s)
+		}
+		ExpSumF32(sc, mx)
+		clear(acc)
+		WeightedSumF16(sc, v, acc)
+	}
+}
+
+// BenchmarkSiluMul times SwiGLU's gate over the 5632 rows of TinyLlama's
+// feed-forward layer.
+func BenchmarkSiluMul(b *testing.B) {
+	rng := rand.New(rand.NewSource(6))
+	const n = 5632
+	a, g, out := make([]float32, n), make([]float32, n), make([]float32, n)
+	for i := range a {
+		a[i], g[i] = float32(rng.NormFloat64()), float32(rng.NormFloat64())
+	}
+	b.SetBytes(4 * n)
+	for i := 0; i < b.N; i++ {
+		SiluMulF32(a, g, out)
+	}
+}
