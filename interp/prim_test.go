@@ -18,8 +18,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // TestScatterInPlace runs a cache update with and without the primitive

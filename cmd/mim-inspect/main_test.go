@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 func TestInspectRuns(t *testing.T) {

@@ -16,8 +16,8 @@ package interp
 import (
 	"fmt"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // compositeFunc evaluates a standard-library composite. attrs excludes name

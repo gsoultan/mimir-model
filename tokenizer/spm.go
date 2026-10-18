@@ -28,7 +28,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // Token types of tokenizer.ggml.token_type.

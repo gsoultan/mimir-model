@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 func copyFixture(t *testing.T, dir, name string) string {

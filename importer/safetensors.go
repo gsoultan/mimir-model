@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 // maxSafetensorsHeader is the header size limit of the reference

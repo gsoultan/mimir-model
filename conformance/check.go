@@ -19,8 +19,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/ref"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/ref"
 )
 
 // maxReported is how many mismatching elements a failure lists.

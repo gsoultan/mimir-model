@@ -24,7 +24,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 func main() {

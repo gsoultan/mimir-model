@@ -38,10 +38,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mim"
-	"github.com/gsoultan/mim/interp"
-	"github.com/gsoultan/mim/ref"
-	"github.com/gsoultan/mim/tokenizer"
+	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/interp"
+	"github.com/gsoultan/mimir-model/ref"
+	"github.com/gsoultan/mimir-model/tokenizer"
 )
 
 func main() {

@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mim"
+	mim "github.com/gsoultan/mimir-model"
 )
 
 type expTensor struct {
