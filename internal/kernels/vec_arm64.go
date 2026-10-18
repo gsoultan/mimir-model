@@ -31,6 +31,9 @@ func axpyF32NEON(alpha float32, x, y *float32, n int)
 func scoresF32NEON(q, k *float32, d, n int, scale float32, out *float32)
 
 //go:noescape
+func maxF32NEON(x *float32, n int) float32
+
+//go:noescape
 func expSumF32NEON(x *float32, n int, m float32) float32
 
 //go:noescape
@@ -51,6 +54,7 @@ func axpyF32Vec(alpha float32, x, y *float32, n int) { axpyF32NEON(alpha, x, y, 
 func scoresF32Vec(q, k *float32, d, n int, scale float32, out *float32) {
 	scoresF32NEON(q, k, d, n, scale, out)
 }
+func maxF32Vec(x *float32, n int) float32               { return maxF32NEON(x, n) }
 func expSumF32Vec(x *float32, n int, m float32) float32 { return expSumF32NEON(x, n, m) }
 func siluMulF32Vec(a, b, out *float32, n int)           { siluMulF32NEON(a, b, out, n) }
 func wsumF32Vec(p, v *float32, n, d int, acc *float32)  { wsumF32NEON(p, v, n, d, acc) }

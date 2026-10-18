@@ -26,6 +26,7 @@ func axpyF32Vec(alpha float32, x, y *float32, n int) { axpyF32AVX2(alpha, x, y, 
 func scoresF32Vec(q, k *float32, d, n int, scale float32, out *float32) {
 	scoresF32AVX2(q, k, d, n, scale, out)
 }
+func maxF32Vec(x *float32, n int) float32               { return maxF32AVX2(x, n) }
 func expSumF32Vec(x *float32, n int, m float32) float32 { return expSumF32AVX2(x, n, m) }
 func siluMulF32Vec(a, b, out *float32, n int)           { siluMulF32AVX2(a, b, out, n) }
 func wsumF32Vec(p, v *float32, n, d int, acc *float32)  { wsumF32AVX2(p, v, n, d, acc) }

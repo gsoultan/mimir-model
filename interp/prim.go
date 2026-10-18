@@ -36,6 +36,8 @@ func (r *run) fastPrimitive(op *mlm.Op, in []*ref.Tensor, dt mlm.DType, shape []
 		return r.scatterInPlace(op, in, dt, shape)
 	case mlm.OpCast:
 		return fastCastF16(in, dt, shape)
+	case mlm.OpReshape:
+		return r.reshapeView(op, in, dt, shape)
 	case mlm.OpCmplt, mlm.OpCmpeq, mlm.OpAnd, mlm.OpOr, mlm.OpXor:
 		return fastBoolBinary(op.Opcode, in, dt, shape)
 	}
@@ -62,6 +64,52 @@ func fastCastF16(in []*ref.Tensor, dt mlm.DType, shape []int) (*ref.Tensor, bool
 		}
 	})
 	return t, true
+}
+
+// reshapeViews finds the reshapes of the main graph whose result may share
+// its input's bytes instead of copying them: those whose result is not an
+// output of the graph nor a variable's next value. Nothing a run computes
+// is written to after it is made except a variable's buffer, by an
+// in-place scatter in a later run, so a view that does not outlive its run
+// sees the bytes the copy would hold.
+func reshapeViews(g *mlm.Graph) map[*mlm.Op]bool {
+	out := map[*mlm.Op]bool{}
+	if len(g.Subgraphs) == 0 {
+		return out
+	}
+	main := &g.Subgraphs[0]
+	kept := map[uint32]bool{}
+	for _, id := range main.Outputs {
+		kept[id] = true
+	}
+	for _, u := range g.Updates {
+		kept[u.Value] = true
+	}
+	for oi := range main.Ops {
+		op := &main.Ops[oi]
+		if op.Opcode == mlm.OpReshape && len(op.Outputs) == 1 && !kept[op.Outputs[0]] {
+			out[op] = true
+		}
+	}
+	return out
+}
+
+// reshapeView returns a reshape's input with the output's shape, sharing
+// its bytes, for the reshapes reshapeViews found.
+func (r *run) reshapeView(op *mlm.Op, in []*ref.Tensor, dt mlm.DType, shape []int) (*ref.Tensor, bool) {
+	if !r.p.views[op] || len(in) != 1 || in[0].DType != dt || ref.NumElems(shape) != in[0].NumElems() {
+		return nil, false
+	}
+	a := attr(op, "shape")
+	if a == nil || a.Type != mlm.AttrInts || len(a.Ints) != len(shape) {
+		return nil, false
+	}
+	for i, d := range a.Ints {
+		if d != -1 && d != int64(shape[i]) {
+			return nil, false
+		}
+	}
+	return &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: in[0].Data}, true
 }
 
 // fastBoolBinary computes a comparison of two i32 or i64 tensors, or a

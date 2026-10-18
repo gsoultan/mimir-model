@@ -267,3 +267,59 @@ func TestBoolBinary(t *testing.T) {
 		t.Error("cmplt on bool tensors handled")
 	}
 }
+
+// TestReshapeView checks that a reshape whose result stays inside the run
+// shares its input's bytes, and that one whose result is an output of the
+// graph or a variable's next value copies them, so that nothing the caller
+// holds changes when an in-place scatter later writes the cache.
+func TestReshapeView(t *testing.T) {
+	b := newGB()
+	cache := b.stored("k_cache", mlm.KindVariable, mlm.F32, []uint64{1, 4, 2}, make([]byte, 32))
+	pos := b.input(0, "pos", mlm.I64, 1)
+	kt := b.input(0, "k_t", mlm.F32, 1, 1, 2)
+	knew := b.val("k_new", mlm.F32, mlm.KindIntermediate, 1, 4, 2)
+	flat := b.val("flat", mlm.F32, mlm.KindIntermediate, 8)
+	twice := b.val("twice", mlm.F32, mlm.KindIntermediate, 8)
+	shown := b.val("shown", mlm.F32, mlm.KindIntermediate, 4, 2)
+	shape := func(d ...int64) mlm.Attr { return mlm.Attr{Key: "shape", Type: mlm.AttrInts, Ints: d} }
+	b.op(0, mlm.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.op(0, mlm.OpReshape, []uint32{knew}, []uint32{flat}, shape(8))
+	b.op(0, mlm.OpAdd, []uint32{flat, flat}, []uint32{twice})
+	b.op(0, mlm.OpReshape, []uint32{knew}, []uint32{shown}, shape(4, 2))
+	b.output(0, twice)
+	b.output(0, shown)
+	b.g.Updates = []mlm.Update{{Variable: cache, Value: knew}}
+	p := b.load(t)
+	if len(p.views) != 1 || len(p.inplace) != 1 {
+		t.Fatalf("%d reshapes may share their input and %d scatters run in place, want 1 and 1", len(p.views), len(p.inplace))
+	}
+	p.FastPaths = true
+	s := p.NewSession()
+	var held []*ref.Tensor
+	for i := int64(0); i < 4; i++ {
+		v := float32(i + 1)
+		out, err := s.Run(map[string]*ref.Tensor{"pos": i64t([]int{1}, i), "k_t": f32t([]int{1, 1, 2}, v, -v)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := f32s(out["twice"])[2*i], 2*float64(v); got != want {
+			t.Errorf("step %d: twice[%d] = %v, want %v", i, 2*i, got, want)
+		}
+		held = append(held, out["shown"])
+	}
+	// Each step's output keeps the rows written up to that step only.
+	for i, h := range held {
+		for j, x := range f32s(h) {
+			want := 0.0
+			if row := j / 2; row <= i {
+				want = float64(row + 1)
+				if j%2 == 1 {
+					want = -want
+				}
+			}
+			if x != want {
+				t.Errorf("output of step %d changed: element %d is %v, want %v", i, j, x, want)
+			}
+		}
+	}
+}
