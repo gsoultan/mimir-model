@@ -1,7 +1,7 @@
 """Error codes of spec/container.md section 9."""
 
 
-class MMFError(Exception):
+class MIMError(Exception):
     """A rejected file or graph. `code` is one of the strings of
     spec/container.md section 9, so results can be compared with any other
     reader."""

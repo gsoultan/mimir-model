@@ -20,7 +20,7 @@ def load(root):
     for p in sorted(glob.glob(os.path.join(root, "*", "*.expected.json"))):
         with open(p, encoding="utf-8") as fh:
             e = json.load(fh)
-        if e.get("format") != "mmf-compat" or e.get("version") != 1:
+        if e.get("format") != "mim-compat" or e.get("version") != 1:
             raise ValueError(f"{p}: not a version 1 compatibility file")
         out.append((os.path.dirname(p), e))
     return out

@@ -8,15 +8,15 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mmf import compat, stdlib
-from mmf import dtypes as D
-from mmf.container import File
-from mmf.errors import RunError
-from mmf.executor import Program
-from mmf.prims import Attr
-from mmf.tensor import Tensor
+from mim import compat, stdlib
+from mim import dtypes as D
+from mim.container import File
+from mim.errors import RunError
+from mim.executor import Program
+from mim.prims import Attr
+from mim.tensor import Tensor
 
-GRAPH = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "graph.mmf")
+GRAPH = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "graph.mim")
 
 
 def f32(a):
@@ -32,7 +32,7 @@ class TestSession(unittest.TestCase):
     def setUp(self):
         self.f = File.open(GRAPH)
         self.p = Program.load(self.f)
-        (_, self.e), = [x for x in compat.load(os.path.join(_paths.TESTDATA, "compat")) if x[1]["file"] == "graph.mmf"]
+        (_, self.e), = [x for x in compat.load(os.path.join(_paths.TESTDATA, "compat")) if x[1]["file"] == "graph.mim"]
         self.inputs = {k: compat.tensor_of(v) for k, v in self.e["runs"][0]["inputs"].items()}
 
     def tearDown(self):

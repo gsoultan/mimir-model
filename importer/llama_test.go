@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,7 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 func llamaFixture(t *testing.T) *Source {
@@ -58,7 +58,7 @@ func TestBuildLlama(t *testing.T) {
 
 	// The written file holds the graph, with refs pointing at the right
 	// tensors after AddTo sorts them.
-	w := mmf.NewWriter()
+	w := mim.NewWriter()
 	if err := s.AddTo(w); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestBuildLlama(t *testing.T) {
 	if _, err := w.WriteTo(&buf); err != nil {
 		t.Fatal(err)
 	}
-	f, err := mmf.Parse(buf.Bytes())
+	f, err := mim.Parse(buf.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +77,12 @@ func TestBuildLlama(t *testing.T) {
 	vars := 0
 	for _, v := range g.Values {
 		switch v.Kind {
-		case mmf.KindWeight, mmf.KindConst, mmf.KindVariable:
+		case mim.KindWeight, mim.KindConst, mim.KindVariable:
 			if ti := f.TensorAt(int(v.Ref)); !v.Zero && ti.Name != v.Name {
 				t.Errorf("value %q refers to tensor %q", v.Name, ti.Name)
 			}
 		}
-		if v.Kind == mmf.KindVariable && v.Zero {
+		if v.Kind == mim.KindVariable && v.Zero {
 			vars++
 		}
 	}
@@ -141,7 +141,7 @@ func TestBuildQwen2(t *testing.T) {
 	}
 	biases := 0
 	for _, v := range s.Graph.Values {
-		if v.Kind == mmf.KindWeight && strings.HasSuffix(v.Name, ".bias") {
+		if v.Kind == mim.KindWeight && strings.HasSuffix(v.Name, ".bias") {
 			biases++
 		}
 	}

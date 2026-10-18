@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -28,7 +28,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // Token types of tokenizer.ggml.token_type.
@@ -57,7 +57,7 @@ type SPM struct {
 	maxTextLen int
 }
 
-func mdInt(md mmf.Metadata, key string, def int64) int64 {
+func mdInt(md mim.Metadata, key string, def int64) int64 {
 	switch v := md[key].(type) {
 	case int64:
 		return v
@@ -67,7 +67,7 @@ func mdInt(md mmf.Metadata, key string, def int64) int64 {
 	return def
 }
 
-func mdBool(md mmf.Metadata, key string, def bool) bool {
+func mdBool(md mim.Metadata, key string, def bool) bool {
 	if v, ok := md[key].(bool); ok {
 		return v
 	}
@@ -75,7 +75,7 @@ func mdBool(md mmf.Metadata, key string, def bool) bool {
 }
 
 // FromMetadata builds the tokenizer described by a file's metadata.
-func FromMetadata(md mmf.Metadata) (*SPM, error) {
+func FromMetadata(md mim.Metadata) (*SPM, error) {
 	if m, _ := md["tokenizer.ggml.model"].(string); m != "llama" {
 		return nil, fmt.Errorf("tokenizer model %q: only \"llama\" (SentencePiece) is supported", m)
 	}

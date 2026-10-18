@@ -1,6 +1,6 @@
-# mmf security
+# mim security
 
-Status: draft. This document states the threat model for readers of mmf
+Status: draft. This document states the threat model for readers of mim
 files and the requirements that follow from it. The requirements are
 normative; the incidents in section 5 explain where each rule comes from.
 

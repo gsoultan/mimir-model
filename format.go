@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,12 +11,16 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-package mmf
+package mim
 
 // Layout constants. Every number here is normative; see spec/container.md.
 const (
-	// Magic is the first four bytes of every mmf file.
-	Magic = "MMF\x00"
+	// Magic is the first four bytes of every mim file.
+	Magic = "MIM\x00"
+	// LegacyMagic is the first four bytes of files written before the
+	// format was renamed from mmf to mim. Readers accept it; writers never
+	// write it.
+	LegacyMagic = "MMF\x00"
 	// ByteOrderMark is written as a little-endian u32 at offset 8. A reader
 	// that sees 0x0D0C0B0A is looking at a big-endian file, which v0 forbids.
 	ByteOrderMark uint32 = 0x0A0B0C0D

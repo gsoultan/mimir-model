@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -17,7 +17,7 @@ import (
 	"encoding/binary"
 	"unsafe"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // AMX kernels for activations in blocks of 256. On CPUs with Intel AMX
@@ -36,8 +36,8 @@ const TileRows = 16
 
 // TileQ8 reports whether rows of dt have AMX or VNNI kernels for
 // activations in blocks of 256 (TileDot).
-func TileQ8(dt mmf.DType) bool {
-	return (useAMX || useVNNI) && (dt == mmf.Q4_K || dt == mmf.Q6_K)
+func TileQ8(dt mim.DType) bool {
+	return (useAMX || useVNNI) && (dt == mim.Q4_K || dt == mim.Q6_K)
 }
 
 // TileMinRows is the number of rows of activations from which the tile
@@ -192,7 +192,7 @@ const tileScratch, tileConfig = 12800, 12736
 // the AMX kernels, or the VNNI ones (vnni.go) on CPUs without AMX. It
 // holds scratch space, so each goroutine needs its own.
 type TileDot struct {
-	dt       mmf.DType
+	dt       mim.DType
 	k        int
 	rowBytes int
 	mem      []byte
@@ -205,7 +205,7 @@ type TileDot struct {
 
 // NewTileDot returns a TileDot for rows of k elements of dt, for which
 // TileQ8 must be true.
-func NewTileDot(dt mmf.DType, k int) *TileDot {
+func NewTileDot(dt mim.DType, k int) *TileDot {
 	d := &TileDot{}
 	d.Reset(dt, k)
 	return d
@@ -213,7 +213,7 @@ func NewTileDot(dt mmf.DType, k int) *TileDot {
 
 // Reset makes d a TileDot for rows of k elements of dt, as NewTileDot
 // does, keeping its buffers.
-func (d *TileDot) Reset(dt mmf.DType, k int) {
+func (d *TileDot) Reset(dt mim.DType, k int) {
 	if !TileQ8(dt) || k%256 != 0 {
 		panic("kernels: NewTileDot without a tile kernel")
 	}
@@ -263,7 +263,7 @@ func (d *TileDot) Dot(w []byte, a *TileActs, y []float32, stride int, bias []flo
 	switch {
 	case !useAMX || noAMX:
 		ok = d.vnniDot(w, a, tot, off)
-	case d.dt == mmf.Q4_K:
+	case d.dt == mim.Q4_K:
 		ok = amxQ4K(&args)
 	default:
 		ok = amxQ6K(&args)

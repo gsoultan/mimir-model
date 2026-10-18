@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,16 +11,16 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Command mmf-bench measures how fast model files load and how much memory
-// loading takes, for mmf, GGUF and safetensors files alike.
+// Command mim-bench measures how fast model files load and how much memory
+// loading takes, for mim, GGUF and safetensors files alike.
 //
-//	mmf-bench [-runs 5] [-cold] model.gguf model.safetensors model.mmf ...
+//	mim-bench [-runs 5] [-cold] model.gguf model.safetensors model.mim ...
 //
 // Each run is a fresh child process, so its memory figures start from
-// zero. A run maps the file, parses its header (for mmf: mmf.Open, which
+// zero. A run maps the file, parses its header (for mim: mim.Open, which
 // also validates the index and the tensor table; with a graph, also
 // decodes and resolves it with interp.Load), and then reads every tensor
-// byte, the work a loader must do before the first token. mmf files also
+// byte, the work a loader must do before the first token. mim files also
 // decode their metadata, which the GGUF and safetensors parsers do anyway. The table
 // reports the median of the runs:
 //
@@ -48,9 +48,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/importer"
-	"github.com/gsoultan/mmf/interp"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/importer"
+	"github.com/gsoultan/mim/interp"
 )
 
 func main() {
@@ -59,7 +59,7 @@ func main() {
 	child := flag.Bool("child", false, "internal: measure one load of one file and print it as JSON")
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mmf-bench [-runs 5] [-cold] file...")
+		fmt.Fprintln(os.Stderr, "usage: mim-bench [-runs 5] [-cold] file...")
 		os.Exit(2)
 	}
 	var err error
@@ -72,7 +72,7 @@ func main() {
 		err = run(os.Stdout, flag.Args(), *runs, *cold, spawn)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "mmf-bench:", err)
+		fmt.Fprintln(os.Stderr, "mim-bench:", err)
 		os.Exit(1)
 	}
 }
@@ -144,9 +144,9 @@ func measure(path string, cold bool) (result, error) {
 	var tensors [][]byte
 	var release func() error
 	start := time.Now()
-	if strings.HasSuffix(path, ".mmf") {
-		r.Format = "mmf"
-		f, err := mmf.Open(path)
+	if strings.HasSuffix(path, ".mim") {
+		r.Format = "mim"
+		f, err := mim.Open(path)
 		if err != nil {
 			return result{}, err
 		}
@@ -156,7 +156,7 @@ func measure(path string, cold bool) (result, error) {
 		if _, err := f.Metadata(); err != nil {
 			return result{}, err
 		}
-		if _, ok := f.Section(mmf.SectionGraph); ok {
+		if _, ok := f.Section(mim.SectionGraph); ok {
 			if _, err := interp.Load(f); err != nil {
 				return result{}, err
 			}

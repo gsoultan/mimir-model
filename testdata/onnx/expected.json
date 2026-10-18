@@ -1,6 +1,6 @@
 {
  "model": "tiny-cnn.onnx",
- "mmf": "tiny-cnn.mmf",
+ "mim": "tiny-cnn.mim",
  "producer": "onnxruntime 1.29.0",
  "tolerance": 1e-05,
  "runs": [

@@ -1,4 +1,4 @@
-# mmf conformance corpus v0.1
+# mim conformance corpus v0.1
 
 Status: draft. This document defines the primitive conformance corpus: what
 it tests, how its expected results are produced, the file format, and how a
@@ -47,7 +47,7 @@ memory and fails when the committed files differ; CI runs it.
 Each file is UTF-8 JSON:
 
 ```
-{"format": "mmf-conformance", "version": 1, "op": "add", "opcode": 10,
+{"format": "mim-conformance", "version": 1, "op": "add", "opcode": 10,
  "cases": [ case, ... ]}
 ```
 
@@ -66,7 +66,7 @@ A case is an object with these members:
 A tensor is `{"dtype", "shape", "data"}`: the dtype name of spec/dtypes.md,
 the shape as a list of non-negative integers (`[]` for a scalar), and the
 packed little-endian element bytes as lowercase hex, laid out exactly as in
-an mmf file. Block-dtype inputs use their block layout.
+a mim file. Block-dtype inputs use their block layout.
 
 An attribute value is an object with one member naming its type: `int` (a
 JSON integer), `ints` (a list), `float` (the 8 bytes of a little-endian

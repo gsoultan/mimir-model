@@ -1,6 +1,6 @@
-# mmf primitives v0.1
+# mim primitives v0.1
 
-Status: draft. This document defines the primitive operations of an mmf
+Status: draft. This document defines the primitive operations of a mim
 graph: their inputs, outputs, attributes, shape and dtype rules, numerical
 semantics and required accuracy. The binary encoding of graphs, values,
 attributes and subgraphs is defined in spec/graph.md. Element types are

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -18,7 +18,7 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // AVX-512 VNNI kernels for activations in blocks of 256, for CPUs that
@@ -61,9 +61,9 @@ func (d *TileDot) vnniPrep(w []byte) bool {
 		for r := range TileRows {
 			blk := w[r*d.rowBytes+b*bb:][:bb]
 			at := b*TileRows + r
-			if d.dt == mmf.Q4_K {
-				dv := mmf.F16ToF32(binary.LittleEndian.Uint16(blk[0:]))
-				dmin := mmf.F16ToF32(binary.LittleEndian.Uint16(blk[2:]))
+			if d.dt == mim.Q4_K {
+				dv := mim.F16ToF32(binary.LittleEndian.Uint16(blk[0:]))
+				dmin := mim.F16ToF32(binary.LittleEndian.Uint16(blk[2:]))
 				if !finite(dv) || !finite(dmin) {
 					return false
 				}
@@ -77,7 +77,7 @@ func (d *TileDot) vnniPrep(w []byte) bool {
 				}
 				continue
 			}
-			dv := mmf.F16ToF32(binary.LittleEndian.Uint16(blk[208:]))
+			dv := mim.F16ToF32(binary.LittleEndian.Uint16(blk[208:]))
 			if !finite(dv) {
 				return false
 			}
@@ -112,7 +112,7 @@ func (d *TileDot) vnniDot(w []byte, a *TileActs, tot, off []float32) bool {
 		tot: &tot[0], off: &off[0],
 		sc: &d.sc[0], mp: &d.mp[0], dd: &d.dd[0], scr: &d.scr[0],
 	}
-	if d.dt == mmf.Q4_K {
+	if d.dt == mim.Q4_K {
 		args.xs, args.xsg = (*byte)(unsafe.Pointer(&a.xs[0])), nb*4*TileRows*2*2
 		vnniQ4K(&args)
 	} else {

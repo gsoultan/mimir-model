@@ -1,4 +1,4 @@
-"""Runs an mmf graph: binds symbolic dimensions from the inputs, evaluates
+"""Runs a mim graph: binds symbolic dimensions from the inputs, evaluates
 primitives, `call`, `while` and `if`, and applies variable updates
 atomically after each run (spec/primitives.md sections 6 and 7)."""
 

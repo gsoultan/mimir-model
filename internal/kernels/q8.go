@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -16,7 +16,7 @@ package kernels
 import (
 	"math"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // 8-bit activations, for dequant_matmul_a8.v1 and v2 (spec/stdlib.md
@@ -98,20 +98,20 @@ func (a *Q8) QuantizeBlocks(x []float32, block int) bool {
 
 // FusedQ8 reports whether rows of dt have an 8-bit activation kernel for
 // blocks of 32.
-func FusedQ8(dt mmf.DType) bool {
-	return useAVX2 && hasF16C && (dt == mmf.Q4_K || dt == mmf.Q6_K || dt == mmf.Q8_0)
+func FusedQ8(dt mim.DType) bool {
+	return useAVX2 && hasF16C && (dt == mim.Q4_K || dt == mim.Q6_K || dt == mim.Q8_0)
 }
 
 // FusedQ8Blocks reports whether rows of dt have an 8-bit activation kernel
 // for blocks of block elements, one-row and four-row. Blocks of 256 have
 // kernels for AVX2 on amd64 and for NEON with the dot product
 // instructions on arm64; blocks of 32 only for AVX2.
-func FusedQ8Blocks(dt mmf.DType, block int) bool {
+func FusedQ8Blocks(dt mim.DType, block int) bool {
 	switch block {
 	case 32:
 		return FusedQ8(dt)
 	case 256:
-		return q8K && (dt == mmf.Q4_K || dt == mmf.Q6_K)
+		return q8K && (dt == mim.Q4_K || dt == mim.Q6_K)
 	}
 	return false
 }
@@ -133,19 +133,19 @@ func (r *RowDot) DotQ8(a *Q8) (float32, bool) {
 	}
 	if a.block == 256 {
 		switch r.dt {
-		case mmf.Q4_K:
+		case mim.Q4_K:
 			return dotQ4KQ8K(&r.row[0], &a.q[0], &a.d[0], &a.xs[0], r.k/256)
-		case mmf.Q6_K:
+		case mim.Q6_K:
 			return dotQ6KQ8K(&r.row[0], &a.q[0], &a.d[0], &a.m32[0], r.k/256)
 		}
 		panic("kernels: DotQ8 with blocks of 256 on a dtype without a kernel")
 	}
 	switch r.dt {
-	case mmf.Q4_K:
+	case mim.Q4_K:
 		return dotQ4KQ8AVX2(&r.row[0], &a.q[0], &a.d[0], &a.dbs[0], r.k/256)
-	case mmf.Q6_K:
+	case mim.Q6_K:
 		return dotQ6KQ8AVX2(&r.row[0], &a.q[0], &a.d[0], &a.m32[0], r.k/256)
-	case mmf.Q8_0:
+	case mim.Q8_0:
 		return dotQ8_0Q8AVX2(&r.row[0], &a.q[0], &a.d[0], r.k/32)
 	}
 	panic("kernels: DotQ8 on a dtype without a kernel")
@@ -196,8 +196,8 @@ func (b *Q8Batch) Row(i int) *Q8 { return &b.rows[i] }
 // row by four rows of activations in blocks of 32 at once
 // (RowDot.DotQ8x4). Every dtype FusedQ8Blocks accepts for blocks of 256
 // has one.
-func FusedQ8x4(dt mmf.DType) bool {
-	return useAVX2 && hasF16C && (dt == mmf.Q4_K || dt == mmf.Q6_K)
+func FusedQ8x4(dt mim.DType) bool {
+	return useAVX2 && hasF16C && (dt == mim.Q4_K || dt == mim.Q6_K)
 }
 
 // DotQ8x4 sets out to the dot products of the row loaded with LoadQ8 and
@@ -218,17 +218,17 @@ func (r *RowDot) DotQ8x4(b *Q8Batch, i int, out *[4]float32) bool {
 	k := r.k
 	if block == 256 {
 		switch r.dt {
-		case mmf.Q4_K:
+		case mim.Q4_K:
 			return dotQ4KQ8Kx4(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.xs[i*k/32], k, k/32*4, k/256, out)
-		case mmf.Q6_K:
+		case mim.Q6_K:
 			return dotQ6KQ8Kx4(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.m32[i*k/2], k, k/32*4, k/256, out)
 		}
 		panic("kernels: DotQ8x4 with blocks of 256 on a dtype without a kernel")
 	}
 	switch r.dt {
-	case mmf.Q4_K:
+	case mim.Q4_K:
 		return dotQ4KQ8x4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.dbs[i*k/32], k, k/32*4, k/256, out)
-	case mmf.Q6_K:
+	case mim.Q6_K:
 		return dotQ6KQ8x4AVX2(&r.row[0], &b.q[i*k], &b.d[i*k/32], &b.m32[i*k/2], k, k/32*4, k/256, out)
 	}
 	panic("kernels: DotQ8x4 on a dtype without a kernel")

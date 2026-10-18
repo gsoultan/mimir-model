@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,18 +11,18 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-// Command mmf-import converts GGUF, safetensors and ONNX files into mmf.
+// Command mim-import converts GGUF, safetensors and ONNX files into mim.
 //
-//	mmf-import [-o out.mmf] [-bench] [-nohash] input.gguf
-//	mmf-import model.onnx
-//	mmf-import -graph [-ctx 2048] [-a8=false] [-kv f32] [-slots 1] tinyllama.gguf
-//	mmf-import -o model.mmf model-00001-of-00002.safetensors model-00002-of-00002.safetensors
+//	mim-import [-o out.mim] [-bench] [-nohash] input.gguf
+//	mim-import model.onnx
+//	mim-import -graph [-ctx 2048] [-a8=false] [-kv f32] [-slots 1] tinyllama.gguf
+//	mim-import -o model.mim model-00001-of-00002.safetensors model-00002-of-00002.safetensors
 //
 // Several safetensors shards are merged into one file. Tensors are copied
 // byte for byte. By default the output holds weights and metadata only;
 // with -graph, a GGUF file of the llama or qwen2 architecture also gets a
 // runnable forward-pass graph with a key-value cache of -ctx positions
-// (default: the model's context length), which mmf-run can generate text
+// (default: the model's context length), which mim-run can generate text
 // with. Its
 // matrix products with quantized weights are dequant_matmul_a8, which
 // lets a runtime round the activations to 8-bit blocks as llama.cpp does:
@@ -49,12 +49,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/importer"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/importer"
 )
 
 func main() {
-	out := flag.String("o", "", "output file (default: first input with the extension replaced by .mmf)")
+	out := flag.String("o", "", "output file (default: first input with the extension replaced by .mim)")
 	bench := flag.Bool("bench", false, "report sizes and load times of the input and the output")
 	nohash := flag.Bool("nohash", false, "do not write section hashes")
 	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama or qwen2 architecture)")
@@ -64,17 +64,17 @@ func main() {
 	slots := flag.Int("slots", 1, "with -graph, the number of sequences the cache holds at once, for a server running several requests")
 	flag.Parse()
 	if flag.NArg() == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mmf-import [-o out.mmf] [-bench] [-nohash] input...")
+		fmt.Fprintln(os.Stderr, "usage: mim-import [-o out.mim] [-bench] [-nohash] input...")
 		os.Exit(2)
 	}
-	cache, ok := mmf.ParseDType(*kv)
-	if !ok || (cache != mmf.F16 && cache != mmf.F32) {
-		fmt.Fprintf(os.Stderr, "mmf-import: -kv %s: want f16 or f32\n", *kv)
+	cache, ok := mim.ParseDType(*kv)
+	if !ok || (cache != mim.F16 && cache != mim.F32) {
+		fmt.Fprintf(os.Stderr, "mim-import: -kv %s: want f16 or f32\n", *kv)
 		os.Exit(2)
 	}
 	o := options{out: *out, bench: *bench, hash: !*nohash, graph: *graph, ctx: *ctx, a8: *a8, cache: cache, slots: *slots}
 	if err := run(os.Stdout, flag.Args(), o); err != nil {
-		fmt.Fprintln(os.Stderr, "mmf-import:", err)
+		fmt.Fprintln(os.Stderr, "mim-import:", err)
 		os.Exit(1)
 	}
 }
@@ -90,10 +90,10 @@ func parse(path string, b []byte) (*importer.Source, error) {
 func defaultOutput(in string) string {
 	for _, ext := range []string{".gguf", ".safetensors", ".onnx"} {
 		if strings.HasSuffix(in, ext) {
-			return strings.TrimSuffix(in, ext) + ".mmf"
+			return strings.TrimSuffix(in, ext) + ".mim"
 		}
 	}
-	return in + ".mmf"
+	return in + ".mim"
 }
 
 type options struct {
@@ -102,7 +102,7 @@ type options struct {
 	graph       bool
 	ctx         int
 	a8          bool
-	cache       mmf.DType // the key-value cache's dtype
+	cache       mim.DType // the key-value cache's dtype
 	slots       int       // sequences the cache holds
 }
 
@@ -155,7 +155,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 			graphNote += fmt.Sprintf(" in each of %d slots", c.Slots)
 		}
 	}
-	mw := mmf.NewWriter()
+	mw := mim.NewWriter()
 	mw.Hash = hash
 	if err := src.AddTo(mw); err != nil {
 		return err
@@ -175,7 +175,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 	if err != nil {
 		return err
 	}
-	dstLoad, dstSum, err := timeMMF(out)
+	dstLoad, dstSum, err := timeMIM(out)
 	if err != nil {
 		return err
 	}
@@ -184,7 +184,7 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 	}
 	fmt.Fprintf(w, "%-12s %14s %14s\n", "", "size (bytes)", "open+read")
 	fmt.Fprintf(w, "%-12s %14d %14s\n", src.Format, inBytes, srcLoad.Round(time.Microsecond))
-	fmt.Fprintf(w, "%-12s %14d %14s\n", "mmf", st.Size(), dstLoad.Round(time.Microsecond))
+	fmt.Fprintf(w, "%-12s %14d %14s\n", "mim", st.Size(), dstLoad.Round(time.Microsecond))
 	return nil
 }
 
@@ -222,11 +222,11 @@ func timeSource(inputs []string) (time.Duration, byte, error) {
 	return time.Since(start), sum, nil
 }
 
-// timeMMF measures mmf.Open (map and validate) and reading every tensor byte.
-func timeMMF(path string) (time.Duration, byte, error) {
+// timeMIM measures mim.Open (map and validate) and reading every tensor byte.
+func timeMIM(path string) (time.Duration, byte, error) {
 	var sum byte
 	start := time.Now()
-	f, err := mmf.Open(path)
+	f, err := mim.Open(path)
 	if err != nil {
 		return 0, 0, err
 	}

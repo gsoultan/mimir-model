@@ -1,4 +1,4 @@
-# mmf versioning
+# mim versioning
 
 Status: draft. This document defines how the parts of the format are
 versioned, what a reader of one version accepts from another, and how long
@@ -9,7 +9,7 @@ RECOMMENDED, MAY and OPTIONAL are to be interpreted as described in RFC 2119.
 
 ## 1. Three independent versions
 
-An mmf file carries three version numbers. They change independently.
+A mim file carries three version numbers. They change independently.
 
 | part | where stored | current |
 |---|---|---|
@@ -95,7 +95,7 @@ one directory per released version:
 
 ```
 testdata/compat/<container>-<primitives>/
-    *.mmf            files written by the reference writer at that version
+    *.mim            files written by the reference writer at that version
     *.expected.json  the tensors, sections and graph outputs a reader must see
 ```
 
@@ -107,8 +107,8 @@ major version and an ADR.
 
 ### 4.1 Expected files (non-normative)
 
-`<name>.expected.json` describes `<name>.mmf` as UTF-8 JSON with
-`"format": "mmf-compat"` and `"version": 1`. It lists:
+`<name>.expected.json` describes `<name>.mim` as UTF-8 JSON with
+`"format": "mim-compat"` and `"version": 1`. It lists:
 
 - `container`: the preamble's major and minor version and data alignment;
 - `sections`: the section table in table order, each with its kind,

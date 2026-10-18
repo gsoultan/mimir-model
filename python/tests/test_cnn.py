@@ -1,5 +1,5 @@
 """The CNN of testdata/onnx, converted from ONNX by the Go importer, run
-from its mmf file against onnxruntime's outputs for the original model."""
+from its mim file against onnxruntime's outputs for the original model."""
 
 import base64
 import json
@@ -9,10 +9,10 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mmf import dtypes as D
-from mmf.container import File
-from mmf.executor import Program
-from mmf.tensor import Tensor
+from mim import dtypes as D
+from mim.container import File
+from mim.executor import Program
+from mim.tensor import Tensor
 
 DIR = os.path.join(_paths.TESTDATA, "onnx")
 
@@ -25,7 +25,7 @@ class TestCNN(unittest.TestCase):
     def test_matches_onnxruntime(self):
         with open(os.path.join(DIR, "expected.json"), encoding="utf-8") as fh:
             e = json.load(fh)
-        with File.open(os.path.join(DIR, e["mmf"])) as f:
+        with File.open(os.path.join(DIR, e["mim"])) as f:
             f.verify_hashes()
             md = f.metadata()
             self.assertEqual(md["import.source_format"][1], "onnx")

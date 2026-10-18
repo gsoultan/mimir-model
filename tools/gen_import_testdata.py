@@ -7,7 +7,7 @@ Needs NumPy and the `gguf` package (the GGUF writer maintained by llama.cpp).
 tiny.gguf is written by gguf's own GGUFWriter, so the Go parser is checked
 against the reference writer, not against itself. tiny.safetensors is
 written by hand following the safetensors format. expected.json records,
-for each tensor, the dtype, the shape in mmf (outermost-first) order and the
+for each tensor, the dtype, the shape in mim (outermost-first) order and the
 SHA-256 of its bytes, plus the float32 values gguf's dequantizer produces for
 the quantized tensors.
 """

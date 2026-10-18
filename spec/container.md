@@ -1,6 +1,6 @@
-# mmf container v0.1
+# Mimir Model (mim) container v0.1
 
-Status: draft. This document defines the byte layout of an mmf file: the
+Status: draft. This document defines the byte layout of a mim file: the
 preamble, the index, the section table, the tensor index and the weights
 section. It is the normative description of what the reference reader
 (`file.go`) accepts and what the reference writer (`writer.go`) produces.
@@ -50,7 +50,7 @@ shorter than 64 bytes is rejected with `truncated`.
 
 | offset | size | field | value and constraint |
 |---|---|---|---|
-| 0 | 4 | magic | bytes `4D 4D 46 00` (`"MMF\0"`). Otherwise `bad-magic`. |
+| 0 | 4 | magic | bytes `4D 49 4D 00` (`"MIM\0"`). Readers also accept `4D 4D 46 00` (`"MMF\0"`), the magic of files written before the format was renamed from mmf; writers MUST NOT write it. Otherwise `bad-magic`. |
 | 4 | 2 | major | u16 container major version. v0.1 readers accept 0 only; otherwise `unsupported-version`. |
 | 6 | 2 | minor | u16 container minor version. Any value is accepted (spec/versioning.md). The reference writer writes 1. |
 | 8 | 4 | byte order mark | u32 `0x0A0B0C0D`, stored as bytes `0D 0C 0B 0A`. A reader that decodes `0x0D0C0B0A` is looking at a file written big-endian and MUST report `big-endian`. Any other value is `bad-byte-order-mark`. v0 is little-endian only. |
@@ -309,11 +309,11 @@ the bytes in place:
 A model MAY be split across several files. Each part is named
 
 ```
-<name>-<index>-of-<count>.mmf
+<name>-<index>-of-<count>.mim
 ```
 
 with `index` and `count` zero-padded to five decimal digits, `index` from
-`00001` to `count`, for example `model-00001-of-00004.mmf`. Each part carries
+`00001` to `count`, for example `model-00001-of-00004.mim`. Each part carries
 the metadata keys `split.index` and `split.count` with the same values. Each
 part is a complete, valid file on its own: it has its own preamble, index and
 weights section, and a reader validates it exactly as it validates a single
@@ -329,7 +329,7 @@ codes are strings so that two readers in different languages can be compared.
 | code | raised when |
 |---|---|
 | `truncated` | the file is shorter than 64 bytes; the preamble's file length exceeds the actual size; the index is shorter than 16 bytes |
-| `bad-magic` | the first four bytes are not `"MMF\0"` |
+| `bad-magic` | the first four bytes are neither `"MIM\0"` nor the legacy `"MMF\0"` |
 | `big-endian` | the byte order mark decodes as `0x0D0C0B0A` |
 | `bad-byte-order-mark` | the byte order mark is neither `0x0A0B0C0D` nor `0x0D0C0B0A` |
 | `unsupported-version` | the major version is not 0 |

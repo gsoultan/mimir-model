@@ -15,8 +15,8 @@ is the symbolic dimension N.
 
 expected.json holds two input batches (N = 1 and N = 3) and onnxruntime's
 outputs for them, as base64 of little-endian float32. The Go test imports
-the model, checks that the result is byte for byte tiny-cnn.mmf, and runs
-it; the Python test runs tiny-cnn.mmf. Both compare with onnxruntime.
+the model, checks that the result is byte for byte tiny-cnn.mim, and runs
+it; the Python test runs tiny-cnn.mim. Both compare with onnxruntime.
 """
 
 import base64
@@ -97,7 +97,7 @@ def build():
     x = helper.make_tensor_value_info("x", TensorProto.FLOAT, ["N", 3, 16, 16])
     y = helper.make_tensor_value_info("probs", TensorProto.FLOAT, ["N", 10])
     g = helper.make_graph(nodes, "tiny-cnn", [x], [y], inits)
-    m = helper.make_model(g, producer_name="mmf-testdata", opset_imports=[helper.make_opsetid("", 13)])
+    m = helper.make_model(g, producer_name="mim-testdata", opset_imports=[helper.make_opsetid("", 13)])
     m.ir_version = 8
     onnx.checker.check_model(m, full_check=True)
     return m
@@ -124,7 +124,7 @@ def main():
         })
     exp = {
         "model": "tiny-cnn.onnx",
-        "mmf": "tiny-cnn.mmf",
+        "mim": "tiny-cnn.mim",
         "producer": "onnxruntime " + ort.__version__,
         "tolerance": 1e-5,
         "runs": runs,

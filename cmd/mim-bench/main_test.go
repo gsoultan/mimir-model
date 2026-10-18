@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,8 +20,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gsoultan/mmf"
-	"github.com/gsoultan/mmf/importer"
+	"github.com/gsoultan/mim"
+	"github.com/gsoultan/mim/importer"
 )
 
 func TestBench(t *testing.T) {
@@ -41,11 +41,11 @@ func TestBench(t *testing.T) {
 	if _, err := importer.BuildLlama(s, importer.LlamaOptions{Context: 16}); err != nil {
 		t.Fatal(err)
 	}
-	w := mmf.NewWriter()
+	w := mim.NewWriter()
 	if err := s.AddTo(w); err != nil {
 		t.Fatal(err)
 	}
-	out := filepath.Join(dir, "tiny.mmf")
+	out := filepath.Join(dir, "tiny.mim")
 	if err := w.WriteFile(out); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestBench(t *testing.T) {
 	if err := run(&buf, []string{gguf, out}, 3, false, measure); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"| tiny.gguf | gguf |", "| tiny.mmf | mmf + graph |"} {
+	for _, want := range []string{"| tiny.gguf | gguf |", "| tiny.mim | mim + graph |"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("no %q row in:\n%s", want, buf.String())
 		}
@@ -61,7 +61,7 @@ func TestBench(t *testing.T) {
 }
 
 func TestBenchRejects(t *testing.T) {
-	bad := filepath.Join(t.TempDir(), "x.mmf")
+	bad := filepath.Join(t.TempDir(), "x.mim")
 	os.WriteFile(bad, []byte("not a model"), 0o644)
 	if err := run(&bytes.Buffer{}, []string{bad}, 1, false, measure); err == nil {
 		t.Error("accepted a non-model file")

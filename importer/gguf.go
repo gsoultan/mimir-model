@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -19,28 +19,28 @@ import (
 	"math"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
-// ggmlTypes maps ggml tensor types to mmf dtypes. The block types have the
+// ggmlTypes maps ggml tensor types to mim dtypes. The block types have the
 // same byte layout in both formats (spec/dtypes.md section 3).
-var ggmlTypes = map[uint32]mmf.DType{
-	0:  mmf.F32,
-	1:  mmf.F16,
-	2:  mmf.Q4_0,
-	8:  mmf.Q8_0,
-	12: mmf.Q4_K,
-	14: mmf.Q6_K,
-	24: mmf.I8,
-	25: mmf.I16,
-	26: mmf.I32,
-	27: mmf.I64,
-	28: mmf.F64,
-	30: mmf.BF16,
-	39: mmf.MXFP4,
+var ggmlTypes = map[uint32]mim.DType{
+	0:  mim.F32,
+	1:  mim.F16,
+	2:  mim.Q4_0,
+	8:  mim.Q8_0,
+	12: mim.Q4_K,
+	14: mim.Q6_K,
+	24: mim.I8,
+	25: mim.I16,
+	26: mim.I32,
+	27: mim.I64,
+	28: mim.F64,
+	30: mim.BF16,
+	39: mim.MXFP4,
 }
 
-// ggmlNames names the ggml types mmf does not (yet) define, for errors.
+// ggmlNames names the ggml types mim does not (yet) define, for errors.
 var ggmlNames = map[uint32]string{
 	3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 9: "Q8_1", 10: "Q2_K", 11: "Q3_K",
 	13: "Q5_K", 15: "Q8_K", 16: "IQ2_XXS", 17: "IQ2_XS", 18: "IQ3_XXS",
@@ -136,7 +136,7 @@ func (r *ggufReader) str() string {
 	return string(p)
 }
 
-// scalar reads one value of a scalar GGUF type, converted to the mmf
+// scalar reads one value of a scalar GGUF type, converted to the mim
 // metadata type it maps to: int64, uint64, float64, bool or string.
 func (r *ggufReader) scalar(t uint32) any {
 	switch t {
@@ -188,7 +188,7 @@ func scalarSize(t uint32) uint64 {
 	return 0
 }
 
-// value reads a metadata value. ok is false for values mmf metadata cannot
+// value reads a metadata value. ok is false for values mim metadata cannot
 // hold (nested arrays, or u64 arrays beyond the int64 range); they are
 // skipped, not errors.
 func (r *ggufReader) value(t uint32) (v any, ok bool) {
@@ -257,7 +257,7 @@ func (r *ggufReader) value(t uint32) (v any, ok bool) {
 }
 
 // ParseGGUF parses a GGUF v2 or v3 file. The returned tensors alias b.
-// Dimensions are reversed: GGUF lists the innermost dimension first, mmf
+// Dimensions are reversed: GGUF lists the innermost dimension first, mim
 // the outermost.
 func ParseGGUF(b []byte) (*Source, error) {
 	r := &ggufReader{b: b}
@@ -281,7 +281,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 	if nt > maxGGUFCount || nkv > maxGGUFCount || nkv > rest/13 || nt > rest/24 {
 		return nil, fmt.Errorf("gguf: %d tensors and %d keys do not fit in the file", nt, nkv)
 	}
-	md := mmf.Metadata{}
+	md := mim.Metadata{}
 	var skipped []string
 	alignment := uint64(32)
 	for i := uint64(0); i < nkv && r.err == nil; i++ {
@@ -291,7 +291,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 		if r.err != nil {
 			break
 		}
-		if key == "" || len(key) > mmf.MaxMetadataKeyLen {
+		if key == "" || len(key) > mim.MaxMetadataKeyLen {
 			return nil, fmt.Errorf("gguf: invalid metadata key %q", key)
 		}
 		if _, dup := md[key]; dup {
@@ -331,7 +331,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 		if r.err != nil {
 			break
 		}
-		if nd > mmf.MaxRank {
+		if nd > mim.MaxRank {
 			return nil, fmt.Errorf("gguf: tensor %q has %d dimensions", name, nd)
 		}
 		shape := make([]uint64, nd)
@@ -350,11 +350,11 @@ func ParseGGUF(b []byte) (*Source, error) {
 		dt, known := ggmlTypes[gt]
 		if !known {
 			if n, ok := ggmlNames[gt]; ok {
-				return nil, fmt.Errorf("gguf: tensor %q has type %s, which mmf does not define", name, n)
+				return nil, fmt.Errorf("gguf: tensor %q has type %s, which mim does not define", name, n)
 			}
 			return nil, fmt.Errorf("gguf: tensor %q has unknown type %d", name, gt)
 		}
-		size, err := mmf.ByteSize(dt, shape)
+		size, err := mim.ByteSize(dt, shape)
 		if err != nil {
 			return nil, fmt.Errorf("gguf: tensor %q: %w", name, err)
 		}

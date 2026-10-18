@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -19,43 +19,43 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // randomRows returns n rows of k elements of dt with finite weights of
 // moderate size.
-func randomRows(rng *rand.Rand, dt mmf.DType, n, k int) []byte {
+func randomRows(rng *rand.Rand, dt mim.DType, n, k int) []byte {
 	rowBytes := int(uint64(k) / dt.BlockElems() * dt.BlockBytes())
 	b := make([]byte, n*rowBytes)
 	rng.Read(b)
-	f16 := func(p []byte, v float32) { binary.LittleEndian.PutUint16(p, mmf.F32ToF16(v)) }
+	f16 := func(p []byte, v float32) { binary.LittleEndian.PutUint16(p, mim.F32ToF16(v)) }
 	switch dt {
-	case mmf.Q4_K:
+	case mim.Q4_K:
 		for o := 0; o < len(b); o += 144 {
 			f16(b[o:], rng.Float32()*0.01)
 			f16(b[o+2:], rng.Float32()*0.01)
 		}
-	case mmf.Q6_K:
+	case mim.Q6_K:
 		for o := 0; o < len(b); o += 210 {
 			f16(b[o+208:], rng.Float32()*0.01-0.005)
 		}
-	case mmf.Q8_0:
+	case mim.Q8_0:
 		for o := 0; o < len(b); o += 34 {
 			f16(b[o:], rng.Float32()*0.01-0.005)
 		}
-	case mmf.Q4_0:
+	case mim.Q4_0:
 		for o := 0; o < len(b); o += 18 {
 			f16(b[o:], rng.Float32()*0.01-0.005)
 		}
-	case mmf.F32:
+	case mim.F32:
 		for o := 0; o < len(b); o += 4 {
 			binary.LittleEndian.PutUint32(b[o:], math.Float32bits(float32(rng.NormFloat64())))
 		}
-	case mmf.F16:
+	case mim.F16:
 		for o := 0; o < len(b); o += 2 {
 			f16(b[o:], float32(rng.NormFloat64()))
 		}
-	case mmf.BF16:
+	case mim.BF16:
 		for o := 0; o < len(b); o += 2 {
 			binary.LittleEndian.PutUint16(b[o:], uint16(math.Float32bits(float32(rng.NormFloat64()))>>16))
 		}
@@ -87,7 +87,7 @@ func check(t *testing.T, what string, got float32, x, w []float32) {
 	}
 }
 
-var rowDTypes = []mmf.DType{mmf.Q4_K, mmf.Q6_K, mmf.Q8_0, mmf.F16, mmf.BF16, mmf.F32, mmf.Q4_0}
+var rowDTypes = []mim.DType{mim.Q4_K, mim.Q6_K, mim.Q8_0, mim.F16, mim.BF16, mim.F32, mim.Q4_0}
 
 func TestRowDot(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
@@ -101,7 +101,7 @@ func TestRowDot(t *testing.T) {
 			for i := 0; i < n; i++ {
 				x := randomVec(rng, k)
 				row := rows[i*rowBytes : (i+1)*rowBytes]
-				if err := mmf.Dequantize(dt, row, w); err != nil {
+				if err := mim.Dequantize(dt, row, w); err != nil {
 					t.Fatal(err)
 				}
 				for _, uses := range []int{1, DecodeOnce + 1} {
@@ -115,14 +115,14 @@ func TestRowDot(t *testing.T) {
 
 // TestRowDotDecodesExactly multiplies rows by unit vectors, which picks out
 // each decoded weight exactly: the kernels must decode bit for bit as
-// mmf.Dequantize does.
+// mim.Dequantize does.
 func TestRowDotDecodesExactly(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
 	for _, dt := range rowDTypes {
 		const k = 512
 		row := randomRows(rng, dt, 1, k)
 		w := make([]float32, k)
-		if err := mmf.Dequantize(dt, row, w); err != nil {
+		if err := mim.Dequantize(dt, row, w); err != nil {
 			t.Fatal(err)
 		}
 		r := NewRowDot(dt, k)
@@ -174,7 +174,7 @@ func x0(x []float32, i int) float32 {
 
 func BenchmarkRowDot(b *testing.B) {
 	rng := rand.New(rand.NewSource(5))
-	for _, dt := range []mmf.DType{mmf.Q4_K, mmf.Q6_K, mmf.Q8_0, mmf.F16} {
+	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K, mim.Q8_0, mim.F16} {
 		const k = 2048
 		row := randomRows(rng, dt, 1, k)
 		x := randomVec(rng, k)

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -20,7 +20,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/gsoultan/mmf"
+	"github.com/gsoultan/mim"
 )
 
 // ONNX import covers the operators of a convolutional network in float32:
@@ -573,11 +573,11 @@ func ParseONNX(b []byte) (*Source, error) {
 	}
 	c := &onnxConverter{
 		m:      m,
-		src:    &Source{Format: "onnx", Metadata: mmf.Metadata{}},
-		g:      &mmf.Graph{PrimitiveVersion: mmf.CurrentPrimitive, StdlibVersion: mmf.CurrentStdlib, Subgraphs: []mmf.Subgraph{{}}},
+		src:    &Source{Format: "onnx", Metadata: mim.Metadata{}},
+		g:      &mim.Graph{PrimitiveVersion: mim.CurrentPrimitive, StdlibVersion: mim.CurrentStdlib, Subgraphs: []mim.Subgraph{{}}},
 		vals:   map[string]uint32{},
 		consts: map[string]*onnxTensor{},
-		syms:   map[string]mmf.Dim{},
+		syms:   map[string]mim.Dim{},
 		names:  map[string]bool{},
 	}
 	if err := c.convert(); err != nil {
@@ -591,20 +591,20 @@ func ParseONNX(b []byte) (*Source, error) {
 		md["onnx.producer_name"] = m.producer
 	}
 	if m.graph.name != "" {
-		md[mmf.KeyName] = m.graph.name
+		md[mim.KeyName] = m.graph.name
 	}
 	return c.src, nil
 }
 
-type shape = []mmf.Dim
+type shape = []mim.Dim
 
 type onnxConverter struct {
 	m      *onnxModel
 	src    *Source
-	g      *mmf.Graph
+	g      *mim.Graph
 	vals   map[string]uint32      // ONNX value name to graph value
 	consts map[string]*onnxTensor // initializers and Constant outputs
-	syms   map[string]mmf.Dim
+	syms   map[string]mim.Dim
 	names  map[string]bool // tensor names in src
 	node   *onnxNode       // the node being converted, for messages
 }
@@ -635,7 +635,7 @@ func (c *onnxConverter) convert() error {
 		for k, d := range in.dims {
 			switch {
 			case d.known && d.value >= 0:
-				s[k] = mmf.Dim(d.value)
+				s[k] = mim.Dim(d.value)
 			default:
 				name := d.param
 				if name == "" {
@@ -648,7 +648,7 @@ func (c *onnxConverter) convert() error {
 			return fmt.Errorf("onnx: input %q is listed twice", in.name)
 		}
 		id := c.val(in.name, s)
-		c.g.Values[id].Kind = mmf.KindInput
+		c.g.Values[id].Kind = mim.KindInput
 		c.vals[in.name] = id
 		main.Inputs = append(main.Inputs, id)
 	}
@@ -667,10 +667,10 @@ func (c *onnxConverter) convert() error {
 			return fmt.Errorf("onnx: output %q is not computed by any supported node", out.name)
 		}
 		v := &c.g.Values[id]
-		if v.Kind != mmf.KindIntermediate {
+		if v.Kind != mim.KindIntermediate {
 			return fmt.Errorf("onnx: output %q is a graph input or a weight", out.name)
 		}
-		v.Kind = mmf.KindOutput
+		v.Kind = mim.KindOutput
 		main.Outputs = append(main.Outputs, id)
 	}
 	if len(main.Outputs) == 0 {
@@ -679,36 +679,36 @@ func (c *onnxConverter) convert() error {
 	return c.g.Validate()
 }
 
-func (c *onnxConverter) sym(name string) mmf.Dim {
+func (c *onnxConverter) sym(name string) mim.Dim {
 	if d, ok := c.syms[name]; ok {
 		return d
 	}
-	c.g.SymDims = append(c.g.SymDims, mmf.SymDim{Name: name, Bound: -1})
-	d := mmf.Dim(-len(c.g.SymDims))
+	c.g.SymDims = append(c.g.SymDims, mim.SymDim{Name: name, Bound: -1})
+	d := mim.Dim(-len(c.g.SymDims))
 	c.syms[name] = d
 	return d
 }
 
 func (c *onnxConverter) val(name string, s shape) uint32 {
-	c.g.Values = append(c.g.Values, mmf.Value{Name: name, DType: mmf.F32, Shape: append(shape{}, s...)})
+	c.g.Values = append(c.g.Values, mim.Value{Name: name, DType: mim.F32, Shape: append(shape{}, s...)})
 	return uint32(len(c.g.Values) - 1)
 }
 
 func (c *onnxConverter) shapeOf(id uint32) shape { return c.g.Values[id].Shape }
 
-func (c *onnxConverter) op(opc mmf.Opcode, in []uint32, name string, s shape, attrs ...mmf.Attr) uint32 {
+func (c *onnxConverter) op(opc mim.Opcode, in []uint32, name string, s shape, attrs ...mim.Attr) uint32 {
 	out := c.val(name, s)
 	main := &c.g.Subgraphs[0]
-	main.Ops = append(main.Ops, mmf.Op{Opcode: opc, Inputs: in, Outputs: []uint32{out}, Attrs: attrs})
+	main.Ops = append(main.Ops, mim.Op{Opcode: opc, Inputs: in, Outputs: []uint32{out}, Attrs: attrs})
 	return out
 }
 
-func (c *onnxConverter) call(comp string, in []uint32, name string, s shape, attrs ...mmf.Attr) uint32 {
-	a := append([]mmf.Attr{
-		{Key: "name", Type: mmf.AttrString, String: comp},
-		{Key: "version", Type: mmf.AttrInt, Int: 1},
+func (c *onnxConverter) call(comp string, in []uint32, name string, s shape, attrs ...mim.Attr) uint32 {
+	a := append([]mim.Attr{
+		{Key: "name", Type: mim.AttrString, String: comp},
+		{Key: "version", Type: mim.AttrInt, Int: 1},
 	}, attrs...)
-	return c.op(mmf.OpCall, in, name, s, a...)
+	return c.op(mim.OpCall, in, name, s, a...)
 }
 
 // tensorName returns a tensor name derived from want that no stored tensor
@@ -722,8 +722,8 @@ func (c *onnxConverter) tensorName(want string) string {
 }
 
 // stored adds a tensor to the source and a value of the given kind for it.
-func (c *onnxConverter) stored(name string, kind mmf.ValueKind, dims []int64, data []byte) (uint32, error) {
-	if name == "" || len(name) > mmf.MaxNameLength || c.names[name] {
+func (c *onnxConverter) stored(name string, kind mim.ValueKind, dims []int64, data []byte) (uint32, error) {
+	if name == "" || len(name) > mim.MaxNameLength || c.names[name] {
 		return 0, fmt.Errorf("tensor name %q is empty, too long or used twice", name)
 	}
 	us := make([]uint64, len(dims))
@@ -732,9 +732,9 @@ func (c *onnxConverter) stored(name string, kind mmf.ValueKind, dims []int64, da
 		if d < 0 {
 			return 0, fmt.Errorf("tensor %q has dims %v", name, dims)
 		}
-		us[i], s[i] = uint64(d), mmf.Dim(d)
+		us[i], s[i] = uint64(d), mim.Dim(d)
 	}
-	t := Tensor{Name: name, DType: mmf.F32, Shape: us, Data: data}
+	t := Tensor{Name: name, DType: mim.F32, Shape: us, Data: data}
 	if err := checkTensor(t); err != nil {
 		return 0, err
 	}
@@ -748,7 +748,7 @@ func (c *onnxConverter) stored(name string, kind mmf.ValueKind, dims []int64, da
 
 // constF32 adds a constant tensor computed by the importer.
 func (c *onnxConverter) constF32(name string, dims []int64, v []float64) (uint32, error) {
-	return c.stored(c.tensorName(name), mmf.KindConst, dims, f32Data(v))
+	return c.stored(c.tensorName(name), mim.KindConst, dims, f32Data(v))
 }
 
 // input returns the graph value for input i of the node, making an
@@ -772,9 +772,9 @@ func (c *onnxConverter) input(n *onnxNode, i int) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	kind := mmf.KindWeight
+	kind := mim.KindWeight
 	if !c.isInitializer(name) {
-		kind = mmf.KindConst
+		kind = mim.KindConst
 	}
 	id, err := c.stored(name, kind, t.dims, data)
 	if err != nil {
@@ -887,7 +887,7 @@ func ones(r int) shape {
 
 // k emits the body macro k(v): a scalar constant of rank r.
 func (c *onnxConverter) k(v float64, r int) uint32 {
-	return c.op(mmf.OpConst, nil, "", ones(r), mmf.Attr{Key: "value", Type: mmf.AttrFloat, Float: v})
+	return c.op(mim.OpConst, nil, "", ones(r), mim.Attr{Key: "value", Type: mim.AttrFloat, Float: v})
 }
 
 func (c *onnxConverter) reshape(x uint32, name string, s shape) uint32 {
@@ -898,7 +898,7 @@ func (c *onnxConverter) reshape(x uint32, name string, s shape) uint32 {
 			spec[i] = -1
 		}
 	}
-	return c.op(mmf.OpReshape, []uint32{x}, name, s, named("shape", ints(spec...)))
+	return c.op(mim.OpReshape, []uint32{x}, name, s, named("shape", ints(spec...)))
 }
 
 func (c *onnxConverter) shrink(x uint32, ax int, b, e int64) uint32 {
@@ -909,8 +909,8 @@ func (c *onnxConverter) shrink(x uint32, ax int, b, e int64) uint32 {
 		end[i] = -1
 	}
 	begin[ax], end[ax] = b, e
-	s[ax] = mmf.Dim(e - b)
-	return c.op(mmf.OpShrink, []uint32{x}, "", s, named("begin", ints(begin...)), named("end", ints(end...)))
+	s[ax] = mim.Dim(e - b)
+	return c.op(mim.OpShrink, []uint32{x}, "", s, named("begin", ints(begin...)), named("end", ints(end...)))
 }
 
 // takeStrided emits the body macro of spec/stdlib.md section 2.2: elements
@@ -922,17 +922,17 @@ func (c *onnxConverter) takeStrided(x uint32, ax int, start, n, step int64) uint
 		return y
 	}
 	s := c.shapeOf(y)
-	split := append(append(append(shape{}, s[:ax]...), mmf.Dim(n), mmf.Dim(step)), s[ax+1:]...)
+	split := append(append(append(shape{}, s[:ax]...), mim.Dim(n), mim.Dim(step)), s[ax+1:]...)
 	y = c.reshape(y, "", split)
 	y = c.shrink(y, ax+1, 0, 1)
 	out := append(append(shape{}, s[:ax]...), s[ax+1:]...)
-	out = append(out[:ax], append(shape{mmf.Dim(n)}, out[ax:]...)...)
+	out = append(out[:ax], append(shape{mim.Dim(n)}, out[ax:]...)...)
 	return c.reshape(y, "", out)
 }
 
-func (c *onnxConverter) bin(opc mmf.Opcode, a, b uint32, name string) (uint32, error) {
+func (c *onnxConverter) bin(opc mim.Opcode, a, b uint32, name string) (uint32, error) {
 	sa, sb := c.shapeOf(a), c.shapeOf(b)
-	// ONNX broadcasting aligns trailing axes; mmf needs equal ranks.
+	// ONNX broadcasting aligns trailing axes; mim needs equal ranks.
 	for len(sa) < len(sb) {
 		sa = append(shape{1}, sa...)
 	}
@@ -964,16 +964,16 @@ func (c *onnxConverter) bin(opc mmf.Opcode, a, b uint32, name string) (uint32, e
 }
 
 func (c *onnxConverter) neg(x uint32) uint32 {
-	return c.op(mmf.OpNeg, []uint32{x}, "", c.shapeOf(x))
+	return c.op(mim.OpNeg, []uint32{x}, "", c.shapeOf(x))
 }
 
 // minimum emits min(a, b) = neg(max(neg(a), neg(b))).
 func (c *onnxConverter) minimum(a, b uint32, name string) (uint32, error) {
-	m, err := c.bin(mmf.OpMax, c.neg(a), c.neg(b), "")
+	m, err := c.bin(mim.OpMax, c.neg(a), c.neg(b), "")
 	if err != nil {
 		return 0, err
 	}
-	return c.op(mmf.OpNeg, []uint32{m}, name, c.shapeOf(m)), nil
+	return c.op(mim.OpNeg, []uint32{m}, name, c.shapeOf(m)), nil
 }
 
 func normAxis(ax int64, r int) (int, error) {
@@ -1036,7 +1036,7 @@ func (c *onnxConverter) convertNode(n *onnxNode) error {
 		if err != nil {
 			return err
 		}
-		y, err := c.bin(mmf.OpMax, x, c.k(0, len(c.shapeOf(x))), out)
+		y, err := c.bin(mim.OpMax, x, c.k(0, len(c.shapeOf(x))), out)
 		if err != nil {
 			return err
 		}
@@ -1064,15 +1064,15 @@ func (c *onnxConverter) convertNode(n *onnxNode) error {
 		if err != nil {
 			return err
 		}
-		opc := mmf.OpAdd
+		opc := mim.OpAdd
 		switch n.op {
 		case "Sub":
 			b = c.neg(b)
 		case "Mul":
-			opc = mmf.OpMul
+			opc = mim.OpMul
 		case "Div":
-			opc = mmf.OpMul
-			b = c.op(mmf.OpRecip, []uint32{b}, "", c.shapeOf(b))
+			opc = mim.OpMul
+			b = c.op(mim.OpRecip, []uint32{b}, "", c.shapeOf(b))
 		}
 		y, err := c.bin(opc, a, b, out)
 		if err != nil {
@@ -1116,9 +1116,9 @@ func (c *onnxConverter) convertNode(n *onnxNode) error {
 		if mode == "add" {
 			name = out + ".sum"
 		}
-		y := c.op(mmf.OpReduce, []uint32{x}, name, rs, named("mode", mmf.Attr{Type: mmf.AttrString, String: mode}), named("axes", ints(axes...)))
+		y := c.op(mim.OpReduce, []uint32{x}, name, rs, named("mode", mim.Attr{Type: mim.AttrString, String: mode}), named("axes", ints(axes...)))
 		if mode == "add" {
-			y = c.op(mmf.OpMul, []uint32{y, c.k(1/count, len(rs))}, out, rs)
+			y = c.op(mim.OpMul, []uint32{y, c.k(1/count, len(rs))}, out, rs)
 		}
 		return c.output(n, y)
 	case "Gemm":
@@ -1156,7 +1156,7 @@ func (c *onnxConverter) convertNode(n *onnxNode) error {
 			seen[p] = true
 			ys[i] = s[p]
 		}
-		return c.output(n, c.op(mmf.OpPermute, []uint32{x}, out, ys, named("perm", ints(perm...))))
+		return c.output(n, c.op(mim.OpPermute, []uint32{x}, out, ys, named("perm", ints(perm...))))
 	case "Concat":
 		return c.concat(n, out)
 	case "Softmax":
@@ -1181,7 +1181,7 @@ func (c *onnxConverter) convertNode(n *onnxNode) error {
 			// softmax over the last axis only when axis is the last one.
 			return fmt.Errorf("before opset 13, Softmax is supported only over the last axis")
 		}
-		return c.output(n, c.call("softmax", []uint32{x}, out, c.shapeOf(x), named("axis", mmf.Attr{Type: mmf.AttrInt, Int: int64(ax)})))
+		return c.output(n, c.call("softmax", []uint32{x}, out, c.shapeOf(x), named("axis", mim.Attr{Type: mim.AttrInt, Int: int64(ax)})))
 	}
 	return fmt.Errorf("operator %s is not supported", n.op)
 }
@@ -1236,7 +1236,7 @@ func (c *onnxConverter) clip(n *onnxNode, out string) error {
 		if !math.IsInf(hi, 1) {
 			name = out + ".lo"
 		}
-		if y, err = c.bin(mmf.OpMax, y, c.k(lo, r), name); err != nil {
+		if y, err = c.bin(mim.OpMax, y, c.k(lo, r), name); err != nil {
 			return err
 		}
 	}
@@ -1357,15 +1357,15 @@ func (c *onnxConverter) conv(n *onnxNode, out string) error {
 		if err != nil {
 			return err
 		}
-		if bs := c.shapeOf(b); len(bs) != 1 || bs[0] != mmf.Dim(wl[0]) {
+		if bs := c.shapeOf(b); len(bs) != 1 || bs[0] != mim.Dim(wl[0]) {
 			return fmt.Errorf("bias %v for %d output channels", bs, wl[0])
 		}
 		in = append(in, b)
 	}
-	ys := shape{xs[0], mmf.Dim(wl[0]), mmf.Dim(p.ho), mmf.Dim(p.wo)}
+	ys := shape{xs[0], mim.Dim(wl[0]), mim.Dim(p.ho), mim.Dim(p.wo)}
 	return c.output(n, c.call("conv2d", in, out, ys,
 		named("strides", ints(p.sh, p.sw)), named("dilations", ints(p.dh, p.dw)),
-		named("pads", ints(p.top, p.bottom, p.left, p.right)), named("groups", mmf.Attr{Type: mmf.AttrInt, Int: g})))
+		named("pads", ints(p.top, p.bottom, p.left, p.right)), named("groups", mim.Attr{Type: mim.AttrInt, Int: g})))
 }
 
 func (c *onnxConverter) batchNorm(n *onnxNode, out string) error {
@@ -1425,11 +1425,11 @@ func (c *onnxConverter) batchNorm(n *onnxNode, out string) error {
 	if err != nil {
 		return err
 	}
-	y, err := c.bin(mmf.OpMul, x, av, out+".scaled")
+	y, err := c.bin(mim.OpMul, x, av, out+".scaled")
 	if err != nil {
 		return err
 	}
-	if y, err = c.bin(mmf.OpAdd, y, bv, out); err != nil {
+	if y, err = c.bin(mim.OpAdd, y, bv, out); err != nil {
 		return err
 	}
 	return c.output(n, y)
@@ -1490,11 +1490,11 @@ func (c *onnxConverter) pool(n *onnxNode, out string) error {
 	padded := x
 	hp, wp := sp[0]+p.top+p.bottom+p.sh-1, sp[1]+p.left+p.right+p.sw-1
 	if hp != sp[0] || wp != sp[1] {
-		padded = c.op(mmf.OpPad, []uint32{x}, out+".padded", shape{xs[0], xs[1], mmf.Dim(hp), mmf.Dim(wp)},
+		padded = c.op(mim.OpPad, []uint32{x}, out+".padded", shape{xs[0], xs[1], mim.Dim(hp), mim.Dim(wp)},
 			named("pads", ints(0, 0, 0, 0, p.top, p.bottom+p.sh-1, p.left, p.right+p.sw-1)),
-			mmf.Attr{Key: "value", Type: mmf.AttrFloat, Float: padValue})
+			mim.Attr{Key: "value", Type: mim.AttrFloat, Float: padValue})
 	}
-	ys := shape{xs[0], xs[1], mmf.Dim(p.ho), mmf.Dim(p.wo)}
+	ys := shape{xs[0], xs[1], mim.Dim(p.ho), mim.Dim(p.wo)}
 	var acc uint32
 	first := true
 	for i := int64(0); i < p.kh; i++ {
@@ -1505,9 +1505,9 @@ func (c *onnxConverter) pool(n *onnxNode, out string) error {
 				acc, first = v, false
 				continue
 			}
-			opc := mmf.OpAdd
+			opc := mim.OpAdd
 			if isMax {
-				opc = mmf.OpMax
+				opc = mim.OpMax
 			}
 			acc = c.op(opc, []uint32{acc, v}, "", ys)
 		}
@@ -1520,7 +1520,7 @@ func (c *onnxConverter) pool(n *onnxNode, out string) error {
 	area := float64(p.kh * p.kw)
 	padded0 := p.top+p.bottom+p.left+p.right > 0
 	if c.attrInt(n, "count_include_pad", 0) != 0 || !padded0 {
-		return c.output(n, c.op(mmf.OpMul, []uint32{acc, c.k(1/area, 4)}, out, ys))
+		return c.output(n, c.op(mim.OpMul, []uint32{acc, c.k(1/area, 4)}, out, ys))
 	}
 	inv := make([]float64, p.ho*p.wo)
 	for oy := int64(0); oy < p.ho; oy++ {
@@ -1548,7 +1548,7 @@ func (c *onnxConverter) pool(n *onnxNode, out string) error {
 	if err != nil {
 		return err
 	}
-	return c.output(n, c.op(mmf.OpMul, []uint32{acc, iv}, out, ys))
+	return c.output(n, c.op(mim.OpMul, []uint32{acc, iv}, out, ys))
 }
 
 func (c *onnxConverter) gemm(n *onnxNode, out string) error {
@@ -1565,7 +1565,7 @@ func (c *onnxConverter) gemm(n *onnxNode, out string) error {
 	}
 	if c.attrInt(n, "transA", 0) != 0 {
 		as = shape{as[1], as[0]}
-		a = c.op(mmf.OpPermute, []uint32{a}, "", as, named("perm", ints(1, 0)))
+		a = c.op(mim.OpPermute, []uint32{a}, "", as, named("perm", ints(1, 0)))
 	}
 	// linear.v1 takes the weight as [N, K], which is B with transB = 1.
 	var w uint32
@@ -1590,7 +1590,7 @@ func (c *onnxConverter) gemm(n *onnxNode, out string) error {
 					tr[j*K+i] = v[i*N+j]
 				}
 			}
-			if w, err = c.stored(c.tensorName(n.inputs[1]+".T"), mmf.KindWeight, []int64{N, K}, f32Data(tr)); err != nil {
+			if w, err = c.stored(c.tensorName(n.inputs[1]+".T"), mim.KindWeight, []int64{N, K}, f32Data(tr)); err != nil {
 				return err
 			}
 		} else {
@@ -1601,7 +1601,7 @@ func (c *onnxConverter) gemm(n *onnxNode, out string) error {
 			if len(bs) != 2 {
 				return fmt.Errorf("input B must be rank 2, got %v", bs)
 			}
-			w = c.op(mmf.OpPermute, []uint32{w}, "", shape{bs[1], bs[0]}, named("perm", ints(1, 0)))
+			w = c.op(mim.OpPermute, []uint32{w}, "", shape{bs[1], bs[0]}, named("perm", ints(1, 0)))
 		}
 	}
 	ws := c.shapeOf(w)
@@ -1635,16 +1635,16 @@ func (c *onnxConverter) gemm(n *onnxNode, out string) error {
 		if hasC {
 			nm = out + ".alpha"
 		}
-		y = c.op(mmf.OpMul, []uint32{y, c.k(alpha, 2)}, nm, ys)
+		y = c.op(mim.OpMul, []uint32{y, c.k(alpha, 2)}, nm, ys)
 	}
 	if hasC {
 		if beta != 1 {
-			cExtra, err = c.bin(mmf.OpMul, cExtra, c.k(beta, len(c.shapeOf(cExtra))), "")
+			cExtra, err = c.bin(mim.OpMul, cExtra, c.k(beta, len(c.shapeOf(cExtra))), "")
 			if err != nil {
 				return err
 			}
 		}
-		if y, err = c.bin(mmf.OpAdd, y, cExtra, out); err != nil {
+		if y, err = c.bin(mim.OpAdd, y, cExtra, out); err != nil {
 			return err
 		}
 	}
@@ -1700,9 +1700,9 @@ func (c *onnxConverter) matmul(n *onnxNode, out string) error {
 
 // product multiplies the dims of s. A group that holds one symbolic
 // dimension and otherwise ones is that dimension.
-func product(s shape) (mmf.Dim, error) {
-	p := mmf.Dim(1)
-	var sym []mmf.Dim
+func product(s shape) (mim.Dim, error) {
+	p := mim.Dim(1)
+	var sym []mim.Dim
 	for _, d := range s {
 		if d.Symbolic() {
 			sym = append(sym, d)
@@ -1790,14 +1790,14 @@ func (c *onnxConverter) reshapeNode(n *onnxNode, out string) error {
 			}
 			infer = i
 		case d > 0:
-			ys[i] = mmf.Dim(d)
+			ys[i] = mim.Dim(d)
 		default:
 			return fmt.Errorf("shape %v", spec)
 		}
 	}
 	// Elements on both sides: literal products and symbolic dimensions.
 	inLit, outLit := int64(1), int64(1)
-	inSym := map[mmf.Dim]int{}
+	inSym := map[mim.Dim]int{}
 	for _, d := range s {
 		if d.Symbolic() {
 			inSym[d]++
@@ -1815,7 +1815,7 @@ func (c *onnxConverter) reshapeNode(n *onnxNode, out string) error {
 			outLit *= int64(d)
 		}
 	}
-	var rest []mmf.Dim
+	var rest []mim.Dim
 	for d, k := range inSym {
 		if k < 0 {
 			return fmt.Errorf("shape %v uses a symbolic dimension of %v more often than the input", spec, s)
@@ -1827,7 +1827,7 @@ func (c *onnxConverter) reshapeNode(n *onnxNode, out string) error {
 	if infer >= 0 {
 		switch {
 		case len(rest) == 0 && outLit != 0 && inLit%outLit == 0:
-			ys[infer] = mmf.Dim(inLit / outLit)
+			ys[infer] = mim.Dim(inLit / outLit)
 		case len(rest) == 1 && inLit == outLit:
 			ys[infer] = rest[0]
 		default:
@@ -1876,7 +1876,7 @@ func (c *onnxConverter) concat(n *onnxNode, out string) error {
 		total += int64(s[ax])
 	}
 	ys := append(shape{}, s0...)
-	ys[ax] = mmf.Dim(total)
+	ys[ax] = mim.Dim(total)
 	// The concat macro of spec/stdlib.md: each input padded with zeros to
 	// the full length at its offset, then summed.
 	var acc uint32
@@ -1887,7 +1887,7 @@ func (c *onnxConverter) concat(n *onnxNode, out string) error {
 		pads[2*ax], pads[2*ax+1] = off, total-off-l
 		v := x
 		if pads[2*ax] != 0 || pads[2*ax+1] != 0 {
-			v = c.op(mmf.OpPad, []uint32{x}, "", ys, named("pads", ints(pads...)))
+			v = c.op(mim.OpPad, []uint32{x}, "", ys, named("pads", ints(pads...)))
 		}
 		off += l
 		if i == 0 {
@@ -1898,7 +1898,7 @@ func (c *onnxConverter) concat(n *onnxNode, out string) error {
 		if i == len(xs)-1 {
 			name = out
 		}
-		acc = c.op(mmf.OpAdd, []uint32{acc, v}, name, ys)
+		acc = c.op(mim.OpAdd, []uint32{acc, v}, name, ys)
 	}
 	if len(xs) == 1 {
 		acc = c.reshape(acc, out, ys)

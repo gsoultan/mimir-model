@@ -5,7 +5,7 @@ import struct
 from collections import namedtuple
 
 from . import dtypes as D
-from .errors import MMFError
+from .errors import MIMError
 from .prims import OPCODES, Attr
 
 INTERMEDIATE, INPUT, OUTPUT, WEIGHT, VARIABLE, CONST = range(6)
@@ -63,18 +63,18 @@ class Graph:
 
 
 def _bad(msg):
-    return MMFError("bad-graph", msg)
+    return MIMError("bad-graph", msg)
 
 
 def decode_graph(b):
     b = memoryview(b)
-    if len(b) < 192 or bytes(b[:4]) != b"MMFG":
+    if len(b) < 192 or bytes(b[:4]) not in (b"MIMG", b"MMFG"):
         raise _bad("missing header")
     major, _minor, prim, std = struct.unpack_from("<HHII", b, 4)
     if major != 0:
-        raise MMFError("unsupported-version", f"graph format {major}")
+        raise MIMError("unsupported-version", f"graph format {major}")
     if prim > PRIMITIVE_VERSION or std > STDLIB_VERSION:
-        raise MMFError("unsupported-version", f"primitives v{prim}, stdlib v{std}")
+        raise MIMError("unsupported-version", f"primitives v{prim}, stdlib v{std}")
     g = Graph()
     g.primitive_version, g.stdlib_version = prim, std
     tabs, counts = [], []
@@ -98,9 +98,9 @@ def decode_graph(b):
         try:
             s = raw.decode("utf-8")
         except UnicodeDecodeError:
-            raise MMFError("bad-name", f"string {i}") from None
+            raise MIMError("bad-name", f"string {i}") from None
         if len(raw) > 4096:
-            raise MMFError("bad-name", f"string {i}")
+            raise MIMError("bad-name", f"string {i}")
         strings.append(s)
 
     def string(i, what):
@@ -126,7 +126,7 @@ def decode_graph(b):
         name_i, reserved, bound = struct.unpack_from("<IIq", symtab, 16 * i)
         name = string(name_i, "symdim")
         if reserved:
-            raise MMFError("reserved-non-zero", f"symdim {i}")
+            raise MIMError("reserved-non-zero", f"symdim {i}")
         if bound < -1:
             raise _bad(f"symdim {name!r} bound {bound}")
         g.symdims.append(SymDim(name, bound))
@@ -140,7 +140,7 @@ def decode_graph(b):
             raise _bad(f"value {i} header")
         dt = D.BY_ID.get(dt_id)
         if dt is None:
-            raise MMFError("bad-dtype", f"value {i} dtype {dt_id}")
+            raise MIMError("bad-dtype", f"value {i} dtype {dt_id}")
         if kind > CONST:
             raise _bad(f"value {i} kind {kind}")
         shape = dims_at(shape_off, rank, "value")
@@ -166,7 +166,7 @@ def decode_graph(b):
             oe = 32 * oi
             opc, res2, inoff, inn2, outoff, outn, aoff, an, res3 = struct.unpack_from("<HH7I", ops, oe)
             if res2 or res3:
-                raise MMFError("reserved-non-zero", f"op {oi}")
+                raise MIMError("reserved-non-zero", f"op {oi}")
             if opc not in OPCODES:
                 raise _bad(f"op {oi} opcode {opc}")
             op = Op(opc, run_at(inoff, inn2, "op inputs"), run_at(outoff, outn, "op outputs"), {})
@@ -177,7 +177,7 @@ def decode_graph(b):
                 key_i, typ = struct.unpack_from("<IB", attrs, ae)
                 key = string(key_i, "attr")
                 if any(attrs[ae + 5 : ae + 8]) or struct.unpack_from("<I", attrs, ae + 12)[0]:
-                    raise MMFError("reserved-non-zero", f"attr {key!r}")
+                    raise MIMError("reserved-non-zero", f"attr {key!r}")
                 cnt = struct.unpack_from("<I", attrs, ae + 8)[0]
                 payload = struct.unpack_from("<Q", attrs, ae + 16)[0]
                 if typ != 2 and cnt:
@@ -194,7 +194,7 @@ def decode_graph(b):
                     a = Attr("string", string(payload, "attr " + key))
                 elif typ == 5:
                     if payload not in D.BY_ID:
-                        raise MMFError("bad-dtype", f"attr {key!r}")
+                        raise MIMError("bad-dtype", f"attr {key!r}")
                     a = Attr("dtype", payload)
                 elif typ == 6:
                     if payload >= counts[8] or payload == 0:
@@ -213,7 +213,7 @@ def decode_graph(b):
         name_i, ver, sub, res = struct.unpack_from("<4I", comps, 16 * i)
         name = string(name_i, "composite")
         if res:
-            raise MMFError("reserved-non-zero", f"composite {name!r}")
+            raise MIMError("reserved-non-zero", f"composite {name!r}")
         if sub == 0 or sub >= counts[8]:
             raise _bad(f"composite {name!r} subgraph {sub}")
         g.composites.append(Composite(name, ver, sub))

@@ -1,5 +1,5 @@
-"""The models of testdata/pytorch, exported from PyTorch by mmf.pytorch,
-run from their mmf files against PyTorch's outputs. Needs no PyTorch."""
+"""The models of testdata/pytorch, exported from PyTorch by mim.pytorch,
+run from their mim files against PyTorch's outputs. Needs no PyTorch."""
 
 import base64
 import json
@@ -9,10 +9,10 @@ import unittest
 import numpy as np
 
 import _paths  # noqa: F401
-from mmf import dtypes as D
-from mmf.container import File
-from mmf.executor import Program
-from mmf.tensor import Tensor
+from mim import dtypes as D
+from mim.container import File
+from mim.executor import Program
+from mim.tensor import Tensor
 
 DIR = os.path.join(_paths.TESTDATA, "pytorch")
 
@@ -28,7 +28,7 @@ class TestPyTorchFiles(unittest.TestCase):
             e = json.load(fh)
         self.assertEqual({m["name"] for m in e["models"]}, {"tiny-cnn", "audio", "tiny-gpt", "tiny-llama", "tiny-llama-kv"})
         for m in e["models"]:
-            with self.subTest(model=m["name"]), File.open(os.path.join(DIR, m["mmf"])) as f:
+            with self.subTest(model=m["name"]), File.open(os.path.join(DIR, m["mim"])) as f:
                 f.verify_hashes()
                 self.assertEqual(f.metadata()["export.source_format"], ("string", "pytorch"))
                 s = Program.load(f).session()

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Gembit Soultan Shirazi
 // SPDX-License-Identifier: Apache-2.0
 //
-// This file is part of mmf, created and owned by Gembit Soultan Shirazi.
+// This file is part of mim, created and owned by Gembit Soultan Shirazi.
 // It is licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License in the LICENSE file at the root
@@ -11,7 +11,7 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-package mmf
+package mim
 
 import (
 	"math"
@@ -41,11 +41,12 @@ const (
 )
 
 const (
-	metadataMagic     = "MMFM"
-	metaHeaderSize    = 16
-	metaEntrySize     = 32
-	MaxMetadataKeyLen = 1024
-	MaxMetadataCount  = 1 << 24
+	metadataMagic       = "MIMM"
+	metadataMagicLegacy = "MMFM" // before the rename from mmf
+	metaHeaderSize      = 16
+	metaEntrySize       = 32
+	MaxMetadataKeyLen   = 1024
+	MaxMetadataCount    = 1 << 24
 )
 
 // Encode serializes m. Entries are written sorted by key so a reader can
@@ -147,7 +148,7 @@ func (m Metadata) Encode() ([]byte, error) {
 
 // DecodeMetadata parses and validates a metadata section.
 func DecodeMetadata(b []byte) (Metadata, error) {
-	if len(b) < metaHeaderSize || string(b[:4]) != metadataMagic {
+	if len(b) < metaHeaderSize || string(b[:4]) != metadataMagic && string(b[:4]) != metadataMagicLegacy {
 		return nil, errf(CodeBadMetadata, "missing header")
 	}
 	n := le.Uint32(b[4:])
