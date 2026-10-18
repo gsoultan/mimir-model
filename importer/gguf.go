@@ -68,12 +68,20 @@ const (
 const (
 	maxGGUFCount  = 1 << 24 // tensors or metadata keys
 	maxGGUFString = 1 << 26
+	// Nested arrays are skipped, but each level recurses, so their depth
+	// is bounded.
+	maxGGUFDepth = 8
+	// Metadata values are decoded into Go values that can take several
+	// times their encoded size (eight bytes per one-byte integer), so the
+	// memory they take across the file is bounded.
+	maxGGUFMetadata = 64 << 20
 )
 
 type ggufReader struct {
 	b   []byte
 	off uint64
 	err error
+	mem uint64 // bytes of decoded metadata so far
 }
 
 func (r *ggufReader) fail(format string, args ...any) {
@@ -136,6 +144,17 @@ func (r *ggufReader) str() string {
 	return string(p)
 }
 
+// charge counts n bytes of decoded metadata against maxGGUFMetadata,
+// failing once the total would exceed it.
+func (r *ggufReader) charge(n uint64) bool {
+	if n > maxGGUFMetadata-r.mem {
+		r.fail("metadata needs more than %d bytes of memory", maxGGUFMetadata)
+		return false
+	}
+	r.mem += n
+	return true
+}
+
 // scalar reads one value of a scalar GGUF type, converted to the mim
 // metadata type it maps to: int64, uint64, float64, bool or string.
 func (r *ggufReader) scalar(t uint32) any {
@@ -190,10 +209,18 @@ func scalarSize(t uint32) uint64 {
 
 // value reads a metadata value. ok is false for values mim metadata cannot
 // hold (nested arrays, or u64 arrays beyond the int64 range); they are
-// skipped, not errors.
-func (r *ggufReader) value(t uint32) (v any, ok bool) {
+// skipped, not errors. depth is the number of arrays v is nested in.
+func (r *ggufReader) value(t uint32, depth int) (v any, ok bool) {
 	if t != gArray {
-		return r.scalar(t), true
+		v = r.scalar(t)
+		if s, isStr := v.(string); isStr && !r.charge(uint64(len(s))) {
+			return nil, false
+		}
+		return v, true
+	}
+	if depth >= maxGGUFDepth {
+		r.fail("arrays nested more than %d deep at offset %d", maxGGUFDepth, r.off)
+		return nil, false
 	}
 	et := r.u32()
 	n := r.u64()
@@ -217,24 +244,39 @@ func (r *ggufReader) value(t uint32) (v any, ok bool) {
 	switch et {
 	case gArray:
 		for i := uint64(0); i < n && r.err == nil; i++ {
-			r.value(gArray)
+			r.value(gArray, depth+1)
 		}
 		return nil, false
 	case gString:
+		if !r.charge(16 * n) {
+			return nil, false
+		}
 		s := make([]string, n)
 		for i := range s {
 			s[i] = r.str()
+			if r.err != nil || !r.charge(uint64(len(s[i]))) {
+				return nil, false
+			}
 		}
 		return s, true
 	case gFloat32, gFloat64:
+		if !r.charge(8 * n) {
+			return nil, false
+		}
 		f := make([]float64, n)
 		for i := range f {
 			f[i] = r.scalar(et).(float64)
 		}
 		return f, true
 	case gUint8:
+		if !r.charge(n) {
+			return nil, false
+		}
 		return append([]byte(nil), r.take(n)...), true
 	default: // integers and bools
+		if !r.charge(8 * n) {
+			return nil, false
+		}
 		ok = true
 		ints := make([]int64, n)
 		for i := range ints {
@@ -287,7 +329,7 @@ func ParseGGUF(b []byte) (*Source, error) {
 	for i := uint64(0); i < nkv && r.err == nil; i++ {
 		key := r.str()
 		t := r.u32()
-		v, ok := r.value(t)
+		v, ok := r.value(t, 0)
 		if r.err != nil {
 			break
 		}

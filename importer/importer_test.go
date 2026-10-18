@@ -193,6 +193,13 @@ func (b *ggufBuilder) u32(v uint32) { binary.Write(&b.Buffer, binary.LittleEndia
 func (b *ggufBuilder) u64(v uint64) { binary.Write(&b.Buffer, binary.LittleEndian, v) }
 func (b *ggufBuilder) str(s string) { b.u64(uint64(len(s))); b.WriteString(s) }
 
+// aligned pads the file to the default 32-byte alignment, where the tensor
+// data of a file without tensors starts.
+func (b *ggufBuilder) aligned() []byte {
+	b.Write(make([]byte, (32-b.Len()%32)%32))
+	return b.Bytes()
+}
+
 func header(nt, nkv uint64) *ggufBuilder {
 	b := &ggufBuilder{}
 	b.WriteString("GGUF")
@@ -269,10 +276,48 @@ func TestGGUFHostile(t *testing.T) {
 	}
 	cases["duplicate tensor"] = b.Bytes()
 
+	// Nested arrays recurse once per level; deep nesting once overflowed
+	// the stack.
+	b = header(0, 1)
+	b.str("k")
+	b.u32(gArray)
+	for i := 0; i < 100000; i++ {
+		b.u32(gArray)
+		b.u64(1)
+	}
+	b.u32(gUint8)
+	b.u64(0)
+	cases["deeply nested arrays"] = b.aligned()
+
+	// One-byte integers decode to eight bytes each, so 9 Mi of them exceed
+	// the metadata memory budget.
+	b = header(0, 1)
+	b.str("k")
+	b.u32(gArray)
+	b.u32(gInt8)
+	b.u64(9 << 20)
+	b.Write(make([]byte, 9<<20))
+	cases["metadata over budget"] = b.aligned()
+
 	for name, in := range cases {
 		if _, err := ParseGGUF(in); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// TestGGUFNestedArray checks that a shallow nested array is skipped, not
+// rejected.
+func TestGGUFNestedArray(t *testing.T) {
+	b := header(0, 1)
+	b.str("k")
+	b.u32(gArray)
+	b.u32(gArray)
+	b.u64(1)
+	b.u32(gUint8)
+	b.u64(0)
+	if _, err := ParseGGUF(b.aligned()); err != nil {
+		t.Fatal(err)
 	}
 }
 
