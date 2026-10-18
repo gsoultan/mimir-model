@@ -458,6 +458,30 @@ whdone:
 	WORD $0x6e21dc00 /* fmul v0.4s, v0.4s, v1.4s */; \
 	WORD $0x4e251c00 // and v0.16b, v0.16b, v5.16b
 
+// func maxF32NEON(x *float32, n int) float32
+//
+// Returns the largest of the n floats at x, n a positive multiple of 8,
+// or NaN if one is NaN: FMAX returns NaN when either operand is.
+TEXT ·maxF32NEON(SB), NOSPLIT, $0-20
+	MOVD x+0(FP), R0
+	MOVD n+8(FP), R1
+	VLD1.P 32(R0), [V0.S4, V1.S4]
+	SUB $8, R1
+
+mx8:
+	CBZ R1, mxdone
+	VLD1.P 32(R0), [V4.S4, V5.S4]
+	WORD $0x4e24f400 // fmax v0.4s, v0.4s, v4.4s
+	WORD $0x4e25f421 // fmax v1.4s, v1.4s, v5.4s
+	SUB $8, R1
+	B mx8
+
+mxdone:
+	WORD $0x4e21f400 // fmax v0.4s, v0.4s, v1.4s
+	WORD $0x6e30f800 // fmaxv s0, v0.4s
+	FMOVS F0, ret+16(FP)
+	RET
+
 // func expSumF32NEON(x *float32, n int, m float32) float32
 //
 // Sets x[i] = exp(x[i] - m) for n a positive multiple of 4 and returns the

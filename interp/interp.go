@@ -51,6 +51,7 @@ type Program struct {
 	zeroVars   map[uint32]zeroVar     // variables that start as zeros
 	composites map[string]uint32      // "name.vN" to subgraph index
 	inplace    map[*mlm.Op]uint32     // scatters that may run in place, to their variable
+	views      map[*mlm.Op]bool       // reshapes whose result may share its input's bytes
 	frees      [][]uint32             // values each op of the main graph is the last to need
 }
 
@@ -124,6 +125,7 @@ func New(g *mlm.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 		}
 	}
 	p.inplace = inplaceScatters(g)
+	p.views = reshapeViews(g)
 	p.frees = lastUses(g)
 	for _, c := range g.Composites {
 		key := fmt.Sprintf("%s.v%d", c.Name, c.Version)

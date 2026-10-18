@@ -233,3 +233,47 @@ func BenchmarkSiluMul(b *testing.B) {
 		SiluMulF32(a, g, out)
 	}
 }
+
+// TestMaxF32 checks MaxF32 against a plain loop for every length up to
+// 40, with a NaN or an infinity at each position.
+func TestMaxF32(t *testing.T) {
+	rng := rand.New(rand.NewSource(21))
+	want := func(x []float32) float32 {
+		m := float32(math.Inf(-1))
+		for _, v := range x {
+			if v > m || v != v {
+				m = v
+			}
+			if m != m {
+				return m
+			}
+		}
+		return m
+	}
+	same := func(a, b float32) bool { return a == b || a != a && b != b }
+	for n := 0; n <= 40; n++ {
+		x := make([]float32, n)
+		for i := range x {
+			x[i] = float32(rng.NormFloat64() * 10)
+		}
+		if got := MaxF32(x); !same(got, want(x)) {
+			t.Errorf("n=%d: %v, want %v", n, got, want(x))
+		}
+		for i := range x {
+			for _, v := range []float32{float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1)), 1e30} {
+				y := append([]float32{}, x...)
+				y[i] = v
+				if got := MaxF32(y); !same(got, want(y)) {
+					t.Errorf("n=%d, x[%d]=%v: %v, want %v", n, i, v, got, want(y))
+				}
+			}
+		}
+		inf := make([]float32, n)
+		for i := range inf {
+			inf[i] = float32(math.Inf(-1))
+		}
+		if got := MaxF32(inf); !math.IsInf(float64(got), -1) {
+			t.Errorf("n=%d, all -inf: %v", n, got)
+		}
+	}
+}

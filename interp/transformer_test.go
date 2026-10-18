@@ -14,6 +14,7 @@
 package interp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"math/rand"
@@ -166,6 +167,28 @@ func TestFastPathsMatchBodies(t *testing.T) {
 			checkFast(t, "attention.v2", gqa, []*ref.Tensor{q, k2, v2, causal}, 1e-5)
 			checkFast(t, "attention.v2", append(gqa, iAttr("causal", 1)), []*ref.Tensor{q, k2, v2}, 1e-5)
 			checkFast(t, "attention.v2", gqa, []*ref.Tensor{q, k2, v, randF32(rng, []int{1, 4, 11, 1}, 1)}, 1e-5)
+		}
+		// Converting the f16 rows to float32 before the kernels changes
+		// no bit of the result.
+		k2, v2 := castTo(t, k, mlm.F16), castTo(t, v, mlm.F16)
+		for _, in := range [][]*ref.Tensor{{q, k2, v2, causal}, {q, k2, v2}} {
+			at := gqa
+			if len(in) == 3 {
+				at = append(gqa, iAttr("causal", 1))
+			}
+			conv, _, err := fastAttentionV2(at, in, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attnConvertRows = 1 << 40
+			rows, _, err := fastAttentionV2(at, in, nil, nil)
+			attnConvertRows = 8
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(conv[0].Data, rows[0].Data) {
+				t.Errorf("%d inputs: converted rows give another result", len(in))
+			}
 		}
 		if _, err := stdlib["attention.v1"](gqa, []*ref.Tensor{q, castTo(t, k, mlm.F16), v}, []mlm.DType{mlm.F32}, nil); err == nil {
 			t.Error("attention.v1 accepted f16 keys with f32 queries")

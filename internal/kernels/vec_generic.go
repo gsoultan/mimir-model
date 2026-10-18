@@ -22,6 +22,7 @@ const vecF32, vecF16 = false, false
 func dotF32Vec(a, b *float32, n int) float32                            { panic("no assembly") }
 func axpyF32Vec(alpha float32, x, y *float32, n int)                    { panic("no assembly") }
 func scoresF32Vec(q, k *float32, d, n int, scale float32, out *float32) { panic("no assembly") }
+func maxF32Vec(x *float32, n int) float32                               { panic("no assembly") }
 func expSumF32Vec(x *float32, n int, m float32) float32                 { panic("no assembly") }
 func siluMulF32Vec(a, b, out *float32, n int)                           { panic("no assembly") }
 func wsumF32Vec(p, v *float32, n, d int, acc *float32)                  { panic("no assembly") }

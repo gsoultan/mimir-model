@@ -37,6 +37,23 @@ func ScoresF32(q, k []float32, scale float32, out []float32) {
 	}
 }
 
+// MaxF32 returns the largest element of x, NaN if one is NaN, and -inf if
+// x is empty.
+func MaxF32(x []float32) float32 {
+	m := float32(math.Inf(-1))
+	i := 0
+	if vecF32 && len(x) >= 8 {
+		i = len(x) &^ 7
+		m = maxF32Vec(&x[0], i)
+	}
+	for ; i < len(x); i++ {
+		if x[i] > m || x[i] != x[i] && m == m {
+			m = x[i]
+		}
+	}
+	return m
+}
+
 // ExpSumF32 sets each x[i] to exp(x[i]-m) and returns their sum. m must be
 // finite and no less than any x[i]; an x[i] of -inf gives 0. With AVX2 or NEON
 // the exponentials are computed in float32, within a few units in the last
