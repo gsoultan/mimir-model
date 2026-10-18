@@ -611,3 +611,18 @@ reads it back from disk during its first prompt, which is how
 where runs of mlm-run alone give 35 to 40. With the file evicted
 completely, the 19-token prompt takes 2.0 s, the time to read 4.4 GB from
 this machine's disk; `madvise(MADV_WILLNEED)` at open did not change it.
+
+On arm64, the `bench-arm` run on this change (the same random-weight
+TinyLlama, macOS runner, 3 cores, median of 5 runs at 38 prompt tokens
+and of 3 at 741) gave:
+
+| prompt | runtime | load | prompt | generation | peak RSS |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 38 | llama.cpp | 3383 ms | 66.7 tok/s | 40.4 tok/s | 763 MiB |
+| 38 | mlm-run | 5 ms | 87.6 tok/s | 44.0 tok/s | 672 MiB |
+| 741 | llama.cpp | 2541 ms | 75.2 tok/s | 48.5 tok/s | 817 MiB |
+| 741 | mlm-run | 5 ms | 107.0 tok/s | 49.7 tok/s | 923 MiB |
+
+Generation, 8 to 12% slower than llama.cpp's in the last arm64 table, is
+now 2 to 9% faster, and prompts 1.3 to 1.4 times faster. The runners
+differ from run to run, so compare the rows of one table, not tables.
