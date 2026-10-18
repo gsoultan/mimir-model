@@ -549,9 +549,12 @@ func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tenso
 		return mask.Data[b*mst[0]+h*mst[1]+i*mst[2]:][:end]
 	}
 	parallel(B*Hq, func(lo, hi int) {
-		sc := make([]float32, Tk)
-		acc := make([]float32, Dv)
-		kbuf, vbuf := make([]float32, D), make([]float32, Dv)
+		scr := attnScratch.Get().(*[]float32)
+		defer attnScratch.Put(scr)
+		*scr = grow(*scr, Tk+2*Dv+D)
+		buf := *scr
+		sc, acc := buf[:Tk], buf[Tk:Tk+Dv]
+		kbuf, vbuf := buf[Tk+Dv:Tk+Dv+D], buf[Tk+Dv+D:]
 		for bh := lo; bh < hi; bh++ {
 			b, h := bh/Hq, bh%Hq
 			kvh := b*Hkv + h/G
@@ -622,6 +625,19 @@ func attentionFast(name string, list []mlm.Attr, in []*ref.Tensor) ([]*ref.Tenso
 		}
 	})
 	return []*ref.Tensor{f32Tensor([]int{B, Hq, Tq, Dv}, out)}, true, nil
+}
+
+// attnScratch keeps the scores and row buffers of attentionFast between
+// calls: a call makes one set per piece of its heads, each as long as the
+// cache, for every layer and token.
+var attnScratch = sync.Pool{New: func() any { return new([]float32) }}
+
+// grow returns s with length n, reallocated if it is too short.
+func grow(s []float32, n int) []float32 {
+	if cap(s) < n {
+		return make([]float32, n)
+	}
+	return s[:n]
 }
 
 // attendRow computes one row of attention with the vector kernels: o gets
