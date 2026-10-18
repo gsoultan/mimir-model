@@ -34,11 +34,23 @@ import (
 // graph cannot hang the caller.
 const DefaultMaxIterations = 1 << 24
 
+// DefaultMaxBytes bounds the memory a session allocates, so that a hostile
+// or broken graph that declares huge variables or intermediate values
+// fails with an error instead of exhausting memory.
+const DefaultMaxBytes = 4 << 30
+
 // Program is a loaded graph with its weights and constants resolved.
 type Program struct {
 	// MaxIterations bounds the iterations of each `while` op in a run;
 	// 0 means DefaultMaxIterations.
 	MaxIterations int
+
+	// MaxBytes bounds the bytes a session allocates: the variables that
+	// start as zeros, together, and in each run the values computed by the
+	// main graph that are still held plus the value being computed. 0 means
+	// DefaultMaxBytes; a negative value means no bound. Weights, constants,
+	// variables stored in the file and run inputs are not counted.
+	MaxBytes int64
 
 	// FastPaths enables the executor's own float32 kernels for the
 	// standard-library composites that have one (fast.go). When false,
@@ -197,10 +209,43 @@ type Session struct {
 	// owned marks the variables whose current tensor this session made
 	// and nothing else refers to, which an in-place scatter may modify.
 	owned map[uint32]bool
+	err   error // why the session could not start; every Run returns it
+}
+
+// maxBytes returns the byte budget of p's sessions, or -1 for none.
+func (p *Program) maxBytes() int64 {
+	switch {
+	case p.MaxBytes == 0:
+		return DefaultMaxBytes
+	case p.MaxBytes < 0:
+		return -1
+	}
+	return p.MaxBytes
 }
 
 // NewSession starts a session with every variable at its initial value.
+// If the variables that start as zeros do not fit in MaxBytes, nothing is
+// allocated and every Run of the session returns that error; StartSession
+// reports it directly.
 func (p *Program) NewSession() *Session {
+	s, err := p.StartSession()
+	if err != nil {
+		return &Session{p: p, err: err}
+	}
+	return s
+}
+
+// StartSession is NewSession, returning an error when the variables that
+// start as zeros do not fit in MaxBytes.
+func (p *Program) StartSession() (*Session, error) {
+	if budget := p.maxBytes(); budget >= 0 {
+		var total int64
+		for id, z := range p.zeroVars {
+			if total += int64(z.bytes); total > budget {
+				return nil, fmt.Errorf("variable %q takes the zero variables past the %d-byte budget", p.g.Values[id].Name, budget)
+			}
+		}
+	}
 	s := &Session{p: p, vars: map[uint32]*ref.Tensor{}, owned: map[uint32]bool{}}
 	for id, t := range p.initVars {
 		s.vars[id] = t
@@ -211,7 +256,7 @@ func (p *Program) NewSession() *Session {
 		s.vars[id] = &ref.Tensor{DType: z.dt, Shape: z.shape, Data: make([]byte, z.bytes)}
 		s.owned[id] = true
 	}
-	return s
+	return s, nil
 }
 
 // zeroVar is a variable whose initial value is all zero bytes.
@@ -261,6 +306,25 @@ type run struct {
 	s    *Session
 	sym  []int  // bound size of each symbolic dimension, -1 when unbound
 	undo []undo // bytes of owned variables overwritten in place
+	live int64  // bytes of the main graph's computed values still held
+}
+
+// reserve checks that a value of dtype dt and the given shape fits in the
+// byte budget beside the values the run still holds, before it is
+// allocated.
+func (r *run) reserve(dt mim.DType, shape []int) error {
+	budget := r.p.maxBytes()
+	if budget < 0 {
+		return nil
+	}
+	n, err := ref.ByteSize(dt, shape)
+	if err != nil {
+		return err
+	}
+	if int64(n) > budget-r.live {
+		return fmt.Errorf("a %s%v value of %d bytes, with %d bytes held, exceeds the %d-byte budget", dt, shape, n, r.live, budget)
+	}
+	return nil
 }
 
 // scope maps value ids to tensors; a subgraph's scope sees its parent's
@@ -283,6 +347,9 @@ func (s *scope) get(id uint32) (*ref.Tensor, bool) {
 // graph's inputs to tensors; the result maps output names to tensors. If
 // the run fails, no variable changes (spec/primitives.md section 7).
 func (s *Session) Run(inputs map[string]*ref.Tensor) (out map[string]*ref.Tensor, err error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	g := s.p.g
 	r := &run{p: s.p, s: s, sym: make([]int, len(g.SymDims))}
 	defer func() {
@@ -456,9 +523,16 @@ func (r *run) exec(si int, sc *scope) error {
 				return fmt.Errorf("subgraph %d op %d (%s): %w", si, oi, op.Opcode, err)
 			}
 			sc.vals[id] = outs[k]
+			if si == 0 {
+				r.live += int64(len(outs[k].Data))
+			}
 		}
 		if si == 0 {
 			for _, id := range r.p.frees[oi] {
+				// Run inputs are dropped too, but were never counted.
+				if t, ok := sc.vals[id]; ok && g.Values[id].Kind != mim.KindInput {
+					r.live -= int64(len(t.Data))
+				}
 				delete(sc.vals, id)
 			}
 		}
@@ -507,6 +581,9 @@ func (r *run) op(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error)
 	v := g.Values[op.Outputs[0]]
 	shape, err := r.shape(v)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.reserve(v.DType, shape); err != nil {
 		return nil, err
 	}
 	if r.p.FastPaths {
@@ -622,6 +699,9 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 		v := r.p.g.Values[id]
 		s, err := r.shape(v)
 		if err != nil {
+			return nil, err
+		}
+		if err := r.reserve(v.DType, s); err != nil {
 			return nil, err
 		}
 		shapes[k], dts[k] = s, v.DType
