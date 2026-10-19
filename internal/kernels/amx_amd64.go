@@ -82,3 +82,6 @@ func detectVNNI() bool {
 	}
 	return true
 }
+
+//go:noescape
+func tileOut(tot, off, y *float32, stride, ms int, bias *float32)
