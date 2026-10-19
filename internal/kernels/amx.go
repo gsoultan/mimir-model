@@ -249,9 +249,13 @@ func (d *TileDot) Dot(w []byte, a *TileActs, y []float32, stride int, bias []flo
 	if cap(d.tot) < n {
 		d.tot, d.off = make([]float32, n), make([]float32, n)
 	}
+	// tot and off are zero between calls: tileOut sets each group's
+	// back to zero as it reads it.
 	tot, off := d.tot[:n], d.off[:n]
-	clear(tot)
-	clear(off)
+	if !useAVX512 {
+		clear(tot)
+		clear(off)
+	}
 	args := tileArgs{
 		w: &w[0], wstride: d.rowBytes, nb: nb, groups: a.groups,
 		act: &a.q[0], gstride: TileRows * d.k,
@@ -269,6 +273,8 @@ func (d *TileDot) Dot(w []byte, a *TileActs, y []float32, stride int, bias []flo
 		ok = amxQ6K(&args)
 	}
 	if !ok {
+		clear(tot)
+		clear(off)
 		return false
 	}
 	// tot and off hold [group][weight row][activation row]. Each
@@ -279,6 +285,19 @@ func (d *TileDot) Dot(w []byte, a *TileActs, y []float32, stride int, bias []flo
 		ms := min(TileRows, a.rows-g*TileRows)
 		tg := tot[g*TileRows*TileRows:][:TileRows*TileRows]
 		og := off[g*TileRows*TileRows:][:TileRows*TileRows]
+		if useAVX512 {
+			if ms > 0 {
+				var bp *float32
+				if bias != nil {
+					bp = &bias[0]
+				}
+				tileOut(&tg[0], &og[0], &y[g*TileRows*stride], stride, ms, bp)
+			} else {
+				clear(tg)
+				clear(og)
+			}
+			continue
+		}
 		for m := range ms {
 			yr := y[(g*TileRows+m)*stride:][:TileRows]
 			if bias == nil {

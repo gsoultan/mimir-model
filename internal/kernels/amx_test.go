@@ -95,15 +95,46 @@ func testTileDot(t *testing.T) {
 						}
 					}
 				}
+				// Again with the same TileDot, a bias and rows of y 21 apart:
+				// the results plus the bias.
+				const stride = 21
+				bias := randomVec(rng, TileRows)
+				out2 := make([]float32, (rows-1)*stride+TileRows)
+				if !d.Dot(w, &a, out2, stride, bias) {
+					t.Fatalf("%s K=%d: Dot refused finite weights", dt, k)
+				}
+				checkBias := func(what string) {
+					for i := range rows {
+						for n := range TileRows {
+							if !use[i] {
+								continue
+							}
+							want := out[i*TileRows+n] + bias[n]
+							if got := out2[i*stride+n]; math.Float32bits(got) != math.Float32bits(want) {
+								t.Errorf("%s K=%d rows=%d %s: weight row %d, activation row %d: got %g, want %g",
+									dt, k, rows, what, n, i, got, want)
+							}
+						}
+					}
+				}
+				checkBias("with bias")
 				// A scale that is not finite, in the last row's last block.
 				bad := len(w) - int(dt.BlockBytes())
 				if dt == mim.Q6_K {
 					bad += 208
 				}
+				w0, w1 := w[bad], w[bad+1]
 				w[bad], w[bad+1] = 0x00, 0x7C
 				if d.Dot(w, &a, out, TileRows, nil) {
 					t.Errorf("%s K=%d: Dot accepted an infinite scale", dt, k)
 				}
+				// And the same results after the refusal.
+				w[bad], w[bad+1] = w0, w1
+				clear(out2)
+				if !d.Dot(w, &a, out2, stride, bias) {
+					t.Fatalf("%s K=%d: Dot refused finite weights", dt, k)
+				}
+				checkBias("after a refusal")
 			}
 		}
 	}

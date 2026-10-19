@@ -49,3 +49,5 @@ func sgemm12x32(a, b *float32, ldb int, c *float32, ldc, k, rows int, mask uint3
 }
 
 func binF32(op int, y, x, z *float32, n, scalar int, nan float32) { panic("no assembly") }
+
+func tileOut(tot, off, y *float32, stride, ms int, bias *float32) { panic("no assembly") }
