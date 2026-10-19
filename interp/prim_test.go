@@ -336,3 +336,59 @@ func TestReshapeView(t *testing.T) {
 		}
 	}
 }
+
+// TestFastShrinkPad checks shrink and pad against the reference kernels,
+// bit for bit, over boxes that cover whole trailing axes or not.
+func TestFastShrinkPad(t *testing.T) {
+	rng := rand.New(rand.NewSource(9))
+	for iter := range 300 {
+		rank := 1 + rng.Intn(5)
+		shape := make([]int, rank)
+		for i := range shape {
+			shape[i] = 1 + rng.Intn(5)
+		}
+		dt := []mim.DType{mim.F32, mim.Bool, mim.I64, mim.F16}[iter%4]
+		x, _ := ref.New(dt, shape)
+		rng.Read(x.Data)
+		if dt == mim.Bool {
+			for i := range x.Data {
+				x.Data[i] &= 1
+			}
+		}
+		begin, end, out := make([]int64, rank), make([]int64, rank), make([]int, rank)
+		pads, padded := make([]int64, 2*rank), make([]int, rank)
+		for i, d := range shape {
+			b := rng.Intn(d + 1)
+			e := b + rng.Intn(d-b+1)
+			if rng.Intn(3) == 0 {
+				b, e = 0, d
+			}
+			begin[i], end[i], out[i] = int64(b), int64(e), e-b
+			if e == d && rng.Intn(2) == 0 {
+				end[i] = -1
+			}
+			lo, hi := rng.Intn(3), rng.Intn(3)
+			if rng.Intn(3) == 0 {
+				lo, hi = 0, 0
+			}
+			pads[2*i], pads[2*i+1], padded[i] = int64(lo), int64(hi), d+lo+hi
+		}
+		sh := &mim.Op{Opcode: mim.OpShrink, Attrs: []mim.Attr{
+			{Key: "begin", Type: mim.AttrInts, Ints: begin}, {Key: "end", Type: mim.AttrInts, Ints: end}}}
+		got, ok := fastShrink(sh, []*ref.Tensor{x}, dt, out)
+		want, err := ref.Eval(mim.OpShrink, sh.Attrs, []*ref.Tensor{x}, dt, out)
+		if err != nil || !ok || !bytes.Equal(got.Data, want.Data) {
+			t.Fatalf("shrink %v of %v: handled %v, %v", begin, shape, ok, err)
+		}
+		pa := []mim.Attr{{Key: "pads", Type: mim.AttrInts, Ints: pads}}
+		if dt == mim.F32 && iter%8 == 0 {
+			pa = append(pa, mim.Attr{Key: "value", Type: mim.AttrFloat, Float: math.Inf(-1)})
+		}
+		pd := &mim.Op{Opcode: mim.OpPad, Attrs: pa}
+		got, ok = fastPad(pd, []*ref.Tensor{x}, dt, padded)
+		want, err = ref.Eval(mim.OpPad, pd.Attrs, []*ref.Tensor{x}, dt, padded)
+		if err != nil || !ok || !bytes.Equal(got.Data, want.Data) {
+			t.Fatalf("pad %v of %v: handled %v, %v", pads, shape, ok, err)
+		}
+	}
+}
