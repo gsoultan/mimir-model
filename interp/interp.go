@@ -64,6 +64,7 @@ type Program struct {
 	composites map[string]uint32      // "name.vN" to subgraph index
 	inplace    map[*mim.Op]uint32     // scatters that may run in place, to their variable
 	frees      [][]uint32             // values each op of the main graph is the last to need
+	noView     map[uint32]bool        // values a reshape must copy from or into (reshapeView)
 }
 
 // Load decodes f's graph and resolves its weight, const and variable values
@@ -137,6 +138,7 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 	}
 	p.inplace = inplaceScatters(g)
 	p.frees = lastUses(g)
+	p.noView = noViews(g)
 	for _, c := range g.Composites {
 		key := fmt.Sprintf("%s.v%d", c.Name, c.Version)
 		if _, dup := p.composites[key]; dup {

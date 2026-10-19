@@ -275,3 +275,64 @@ func TestFastBroadcast(t *testing.T) {
 		t.Error("pow was handled")
 	}
 }
+
+// TestReshapeView checks that a reshape shares its input's bytes only when
+// nothing can write them later: here the reshape of a cache that a scatter
+// updates in place is an output, and must keep its value after the next
+// run writes the cache.
+func TestReshapeView(t *testing.T) {
+	b := newGB()
+	cache := b.stored("k_cache", mim.KindVariable, mim.F32, []uint64{1, 4, 2}, make([]byte, 32))
+	pos := b.input(0, "pos", mim.I64, 1)
+	kt := b.input(0, "k_t", mim.F32, 1, 1, 2)
+	knew := b.val("k_new", mim.F32, mim.KindIntermediate, 1, 4, 2)
+	flat := b.val("flat", mim.F32, mim.KindIntermediate, 8)
+	back := b.val("back", mim.F32, mim.KindIntermediate, 4, 2)
+	twice := b.val("twice", mim.F32, mim.KindIntermediate, 4, 2)
+	shape := func(d ...int64) mim.Attr { return mim.Attr{Key: "shape", Type: mim.AttrInts, Ints: d} }
+	b.op(0, mim.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.op(0, mim.OpReshape, []uint32{knew}, []uint32{flat}, shape(8))
+	b.op(0, mim.OpReshape, []uint32{flat}, []uint32{back}, shape(4, -1))
+	b.op(0, mim.OpAdd, []uint32{back, back}, []uint32{twice})
+	b.output(0, flat)
+	b.output(0, twice)
+	b.g.Updates = []mim.Update{{Variable: cache, Value: knew}}
+	p := b.load(t)
+	p.FastPaths = true
+	if len(p.inplace) != 1 {
+		t.Fatalf("%d scatters may run in place, want 1", len(p.inplace))
+	}
+	s := p.NewSession()
+	var outs []*ref.Tensor
+	for i := int64(0); i < 4; i++ {
+		v := float32(i + 1)
+		got, err := s.Run(map[string]*ref.Tensor{"pos": i64t([]int{1}, i), "k_t": f32t([]int{1, 1, 2}, v, -v)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outs = append(outs, got["flat"])
+		want := make([]float64, 8)
+		for j := int64(0); j <= i; j++ {
+			want[2*j], want[2*j+1] = float64(j+1), -float64(j+1)
+		}
+		for r, o := range outs {
+			w := want
+			if r < int(i) {
+				w = make([]float64, 8)
+				for j := 0; j <= r; j++ {
+					w[2*j], w[2*j+1] = float64(j+1), -float64(j+1)
+				}
+			}
+			for k, x := range f32s(o) {
+				if x != w[k] {
+					t.Fatalf("after run %d, the output of run %d is %v, want %v", i, r, f32s(o), w)
+				}
+			}
+		}
+		for k, x := range f32s(got["twice"]) {
+			if x != 2*want[k] {
+				t.Fatalf("run %d: twice is %v", i, f32s(got["twice"]))
+			}
+		}
+	}
+}

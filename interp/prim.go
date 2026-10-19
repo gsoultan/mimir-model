@@ -38,6 +38,8 @@ func (r *run) fastPrimitive(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []
 		return fastBroadcast(op.Opcode, in, dt, shape)
 	case mim.OpPermute:
 		return fastPermute(op, in, dt, shape)
+	case mim.OpReshape:
+		return r.reshapeView(op, in, dt, shape)
 	case mim.OpScatter:
 		return r.scatterInPlace(op, in, dt, shape)
 	case mim.OpCast:
@@ -456,4 +458,63 @@ func maxF32(a, b, nan float32) float32 {
 		return a
 	}
 	return b
+}
+
+// reshapeView reshapes without copying: the result shares its input's
+// bytes. Values are never written once computed, with two exceptions that
+// noViews keeps out: a variable's tensor, which an in-place scatter
+// writes, and the values a run hands back (outputs and variable updates),
+// which must not share bytes with anything a later run may write.
+func (r *run) reshapeView(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+	if len(in) != 1 || len(op.Inputs) != 1 || len(op.Outputs) != 1 || in[0].DType != dt ||
+		r.p.noView[op.Inputs[0]] || r.p.noView[op.Outputs[0]] {
+		return nil, false
+	}
+	x := in[0]
+	a := attr(op, "shape")
+	if a == nil || a.Type != mim.AttrInts || len(a.Ints) != len(shape) || ref.NumElems(shape) != x.NumElems() {
+		return nil, false
+	}
+	for i, d := range a.Ints {
+		if d != -1 && d != int64(shape[i]) {
+			return nil, false
+		}
+	}
+	n := len(x.Data)
+	if !dt.IsBlock() {
+		n = x.NumElems() * int(dt.BlockBytes())
+	}
+	if len(x.Data) < n {
+		return nil, false
+	}
+	return &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: x.Data[:n:n]}, true
+}
+
+// noViews returns the values reshapeView must copy: variables and the
+// results of scatters, whose bytes may be a variable's, as inputs; the
+// outputs of every subgraph and the variable updates, as results.
+func noViews(g *mim.Graph) map[uint32]bool {
+	no := map[uint32]bool{}
+	for id, v := range g.Values {
+		if v.Kind == mim.KindVariable {
+			no[uint32(id)] = true
+		}
+	}
+	for si := range g.Subgraphs {
+		sg := &g.Subgraphs[si]
+		for _, op := range sg.Ops {
+			if op.Opcode == mim.OpScatter {
+				for _, id := range op.Outputs {
+					no[id] = true
+				}
+			}
+		}
+		for _, id := range sg.Outputs {
+			no[id] = true
+		}
+	}
+	for _, u := range g.Updates {
+		no[u.Value] = true
+	}
+	return no
 }
