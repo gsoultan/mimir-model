@@ -238,7 +238,9 @@ func fastConv2d(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) (
 // multiply-adds over its receptive field, then the bias: within the
 // composite's tolerance, Q u sum |x w| + u |B|. The weights of a graph's
 // own tensors are laid out for the kernel once and kept.
-func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType) ([]*ref.Tensor, bool, error) {
+//
+// With epi not nil, its ops run on each tile of the output as it is made.
+func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, epi *epilogue) ([]*ref.Tensor, bool, error) {
 	if !kernels.Sgemm() || len(in) < 2 || in[0].DType != mim.F32 {
 		return nil, false, nil
 	}
@@ -283,8 +285,15 @@ func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType) (
 					if bg != nil {
 						bp = bg[pn*kernels.SgemmRows:]
 					}
+					cols := min(kernels.SgemmCols, plane-j0)
 					kernels.SgemmTile(pa[g], k, pn, rows, col[s*k*kernels.SgemmCols:], kernels.SgemmCols,
-						min(kernels.SgemmCols, plane-j0), yg[pn*kernels.SgemmRows*plane+j0:], plane, bp)
+						cols, yg[pn*kernels.SgemmRows*plane+j0:], plane, bp)
+					if epi != nil {
+						for r := range rows {
+							f := pn*kernels.SgemmRows + r
+							epi.apply(yg[f*plane+j0:f*plane+j0+cols], n, g*fg+f, c.f, plane, j0)
+						}
+					}
 				}
 			})
 		}

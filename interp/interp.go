@@ -70,6 +70,7 @@ type Program struct {
 	isFixed     map[*ref.Tensor]bool   // the tensors of fixed, which no run changes
 	packed      sync.Map               // a weight of isFixed to its layout for a kernel (convGemm)
 	chains      map[int]*chain         // chains of movement ops of the main graph, by first op
+	convFusions map[int]*convFusion    // convolutions with an epilogue, by op of the main graph
 	gathers     sync.Map               // a chain and input shape to its gather indices
 	gatherElems atomic.Int64           // the indices in gathers, and those not kept
 }
@@ -147,6 +148,7 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 	p.frees = lastUses(g)
 	p.noView = noViews(g)
 	p.chains = moveChains(g)
+	p.convFusions = convFusions(g)
 	p.isFixed = map[*ref.Tensor]bool{}
 	for _, t := range p.fixed {
 		p.isFixed[t] = true
@@ -530,7 +532,17 @@ func (r *run) exec(si int, sc *scope) error {
 		first := oi
 		var outs []*ref.Tensor
 		var err error
-		if ch := r.p.chains[oi]; si == 0 && r.p.FastPaths && ch != nil {
+		var fused bool
+		if fz := r.p.convFusions[oi]; si == 0 && r.p.FastPaths && fz != nil {
+			var t *ref.Tensor
+			if t, fused, err = r.fusedConv(oi, fz, in, sc); err == nil && fused {
+				outs = []*ref.Tensor{t}
+				oi = fz.last
+				op = &sg.Ops[oi]
+			}
+		}
+		if fused || err != nil {
+		} else if ch := r.p.chains[oi]; si == 0 && r.p.FastPaths && ch != nil {
 			var t *ref.Tensor
 			if t, err = r.moveChain(oi, ch, in[0]); err == nil {
 				outs = []*ref.Tensor{t}
@@ -743,7 +755,7 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 		}
 	}
 	if fast && key == "conv2d.v1" {
-		if out, handled, err := r.p.convGemm(cattrs, in, dts); err != nil || handled {
+		if out, handled, err := r.p.convGemm(cattrs, in, dts, nil); err != nil || handled {
 			return out, err
 		}
 	}

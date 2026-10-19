@@ -151,7 +151,7 @@ func TestConvGemm(t *testing.T) {
 			intsAttr("pads", int64(tc.top), int64(tc.bottom), int64(tc.left), int64(tc.right)),
 			iAttr("groups", int64(tc.g)),
 		}
-		out, handled, err := p.convGemm(attrs, in, []mim.DType{mim.F32})
+		out, handled, err := p.convGemm(attrs, in, []mim.DType{mim.F32}, nil)
 		if err != nil || !handled {
 			t.Fatalf("case %d: handled %v, %v", ci, handled, err)
 		}
