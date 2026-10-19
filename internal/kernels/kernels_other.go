@@ -47,3 +47,5 @@ const useAVX512 = false
 func sgemm12x32(a, b *float32, ldb int, c *float32, ldc, k, rows int, mask uint32, acc int, bias *float32) {
 	panic("no assembly")
 }
+
+func binF32(op int, y, x, z *float32, n, scalar int, nan float32) { panic("no assembly") }

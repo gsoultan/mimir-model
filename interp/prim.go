@@ -18,6 +18,7 @@ import (
 	"math"
 
 	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/internal/kernels"
 	"github.com/gsoultan/mimir-model/ref"
 )
 
@@ -441,9 +442,22 @@ func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) 
 }
 
 // binaryF32 sets y[j] to x[j*sx] op z[j*sz] for f32 add, mul or max, with
-// the reference's NaN for a NaN result. The common strides get their own
-// loops.
+// the reference's NaN for a NaN result. Contiguous x with contiguous or
+// scalar z run on the vector kernel when there is one, and the other
+// common strides get their own loops. y is x, z or neither.
 func binaryF32(opc mim.Opcode, x []float32, sx int, z []float32, sz int, y []float32, nan float32) {
+	if sx == 1 && (sz == 0 || sz == 1) {
+		op := kernels.BinAdd
+		switch opc {
+		case mim.OpMul:
+			op = kernels.BinMul
+		case mim.OpMax:
+			op = kernels.BinMax
+		}
+		if kernels.BinaryF32(op, y, x, z, sz == 0, nan) {
+			return
+		}
+	}
 	n := len(y)
 	switch {
 	case opc == mim.OpMax && sx == 1 && sz == 1:
