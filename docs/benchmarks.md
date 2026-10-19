@@ -543,3 +543,84 @@ random-weight figures of the previous sections within the machine's
 run-to-run spread: mmf-run generates 1.3 to 1.5 times faster than
 llama.cpp, reads prompts 1.1 to 1.6 times faster, and peaks at about
 half its memory.
+
+## AVX-512 convolutions and faster long prompts
+
+A 4-core Xeon at 2.1 GHz with AVX-512 and AMX (a shared cloud VM, 15 GiB),
+Go 1.24, llama-cpp-python 0.3.16 and onnxruntime 1.29.0, 4 threads each.
+"before" is mim at the start of this work, measured in the same quiet
+window as "after", runs of the three alternating. Each figure is the
+median of 7 runs (TinyLlama, 64 generated tokens, `tools/bench_generate.py`)
+or of 5 rounds (CNNs, each round the median of 30 to 2000 runs), with the
+range in brackets. Repeated runs of one command vary by up to 15% here.
+
+### TinyLlama 1.1B, Q4_K_M
+
+The model from `tools/gen_bench_models.py`, imported with activations in
+blocks of 256 (q4km-a8k.mim).
+
+| metric | llama.cpp | mim before | mim after | after vs llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| load | 630 ms [467-784] | 9 ms [7-17] | 8 ms [7-9] | 79x |
+| 38-token prompt | 158.3 tok/s [155-184] | 196.9 [181-228] | 240.5 [106-292] | 1.52x |
+| generation after it | 27.3 tok/s [25.4-29.8] | 39.0 [37.3-40.7] | 38.2 [36.6-40.1] | 1.40x |
+| 741-token prompt | 183.9 tok/s [177-212] | 217.7 [199-233] | 305.7 [296-316] | 1.66x |
+| generation after it | 25.1 tok/s [24.4-26.8] | 33.9 [32.3-35.8] | 35.8 [30.3-37.2] | 1.43x |
+
+Peak memory is unchanged (695 MiB after the short prompt, 966 MiB after
+the long one; llama.cpp 1.3 GiB). Generation reads the 668 MB of weights
+for every token at about 24 GB/s, close to what this VM's memory
+delivers, so it did not move.
+
+### CNNs from ONNX
+
+testdata/onnx/tiny-cnn.onnx (16 by 16 images, 35 ONNX nodes of 24 kinds)
+and a ResNet-18-shaped network with random weights at 224 by 224. Load is
+opening the file and making a session; "first" is the first run, which
+for mim includes packing each convolution's weights.
+
+| model | metric | onnxruntime | mim before | mim after | after vs onnxruntime |
+| --- | --- | ---: | ---: | ---: | ---: |
+| tiny-cnn, batch 1 | run | 0.061 ms [0.052-0.065] | 4.887 ms [4.71-5.00] | 0.306 ms [0.231-0.312] | 0.20x |
+| tiny-cnn, batch 8 | run | 0.101 ms [0.093-0.109] | 34.76 ms [34.0-36.2] | 1.388 ms [1.32-1.41] | 0.07x |
+| tiny-cnn | load | 16.0 ms [15.2-23.5] | 0.44 ms [0.34-0.84] | 0.44 ms [0.37-0.56] | 36x |
+| ResNet-18 shape, batch 1 | run | 8.26 ms [7.05-10.5] | 4085 ms [3854-4271] | 25.8 ms [24.1-30.6] | 0.32x |
+| ResNet-18 shape | load | 227 ms [198-230] | 0.45 ms [0.41-0.64] | 0.51 ms [0.46-0.71] | 445x |
+| ResNet-18 shape | load + first run | 238 ms | 4012 ms | 125 ms [119-145] | 1.9x |
+
+On the same input, mim's outputs and onnxruntime's differ by at most
+5.9e-8 (tiny-cnn, outputs up to 0.35) and 1.1e-4 (ResNet, outputs up to
+201).
+
+What changed, in the interpreter (`interp`) and its kernels:
+
+- **Convolutions are matrix products** on an AVX-512 kernel of 12
+  filters by 32 output positions (`kernels.SgemmTile`), each sum one
+  chain of fused multiply-adds, within conv2d.v1's tolerance. The weights
+  are packed once per program, the receptive fields in strips of 32
+  positions. A batch norm, residual add and ReLU after a convolution run
+  on each tile while it is in the cache.
+- **Element-wise f32 add, multiply and maximum** run on an AVX-512
+  kernel, broadcasting along any axes, and give the reference's results
+  bit for bit, NaNs included. Same-shape and broadcast integer compares
+  and boolean logic, `shrink`, `pad` and `reshape` (now without a copy)
+  have fast paths, and a run of movement ops ending in a `shrink`, as
+  pooling is imported, is one gather.
+- **sigmoid.v1 and tanh.v1** are computed in float64 and rounded once.
+- **The AMX products write their results** with a 16 by 16 transpose in
+  registers, one activation row at a time, instead of a scalar loop, and
+  rows the tile kernels finished skip the row loop. With the reshape and
+  broadcast fast paths, the long prompt went from 1.18 to 1.66 times
+  llama.cpp's speed.
+
+The CNNs are still slower than onnxruntime. ResNet's convolutions do 1.8
+billion multiply-adds; onnxruntime runs them at about four fifths of the
+machine's float32 peak (269 billion a second on 4 cores) with direct
+convolutions on a blocked channel layout, where mim first copies each
+receptive field (a fifth of its time) and keeps the graph's NCHW layout.
+Being 1.3 times faster than that in float32 would need more than the
+machine's peak; only lower precision or Winograd transforms could get
+there, and both fall outside conv2d.v1's tolerance. tiny-cnn has about 170
+mim ops on tensors of a few thousand elements, and the interpreter's cost
+per op, a few hundred nanoseconds to a few microseconds, is most of its
+time; onnxruntime runs the whole network in 61 µs.

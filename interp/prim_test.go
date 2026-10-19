@@ -15,6 +15,7 @@ package interp
 
 import (
 	"bytes"
+	"math"
 	"math/rand"
 	"testing"
 
@@ -201,6 +202,204 @@ func TestFastCastF16(t *testing.T) {
 	for i := range bits {
 		if got.Bits(i) != want.Bits(i) {
 			t.Errorf("%08x: got %04x, reference %04x", bits[i], got.Bits(i), want.Bits(i))
+		}
+	}
+}
+
+// TestFastBroadcast checks the broadcasting binary fast paths, and the
+// same-shape add and multiply, against the reference kernels, bit for bit,
+// on operands that broadcast along various axes.
+func TestFastBroadcast(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	shapes := [][3][]int{
+		{{1, 1, 5, 1}, {1, 1, 1, 7}, {1, 1, 5, 7}},
+		{{2, 3, 4, 5}, {1, 3, 1, 1}, {2, 3, 4, 5}},
+		{{1, 3, 1, 1}, {2, 3, 4, 5}, {2, 3, 4, 5}},
+		{{2, 1, 4}, {2, 3, 1}, {2, 3, 4}},
+		{{1, 1, 1, 1}, {1, 1, 6, 9}, {1, 1, 6, 9}},
+		{{3, 1}, {1, 1}, {3, 1}},
+		{{4, 6}, {4, 6}, {4, 6}},
+		{{0, 3}, {1, 3}, {0, 3}},
+		// Large enough to be cut into pieces.
+		{{2, 100, 100}, {2, 100, 100}, {2, 100, 100}},
+		{{1, 3, 90, 90}, {1, 3, 1, 1}, {1, 3, 90, 90}},
+		{{1, 1}, {9000, 1}, {9000, 1}},
+	}
+	specials := []float32{0, float32(math.Copysign(0, -1)), float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1)), 1, -1}
+	fill := func(dt mim.DType, shape []int) *ref.Tensor {
+		x, _ := ref.New(dt, shape)
+		for i := range x.NumElems() {
+			switch dt {
+			case mim.F32:
+				v := float32(rng.NormFloat64())
+				if rng.Intn(3) == 0 {
+					v = specials[rng.Intn(len(specials))]
+				}
+				x.SetBits(i, uint64(math.Float32bits(v)))
+			case mim.Bool:
+				x.SetBits(i, uint64(rng.Intn(2)))
+			default:
+				x.SetBits(i, uint64(int64(rng.Intn(9)-4)))
+			}
+		}
+		return x
+	}
+	cases := []struct {
+		op      mim.Opcode
+		in, out mim.DType
+	}{
+		{mim.OpAdd, mim.F32, mim.F32}, {mim.OpMul, mim.F32, mim.F32}, {mim.OpMax, mim.F32, mim.F32},
+		{mim.OpCmplt, mim.I64, mim.Bool}, {mim.OpCmpeq, mim.I64, mim.Bool},
+		{mim.OpCmplt, mim.I32, mim.Bool}, {mim.OpCmpeq, mim.I32, mim.Bool},
+		{mim.OpAnd, mim.Bool, mim.Bool}, {mim.OpOr, mim.Bool, mim.Bool},
+		{mim.OpXor, mim.Bool, mim.Bool}, {mim.OpCmpeq, mim.Bool, mim.Bool},
+	}
+	for _, c := range cases {
+		for _, s := range shapes {
+			a, b := fill(c.in, s[0]), fill(c.in, s[1])
+			got, ok := fastBroadcast(c.op, []*ref.Tensor{a, b}, c.out, s[2])
+			if !ok {
+				t.Fatalf("%s %s %v %v: not handled", c.op, c.in, s[0], s[1])
+			}
+			want, err := ref.Eval(c.op, nil, []*ref.Tensor{a, b}, c.out, s[2])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !sameInts(got.Shape, want.Shape) || !bytes.Equal(got.Data, want.Data) {
+				t.Errorf("%s %s %v %v: got %v, want %v", c.op, c.in, s[0], s[1], got.Data, want.Data)
+			}
+			// Same shapes: the same-shape add and multiply too.
+			if (c.op == mim.OpAdd || c.op == mim.OpMul) && sameInts(s[0], s[2]) && sameInts(s[1], s[2]) {
+				got, ok := fastAddMul(c.op, []*ref.Tensor{a, b}, c.out, s[2])
+				if !ok || !bytes.Equal(got.Data, want.Data) {
+					t.Errorf("fastAddMul %s %v: handled %v, differs from the reference", c.op, s[0], ok)
+				}
+			}
+		}
+	}
+	// Shapes that do not broadcast and dtypes without a fast path fall back.
+	x := fill(mim.F32, []int{2, 3})
+	if _, ok := fastBroadcast(mim.OpAdd, []*ref.Tensor{x, fill(mim.F32, []int{3, 2})}, mim.F32, []int{2, 3}); ok {
+		t.Error("mismatched shapes were handled")
+	}
+	if _, ok := fastBroadcast(mim.OpPow, []*ref.Tensor{x, x}, mim.F32, []int{2, 3}); ok {
+		t.Error("pow was handled")
+	}
+}
+
+// TestReshapeView checks that a reshape shares its input's bytes only when
+// nothing can write them later: here the reshape of a cache that a scatter
+// updates in place is an output, and must keep its value after the next
+// run writes the cache.
+func TestReshapeView(t *testing.T) {
+	b := newGB()
+	cache := b.stored("k_cache", mim.KindVariable, mim.F32, []uint64{1, 4, 2}, make([]byte, 32))
+	pos := b.input(0, "pos", mim.I64, 1)
+	kt := b.input(0, "k_t", mim.F32, 1, 1, 2)
+	knew := b.val("k_new", mim.F32, mim.KindIntermediate, 1, 4, 2)
+	flat := b.val("flat", mim.F32, mim.KindIntermediate, 8)
+	back := b.val("back", mim.F32, mim.KindIntermediate, 4, 2)
+	twice := b.val("twice", mim.F32, mim.KindIntermediate, 4, 2)
+	shape := func(d ...int64) mim.Attr { return mim.Attr{Key: "shape", Type: mim.AttrInts, Ints: d} }
+	b.op(0, mim.OpScatter, []uint32{cache, pos, kt}, []uint32{knew}, iAttr("axis", 1))
+	b.op(0, mim.OpReshape, []uint32{knew}, []uint32{flat}, shape(8))
+	b.op(0, mim.OpReshape, []uint32{flat}, []uint32{back}, shape(4, -1))
+	b.op(0, mim.OpAdd, []uint32{back, back}, []uint32{twice})
+	b.output(0, flat)
+	b.output(0, twice)
+	b.g.Updates = []mim.Update{{Variable: cache, Value: knew}}
+	p := b.load(t)
+	p.FastPaths = true
+	if len(p.inplace) != 1 {
+		t.Fatalf("%d scatters may run in place, want 1", len(p.inplace))
+	}
+	s := p.NewSession()
+	var outs []*ref.Tensor
+	for i := int64(0); i < 4; i++ {
+		v := float32(i + 1)
+		got, err := s.Run(map[string]*ref.Tensor{"pos": i64t([]int{1}, i), "k_t": f32t([]int{1, 1, 2}, v, -v)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		outs = append(outs, got["flat"])
+		want := make([]float64, 8)
+		for j := int64(0); j <= i; j++ {
+			want[2*j], want[2*j+1] = float64(j+1), -float64(j+1)
+		}
+		for r, o := range outs {
+			w := want
+			if r < int(i) {
+				w = make([]float64, 8)
+				for j := 0; j <= r; j++ {
+					w[2*j], w[2*j+1] = float64(j+1), -float64(j+1)
+				}
+			}
+			for k, x := range f32s(o) {
+				if x != w[k] {
+					t.Fatalf("after run %d, the output of run %d is %v, want %v", i, r, f32s(o), w)
+				}
+			}
+		}
+		for k, x := range f32s(got["twice"]) {
+			if x != 2*want[k] {
+				t.Fatalf("run %d: twice is %v", i, f32s(got["twice"]))
+			}
+		}
+	}
+}
+
+// TestFastShrinkPad checks shrink and pad against the reference kernels,
+// bit for bit, over boxes that cover whole trailing axes or not.
+func TestFastShrinkPad(t *testing.T) {
+	rng := rand.New(rand.NewSource(9))
+	for iter := range 300 {
+		rank := 1 + rng.Intn(5)
+		shape := make([]int, rank)
+		for i := range shape {
+			shape[i] = 1 + rng.Intn(5)
+		}
+		dt := []mim.DType{mim.F32, mim.Bool, mim.I64, mim.F16}[iter%4]
+		x, _ := ref.New(dt, shape)
+		rng.Read(x.Data)
+		if dt == mim.Bool {
+			for i := range x.Data {
+				x.Data[i] &= 1
+			}
+		}
+		begin, end, out := make([]int64, rank), make([]int64, rank), make([]int, rank)
+		pads, padded := make([]int64, 2*rank), make([]int, rank)
+		for i, d := range shape {
+			b := rng.Intn(d + 1)
+			e := b + rng.Intn(d-b+1)
+			if rng.Intn(3) == 0 {
+				b, e = 0, d
+			}
+			begin[i], end[i], out[i] = int64(b), int64(e), e-b
+			if e == d && rng.Intn(2) == 0 {
+				end[i] = -1
+			}
+			lo, hi := rng.Intn(3), rng.Intn(3)
+			if rng.Intn(3) == 0 {
+				lo, hi = 0, 0
+			}
+			pads[2*i], pads[2*i+1], padded[i] = int64(lo), int64(hi), d+lo+hi
+		}
+		sh := &mim.Op{Opcode: mim.OpShrink, Attrs: []mim.Attr{
+			{Key: "begin", Type: mim.AttrInts, Ints: begin}, {Key: "end", Type: mim.AttrInts, Ints: end}}}
+		got, ok := fastShrink(sh, []*ref.Tensor{x}, dt, out)
+		want, err := ref.Eval(mim.OpShrink, sh.Attrs, []*ref.Tensor{x}, dt, out)
+		if err != nil || !ok || !bytes.Equal(got.Data, want.Data) {
+			t.Fatalf("shrink %v of %v: handled %v, %v", begin, shape, ok, err)
+		}
+		pa := []mim.Attr{{Key: "pads", Type: mim.AttrInts, Ints: pads}}
+		if dt == mim.F32 && iter%8 == 0 {
+			pa = append(pa, mim.Attr{Key: "value", Type: mim.AttrFloat, Float: math.Inf(-1)})
+		}
+		pd := &mim.Op{Opcode: mim.OpPad, Attrs: pa}
+		got, ok = fastPad(pd, []*ref.Tensor{x}, dt, padded)
+		want, err = ref.Eval(mim.OpPad, pd.Attrs, []*ref.Tensor{x}, dt, padded)
+		if err != nil || !ok || !bytes.Equal(got.Data, want.Data) {
+			t.Fatalf("pad %v of %v: handled %v, %v", pads, shape, ok, err)
 		}
 	}
 }

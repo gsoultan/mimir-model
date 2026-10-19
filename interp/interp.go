@@ -25,6 +25,8 @@ package interp
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	mim "github.com/gsoultan/mimir-model"
 	"github.com/gsoultan/mimir-model/ref"
@@ -57,13 +59,20 @@ type Program struct {
 	// every composite runs its canonical body on the reference kernels.
 	FastPaths bool
 
-	g          *mim.Graph
-	fixed      map[uint32]*ref.Tensor // weights and consts, by value id
-	initVars   map[uint32]*ref.Tensor // initial variable values, by value id
-	zeroVars   map[uint32]zeroVar     // variables that start as zeros
-	composites map[string]uint32      // "name.vN" to subgraph index
-	inplace    map[*mim.Op]uint32     // scatters that may run in place, to their variable
-	frees      [][]uint32             // values each op of the main graph is the last to need
+	g           *mim.Graph
+	fixed       map[uint32]*ref.Tensor // weights and consts, by value id
+	initVars    map[uint32]*ref.Tensor // initial variable values, by value id
+	zeroVars    map[uint32]zeroVar     // variables that start as zeros
+	composites  map[string]uint32      // "name.vN" to subgraph index
+	inplace     map[*mim.Op]uint32     // scatters that may run in place, to their variable
+	frees       [][]uint32             // values each op of the main graph is the last to need
+	noView      map[uint32]bool        // values a reshape must copy from or into (reshapeView)
+	isFixed     map[*ref.Tensor]bool   // the tensors of fixed, which no run changes
+	packed      sync.Map               // a weight of isFixed to its layout for a kernel (convGemm)
+	chains      map[int]*chain         // chains of movement ops of the main graph, by first op
+	convFusions map[int]*convFusion    // convolutions with an epilogue, by op of the main graph
+	gathers     sync.Map               // a chain and input shape to its gather indices
+	gatherElems atomic.Int64           // the indices in gathers, and those not kept
 }
 
 // Load decodes f's graph and resolves its weight, const and variable values
@@ -137,6 +146,13 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 	}
 	p.inplace = inplaceScatters(g)
 	p.frees = lastUses(g)
+	p.noView = noViews(g)
+	p.chains = moveChains(g)
+	p.convFusions = convFusions(g)
+	p.isFixed = map[*ref.Tensor]bool{}
+	for _, t := range p.fixed {
+		p.isFixed[t] = true
+	}
 	for _, c := range g.Composites {
 		key := fmt.Sprintf("%s.v%d", c.Name, c.Version)
 		if _, dup := p.composites[key]; dup {
@@ -501,7 +517,7 @@ func attr(op *mim.Op, key string) *mim.Attr {
 func (r *run) exec(si int, sc *scope) error {
 	g := r.p.g
 	sg := &g.Subgraphs[si]
-	for oi := range sg.Ops {
+	for oi := 0; oi < len(sg.Ops); oi++ {
 		op := &sg.Ops[oi]
 		in := make([]*ref.Tensor, len(op.Inputs))
 		for k, id := range op.Inputs {
@@ -511,7 +527,31 @@ func (r *run) exec(si int, sc *scope) error {
 			}
 			in[k] = t
 		}
-		outs, err := r.op(op, in, sc)
+		// A chain of movement ops runs as one gather (moveChain); its
+		// intermediate values are never made.
+		first := oi
+		var outs []*ref.Tensor
+		var err error
+		var fused bool
+		if fz := r.p.convFusions[oi]; si == 0 && r.p.FastPaths && fz != nil {
+			var t *ref.Tensor
+			if t, fused, err = r.fusedConv(oi, fz, in, sc); err == nil && fused {
+				outs = []*ref.Tensor{t}
+				oi = fz.last
+				op = &sg.Ops[oi]
+			}
+		}
+		if fused || err != nil {
+		} else if ch := r.p.chains[oi]; si == 0 && r.p.FastPaths && ch != nil {
+			var t *ref.Tensor
+			if t, err = r.moveChain(oi, ch, in[0]); err == nil {
+				outs = []*ref.Tensor{t}
+				oi = ch.last
+				op = &sg.Ops[oi]
+			}
+		} else {
+			outs, err = r.op(op, in, sc)
+		}
 		if err != nil {
 			return fmt.Errorf("subgraph %d op %d (%s): %w", si, oi, op.Opcode, err)
 		}
@@ -528,12 +568,14 @@ func (r *run) exec(si int, sc *scope) error {
 			}
 		}
 		if si == 0 {
-			for _, id := range r.p.frees[oi] {
-				// Run inputs are dropped too, but were never counted.
-				if t, ok := sc.vals[id]; ok && g.Values[id].Kind != mim.KindInput {
-					r.live -= int64(len(t.Data))
+			for fi := first; fi <= oi; fi++ {
+				for _, id := range r.p.frees[fi] {
+					// Run inputs are dropped too, but were never counted.
+					if t, ok := sc.vals[id]; ok && g.Values[id].Kind != mim.KindInput {
+						r.live -= int64(len(t.Data))
+					}
+					delete(sc.vals, id)
 				}
-				delete(sc.vals, id)
 			}
 		}
 	}
@@ -710,6 +752,11 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 	for _, a := range op.Attrs {
 		if a.Key != "name" && a.Key != "version" {
 			cattrs = append(cattrs, a)
+		}
+	}
+	if fast && key == "conv2d.v1" {
+		if out, handled, err := r.p.convGemm(cattrs, in, dts, nil); err != nil || handled {
+			return out, err
 		}
 	}
 	if fast {
