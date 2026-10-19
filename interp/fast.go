@@ -16,6 +16,7 @@ package interp
 import (
 	"encoding/binary"
 	"math"
+	"slices"
 	"sync"
 
 	mim "github.com/gsoultan/mimir-model"
@@ -229,6 +230,16 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 	// them. Without blocks, each weight row would read all of x, which for
 	// a long prompt does not fit in the cache.
 	rb := a8RowBlock(k, w.t.DType)
+	allQuantized := true
+	for _, q := range quantized {
+		allQuantized = allQuantized && q
+	}
+	// A run of 16 weight rows that the tile kernels computed for every
+	// row of x is done.
+	tileDone := func(j int) bool { return j/kernels.TileRows < len(tiled) && tiled[j/kernels.TileRows] }
+	if allQuantized && n%kernels.TileRows == 0 && len(tiled) == n/kernels.TileRows && !slices.Contains(tiled, false) {
+		return y
+	}
 	parallel(n, func(lo, hi int) {
 		rd := kernels.NewRowDot(w.t.DType, k)
 		var out [4]float32
@@ -238,10 +249,13 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 		for r0 := 0; r0 < rows; r0 += rb {
 			r1 := min(rows, r0+rb)
 			for j := lo; j < hi; j++ {
+				done := tileDone(j)
+				if done && allQuantized {
+					continue
+				}
 				row := w.rowBytesOf(j)
 				rd.LoadQ8(row)
 				q8, loaded := !refused[j-lo], false
-				done := j/kernels.TileRows < len(tiled) && tiled[j/kernels.TileRows]
 				for i := r0; i < r1; {
 					if done && quantized[i] {
 						i++
