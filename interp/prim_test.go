@@ -206,9 +206,9 @@ func TestFastCastF16(t *testing.T) {
 	}
 }
 
-// TestFastBroadcast checks the broadcasting binary fast paths against the
-// reference kernels, bit for bit, on operands that broadcast along
-// various axes.
+// TestFastBroadcast checks the broadcasting binary fast paths, and the
+// same-shape add and multiply, against the reference kernels, bit for bit,
+// on operands that broadcast along various axes.
 func TestFastBroadcast(t *testing.T) {
 	rng := rand.New(rand.NewSource(3))
 	shapes := [][3][]int{
@@ -267,6 +267,13 @@ func TestFastBroadcast(t *testing.T) {
 			}
 			if !sameInts(got.Shape, want.Shape) || !bytes.Equal(got.Data, want.Data) {
 				t.Errorf("%s %s %v %v: got %v, want %v", c.op, c.in, s[0], s[1], got.Data, want.Data)
+			}
+			// Same shapes: the same-shape add and multiply too.
+			if (c.op == mim.OpAdd || c.op == mim.OpMul) && sameInts(s[0], s[2]) && sameInts(s[1], s[2]) {
+				got, ok := fastAddMul(c.op, []*ref.Tensor{a, b}, c.out, s[2])
+				if !ok || !bytes.Equal(got.Data, want.Data) {
+					t.Errorf("fastAddMul %s %v: handled %v, differs from the reference", c.op, s[0], ok)
+				}
 			}
 		}
 	}

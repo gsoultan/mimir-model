@@ -77,7 +77,7 @@ func fastCastF16(in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool
 
 // fastAddMul adds or multiplies two f32 tensors of the output's shape.
 // Float32 addition and multiplication are correctly rounded, as the
-// primitives require.
+// primitives require, and a NaN result is the reference's NaN.
 func fastAddMul(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	if len(in) != 2 || dt != mim.F32 || in[0].DType != mim.F32 || in[1].DType != mim.F32 ||
 		!sameInts(in[0].Shape, shape) || !sameInts(in[1].Shape, shape) {
@@ -86,20 +86,12 @@ func fastAddMul(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*r
 	a, b := f32View(in[0]), f32View(in[1])
 	y := make([]float32, len(a))
 	b = b[:len(a)]
+	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
 	// Pieces of 4096 elements, so that a small tensor stays on one core.
 	const piece = 4096
 	parallel((len(y)+piece-1)/piece, func(lo, hi int) {
 		lo, hi = lo*piece, min(hi*piece, len(y))
-		a, b, y := a[lo:hi], b[lo:hi], y[lo:hi]
-		if opc == mim.OpAdd {
-			for i := range y {
-				y[i] = a[i] + b[i]
-			}
-		} else {
-			for i := range y {
-				y[i] = a[i] * b[i]
-			}
-		}
+		binaryF32(opc, a[lo:hi], 1, b[lo:hi], 1, y[lo:hi], nan)
 	})
 	return f32Tensor(shape, y), true
 }
