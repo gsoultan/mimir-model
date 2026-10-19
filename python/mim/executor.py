@@ -6,23 +6,31 @@ import numpy as np
 
 from . import graph as G
 from . import prims
-from .errors import RunError
+from .dtypes import byte_size
+from .errors import MIMError, RunError
 from .stdlib import COMPOSITES
 from .tensor import Tensor
 
 DEFAULT_MAX_ITERATIONS = 1 << 24
 MAX_ZERO_BYTES = 1 << 40
+# DEFAULT_MAX_BYTES bounds the size of each value a run computes, so that a
+# hostile or broken graph that declares a huge intermediate value fails with
+# a RunError instead of exhausting memory or failing inside NumPy.
+DEFAULT_MAX_BYTES = 4 << 30
 
 
 class Program:
     """A loaded graph with its weights, constants and initial variable
     values resolved to tensors."""
 
-    def __init__(self, g, tensor, max_iterations=DEFAULT_MAX_ITERATIONS):
-        """tensor(i) returns the file tensor with index i."""
+    def __init__(self, g, tensor, max_iterations=DEFAULT_MAX_ITERATIONS, max_bytes=DEFAULT_MAX_BYTES):
+        """tensor(i) returns the file tensor with index i. max_bytes bounds
+        the bytes of each value a run computes; a negative value means no
+        bound."""
         G.validate(g)
         self.graph = g
         self.max_iterations = max_iterations
+        self.max_bytes = max_bytes
         self.fixed = {}
         self.init_vars = {}
         self.zero_vars = {}
@@ -180,11 +188,26 @@ class _Run:
         if t.dtype is not v.dtype or tuple(t.shape) != want:
             raise RunError(f"{v.name!r} is {t.dtype.name}{list(t.shape)}, declared {v.dtype.name}{list(want)}")
 
+    def reserve(self, v):
+        """Checks, before it is computed, that value v fits in the byte
+        bound of each value."""
+        if self.p.max_bytes < 0:
+            return
+        shape = self.shape(v)
+        try:
+            n = byte_size(v.dtype, shape)
+        except MIMError as e:
+            raise RunError(f"{v.name!r} of shape {list(shape)}: {e}") from None
+        if n > self.p.max_bytes:
+            raise RunError(f"{v.name!r} is a {v.dtype.name}{list(shape)} value of {n} bytes, over the {self.p.max_bytes}-byte bound")
+
     def exec(self, si, scope):
         sg = self.g.subgraphs[si]
         for oi, op in enumerate(sg.ops):
             ins = [scope.get(vid) for vid in op.inputs]
             try:
+                for vid in op.outputs:
+                    self.reserve(self.g.values[vid])
                 outs = self.op(op, ins, scope)
                 if len(outs) != len(op.outputs):
                     raise RunError(f"{len(outs)} results for {len(op.outputs)} outputs")
