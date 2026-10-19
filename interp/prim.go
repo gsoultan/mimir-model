@@ -40,6 +40,10 @@ func (r *run) fastPrimitive(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []
 		return fastPermute(op, in, dt, shape)
 	case mim.OpReshape:
 		return r.reshapeView(op, in, dt, shape)
+	case mim.OpShrink:
+		return fastShrink(op, in, dt, shape)
+	case mim.OpPad:
+		return fastPad(op, in, dt, shape)
 	case mim.OpScatter:
 		return r.scatterInPlace(op, in, dt, shape)
 	case mim.OpCast:
@@ -523,4 +527,135 @@ func noViews(g *mim.Graph) map[uint32]bool {
 		no[u.Value] = true
 	}
 	return no
+}
+
+// fastShrink copies the box of a shrink as runs along the last axes, in
+// parallel, instead of one element at a time.
+func fastShrink(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+	b := attr(op, "begin")
+	if len(in) != 1 || in[0].DType != dt || dt.IsBlock() || b == nil || b.Type != mim.AttrInts ||
+		len(b.Ints) != len(shape) || len(in[0].Shape) != len(shape) {
+		return nil, false
+	}
+	x := in[0]
+	begin := make([]int, len(shape))
+	for i, v := range b.Ints {
+		if v < 0 || int(v)+shape[i] > x.Shape[i] {
+			return nil, false
+		}
+		begin[i] = int(v)
+	}
+	es := int(dt.BlockBytes())
+	if len(x.Data) < x.NumElems()*es {
+		return nil, false
+	}
+	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: make([]byte, ref.NumElems(shape)*es)}
+	copyBox(t.Data, shape, make([]int, len(shape)), x.Data, x.Shape, begin, shape, es)
+	return t, true
+}
+
+// fastPad fills the padding with the pad value and copies the input into
+// the middle, in parallel.
+func fastPad(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+	p := attr(op, "pads")
+	if len(in) != 1 || in[0].DType != dt || dt.IsBlock() || p == nil || p.Type != mim.AttrInts ||
+		len(p.Ints) != 2*len(shape) || len(in[0].Shape) != len(shape) {
+		return nil, false
+	}
+	x := in[0]
+	off := make([]int, len(shape))
+	for i := range shape {
+		lo, hi := p.Ints[2*i], p.Ints[2*i+1]
+		if lo < 0 || hi < 0 || int(lo)+x.Shape[i]+int(hi) != shape[i] {
+			return nil, false
+		}
+		off[i] = int(lo)
+	}
+	es := int(dt.BlockBytes())
+	if len(x.Data) < x.NumElems()*es {
+		return nil, false
+	}
+	// The pad value, as the reference computes it: pad one element.
+	var va []mim.Attr
+	if v := attr(op, "value"); v != nil {
+		va = append(va, *v)
+	}
+	one := &ref.Tensor{DType: dt, Shape: []int{1}, Data: make([]byte, es)}
+	pv, err := ref.Eval(mim.OpPad, append(va, mim.Attr{Key: "pads", Type: mim.AttrInts, Ints: []int64{1, 0}}), []*ref.Tensor{one}, dt, []int{2})
+	if err != nil {
+		return nil, false
+	}
+	value := pv.Data[:es]
+	n := ref.NumElems(shape)
+	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: make([]byte, n*es)}
+	zero := true
+	for _, c := range value {
+		zero = zero && c == 0
+	}
+	if !zero {
+		const piece = 4096
+		parallel((n+piece-1)/piece, func(lo, hi int) {
+			for i := lo * piece; i < min(hi*piece, n); i++ {
+				copy(t.Data[i*es:(i+1)*es], value)
+			}
+		})
+	}
+	copyBox(t.Data, shape, off, x.Data, x.Shape, make([]int, len(shape)), x.Shape, es)
+	return t, true
+}
+
+// copyBox copies the box of the given shape at srcOff in src (of shape
+// srcShape) to dstOff in dst (of shape dstShape), elements of es bytes.
+// The trailing axes that both cover whole make one run.
+func copyBox(dst []byte, dstShape, dstOff []int, src []byte, srcShape, srcOff, box []int, es int) {
+	r := len(box)
+	n := ref.NumElems(box)
+	if n == 0 {
+		return
+	}
+	if r == 0 {
+		copy(dst[:es], src[:es])
+		return
+	}
+	// The run: the last axis, and the axes before it as long as the box
+	// covers the axes after them in both tensors.
+	inner, k := box[r-1], r-1
+	for k > 0 && box[k] == srcShape[k] && box[k] == dstShape[k] {
+		k--
+		inner *= box[k]
+	}
+	// Axes 0..k-1 are walked; axis k is part of the run from its offset.
+	ss, ds := make([]int, r), make([]int, r)
+	s, d := es, es
+	for i := r - 1; i >= 0; i-- {
+		ss[i], ds[i] = s, d
+		s *= srcShape[i]
+		d *= dstShape[i]
+	}
+	base := func(off, st []int) int {
+		o := 0
+		for i := range r {
+			o += off[i] * st[i]
+		}
+		return o
+	}
+	sb, db := base(srcOff, ss), base(dstOff, ds)
+	runBytes := inner * es
+	rows := n / inner
+	const piece = 64 << 10 // bytes per parallel piece, at least
+	per := max(1, piece/max(1, runBytes))
+	parallel((rows+per-1)/per, func(lo, hi int) {
+		idx := make([]int, k)
+		for row := lo * per; row < min(hi*per, rows); row++ {
+			so, do := sb, db
+			q := row
+			for i := k - 1; i >= 0; i-- {
+				idx[i] = q % box[i]
+				q /= box[i]
+				so += idx[i] * ss[i]
+				do += idx[i] * ds[i]
+			}
+			copy(dst[do:do+runBytes], src[so:so+runBytes])
+		}
+	})
 }
