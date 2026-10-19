@@ -447,7 +447,7 @@ func TestRunErrors(t *testing.T) {
 	z := b.input(0, "z", mim.F32, S)
 	y, u := b.val("y", mim.F32, 0, S), b.val("u", mim.F32, 0, S)
 	b.op(0, mim.OpAdd, []uint32{x, z}, []uint32{y})
-	b.op(0, mim.OpCall, []uint32{y}, []uint32{u}, callAttrs("argsort")...)
+	b.op(0, mim.OpCall, []uint32{y}, []uint32{u}, callAttrs("softplus")...)
 	b.output(0, u)
 	p := b.load(t)
 	s := p.NewSession()
