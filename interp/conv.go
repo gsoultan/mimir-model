@@ -259,23 +259,16 @@ func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType) (
 		return []*ref.Tensor{f32Tensor([]int{c.nb, c.f, c.ho, c.wo}, y)}, true, nil
 	}
 	pa := p.packConv(in[1], w, c.g, fg, k)
-	direct := c.kh == 1 && c.kw == 1 && c.sh == 1 && c.sw == 1 && c.top == 0 && c.left == 0 &&
-		c.ho == c.h && c.wo == c.w
-	var col []float32
-	if !direct {
-		col = colBufs.get(k * plane)
-		defer colBufs.put(col)
-	}
 	panels := (fg + kernels.SgemmRows - 1) / kernels.SgemmRows
 	strips := (plane + kernels.SgemmCols - 1) / kernels.SgemmCols
+	// The receptive fields, packed by runs of SgemmCols output positions:
+	// strip s holds k rows of SgemmCols floats, so that the kernel reads
+	// each row of a strip from the next 128 bytes.
+	col := colBufs.get(strips * k * kernels.SgemmCols)
+	defer colBufs.put(col)
 	for n := range c.nb {
 		for g := range c.g {
-			xg := x[(n*c.c+g*cg)*hw : (n*c.c+(g+1)*cg)*hw]
-			b := xg
-			if !direct {
-				im2col(c, xg, col)
-				b = col
-			}
+			im2col(c, x[(n*c.c+g*cg)*hw:(n*c.c+(g+1)*cg)*hw], col)
 			yg := y[(n*c.f+g*fg)*plane : (n*c.f+(g+1)*fg)*plane]
 			var bg []float32
 			if bias != nil {
@@ -290,8 +283,8 @@ func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType) (
 					if bg != nil {
 						bp = bg[pn*kernels.SgemmRows:]
 					}
-					kernels.SgemmTile(pa[g], k, pn, rows, b[j0:], plane, min(kernels.SgemmCols, plane-j0),
-						yg[pn*kernels.SgemmRows*plane+j0:], plane, bp)
+					kernels.SgemmTile(pa[g], k, pn, rows, col[s*k*kernels.SgemmCols:], kernels.SgemmCols,
+						min(kernels.SgemmCols, plane-j0), yg[pn*kernels.SgemmRows*plane+j0:], plane, bp)
 				}
 			})
 		}
@@ -319,17 +312,23 @@ func (p *Program) packConv(wt *ref.Tensor, w []float32, g, fg, k int) [][]float3
 }
 
 // im2col writes the receptive fields of the output positions of x, one
-// group's Cg channels of one image, as the K rows of col, each Ho*Wo
-// long: row (ci*KH+i)*KW+j holds the input element under kernel element
-// (i, j) of channel ci for each output position, 0 in the padding.
+// group's Cg channels of one image, into col by strips of SgemmCols
+// output positions: row r = (ci*KH+i)*KW+j of strip s holds, for output
+// positions s*SgemmCols to s*SgemmCols+SgemmCols-1, the input element
+// under kernel element (i, j) of channel ci, 0 in the padding and past
+// the last position.
 func im2col(c *convParams, x, col []float32) {
 	cg := c.c / c.g
+	k := cg * c.kh * c.kw
+	const sc = kernels.SgemmCols
+	strip := k * sc
 	plane := c.ho * c.wo
-	parallel(cg*c.kh*c.kw, func(lo, hi int) {
+	strips := (plane + sc - 1) / sc
+	parallel(k, func(lo, hi int) {
+		row := make([]float32, strips*sc) // one row, before it is cut into strips
 		for r := lo; r < hi; r++ {
 			ci, i, j := r/(c.kh*c.kw), r/c.kw%c.kh, r%c.kw
 			xc := x[ci*c.h*c.w : (ci+1)*c.h*c.w]
-			row := col[r*plane : (r+1)*plane]
 			// The output columns whose input column is inside the image.
 			ox0, ox1 := 0, c.wo
 			for ox0 < c.wo && ox0*c.sw+j*c.dw-c.left < 0 {
@@ -357,6 +356,10 @@ func im2col(c *convParams, x, col []float32) {
 					out[ox] = src[ix]
 					ix += c.sw
 				}
+			}
+			clear(row[plane:])
+			for st := range strips {
+				copy(col[st*strip+r*sc:st*strip+(r+1)*sc], row[st*sc:(st+1)*sc])
 			}
 		}
 	})
