@@ -41,3 +41,9 @@ func amxQ4K(a *tileArgs) bool { panic("no assembly") }
 func amxQ6K(a *tileArgs) bool { panic("no assembly") }
 func vnniQ4K(a *vnniArgs)     { panic("no assembly") }
 func vnniQ6K(a *vnniArgs)     { panic("no assembly") }
+
+const useAVX512 = false
+
+func sgemm12x32(a, b *float32, ldb int, c *float32, ldc, k, rows int, mask uint32, acc int, bias *float32) {
+	panic("no assembly")
+}

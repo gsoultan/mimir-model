@@ -15,8 +15,10 @@ package interp
 
 import (
 	"fmt"
+	"sync"
 
 	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/internal/kernels"
 	"github.com/gsoultan/mimir-model/ref"
 )
 
@@ -226,4 +228,166 @@ func fastConv2d(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) (
 		}
 	})
 	return []*ref.Tensor{f32Tensor([]int{p.nb, p.f, p.ho, p.wo}, y)}, true, nil
+}
+
+// convGemm computes a float32 convolution as a matrix product per image
+// and group, on the AVX-512 kernel: the weights of a group, Fg rows of
+// K = Cg*KH*KW, times the K by Ho*Wo matrix of the input's receptive
+// fields (the input itself for a 1x1 convolution with no stride or
+// padding), plus the bias. Each output element is one chain of fused
+// multiply-adds over its receptive field, then the bias: within the
+// composite's tolerance, Q u sum |x w| + u |B|. The weights of a graph's
+// own tensors are laid out for the kernel once and kept.
+func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType) ([]*ref.Tensor, bool, error) {
+	if !kernels.Sgemm() || len(in) < 2 || in[0].DType != mim.F32 {
+		return nil, false, nil
+	}
+	c, err := readConv(list, in, dts)
+	if err != nil {
+		return nil, false, err
+	}
+	x, w := f32View(in[0]), f32View(in[1])
+	var bias []float32
+	if len(in) == 3 {
+		bias = f32View(in[2])
+	}
+	cg, fg := c.c/c.g, c.f/c.g
+	k := cg * c.kh * c.kw
+	plane, hw := c.ho*c.wo, c.h*c.w
+	y := make([]float32, c.nb*c.f*plane)
+	if len(y) == 0 {
+		return []*ref.Tensor{f32Tensor([]int{c.nb, c.f, c.ho, c.wo}, y)}, true, nil
+	}
+	pa := p.packConv(in[1], w, c.g, fg, k)
+	direct := c.kh == 1 && c.kw == 1 && c.sh == 1 && c.sw == 1 && c.top == 0 && c.left == 0 &&
+		c.ho == c.h && c.wo == c.w
+	var col []float32
+	if !direct {
+		col = colBufs.get(k * plane)
+		defer colBufs.put(col)
+	}
+	panels := (fg + kernels.SgemmRows - 1) / kernels.SgemmRows
+	strips := (plane + kernels.SgemmCols - 1) / kernels.SgemmCols
+	for n := range c.nb {
+		for g := range c.g {
+			xg := x[(n*c.c+g*cg)*hw : (n*c.c+(g+1)*cg)*hw]
+			b := xg
+			if !direct {
+				im2col(c, xg, col)
+				b = col
+			}
+			yg := y[(n*c.f+g*fg)*plane : (n*c.f+(g+1)*fg)*plane]
+			var bg []float32
+			if bias != nil {
+				bg = bias[g*fg : (g+1)*fg]
+			}
+			parallel(panels*strips, func(lo, hi int) {
+				for t := lo; t < hi; t++ {
+					s, pn := t/panels, t%panels
+					rows := min(kernels.SgemmRows, fg-pn*kernels.SgemmRows)
+					j0 := s * kernels.SgemmCols
+					var bp []float32
+					if bg != nil {
+						bp = bg[pn*kernels.SgemmRows:]
+					}
+					kernels.SgemmTile(pa[g], k, pn, rows, b[j0:], plane, min(kernels.SgemmCols, plane-j0),
+						yg[pn*kernels.SgemmRows*plane+j0:], plane, bp)
+				}
+			})
+		}
+	}
+	return []*ref.Tensor{f32Tensor([]int{c.nb, c.f, c.ho, c.wo}, y)}, true, nil
+}
+
+// packConv returns the weights of each group packed for kernels.SgemmTile,
+// kept with the program when wt is one of its own tensors.
+func (p *Program) packConv(wt *ref.Tensor, w []float32, g, fg, k int) [][]float32 {
+	fixed := p.isFixed[wt]
+	if fixed {
+		if v, ok := p.packed.Load(wt); ok {
+			return v.([][]float32)
+		}
+	}
+	pa := make([][]float32, g)
+	for i := range pa {
+		pa[i] = kernels.PackSgemmA(w[i*fg*k:(i+1)*fg*k], fg, k, k)
+	}
+	if fixed {
+		p.packed.Store(wt, pa)
+	}
+	return pa
+}
+
+// im2col writes the receptive fields of the output positions of x, one
+// group's Cg channels of one image, as the K rows of col, each Ho*Wo
+// long: row (ci*KH+i)*KW+j holds the input element under kernel element
+// (i, j) of channel ci for each output position, 0 in the padding.
+func im2col(c *convParams, x, col []float32) {
+	cg := c.c / c.g
+	plane := c.ho * c.wo
+	parallel(cg*c.kh*c.kw, func(lo, hi int) {
+		for r := lo; r < hi; r++ {
+			ci, i, j := r/(c.kh*c.kw), r/c.kw%c.kh, r%c.kw
+			xc := x[ci*c.h*c.w : (ci+1)*c.h*c.w]
+			row := col[r*plane : (r+1)*plane]
+			// The output columns whose input column is inside the image.
+			ox0, ox1 := 0, c.wo
+			for ox0 < c.wo && ox0*c.sw+j*c.dw-c.left < 0 {
+				ox0++
+			}
+			for ox1 > ox0 && (ox1-1)*c.sw+j*c.dw-c.left >= c.w {
+				ox1--
+			}
+			for oy := range c.ho {
+				out := row[oy*c.wo : (oy+1)*c.wo]
+				iy := oy*c.sh + i*c.dh - c.top
+				if iy < 0 || iy >= c.h || ox0 >= ox1 {
+					clear(out)
+					continue
+				}
+				clear(out[:ox0])
+				clear(out[ox1:])
+				src := xc[iy*c.w:]
+				ix := ox0*c.sw + j*c.dw - c.left
+				if c.sw == 1 {
+					copy(out[ox0:ox1], src[ix:ix+ox1-ox0])
+					continue
+				}
+				for ox := ox0; ox < ox1; ox++ {
+					out[ox] = src[ix]
+					ix += c.sw
+				}
+			}
+		}
+	})
+}
+
+// colBuf keeps one buffer between calls, for the receptive fields of
+// convGemm.
+type colBuf struct {
+	mu  sync.Mutex
+	buf []float32
+}
+
+var colBufs colBuf
+
+// get returns a buffer of n floats, the kept one when it is free and
+// large enough.
+func (b *colBuf) get(n int) []float32 {
+	b.mu.Lock()
+	buf := b.buf
+	b.buf = nil
+	b.mu.Unlock()
+	if cap(buf) < n {
+		return make([]float32, n)
+	}
+	return buf[:n]
+}
+
+func (b *colBuf) put(buf []float32) {
+	b.mu.Lock()
+	if cap(buf) > cap(b.buf) {
+		b.buf = buf
+	}
+	b.mu.Unlock()
 }

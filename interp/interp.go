@@ -25,6 +25,7 @@ package interp
 
 import (
 	"fmt"
+	"sync"
 
 	mim "github.com/gsoultan/mimir-model"
 	"github.com/gsoultan/mimir-model/ref"
@@ -65,6 +66,8 @@ type Program struct {
 	inplace    map[*mim.Op]uint32     // scatters that may run in place, to their variable
 	frees      [][]uint32             // values each op of the main graph is the last to need
 	noView     map[uint32]bool        // values a reshape must copy from or into (reshapeView)
+	isFixed    map[*ref.Tensor]bool   // the tensors of fixed, which no run changes
+	packed     sync.Map               // a weight of isFixed to its layout for a kernel (convGemm)
 }
 
 // Load decodes f's graph and resolves its weight, const and variable values
@@ -139,6 +142,10 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 	p.inplace = inplaceScatters(g)
 	p.frees = lastUses(g)
 	p.noView = noViews(g)
+	p.isFixed = map[*ref.Tensor]bool{}
+	for _, t := range p.fixed {
+		p.isFixed[t] = true
+	}
 	for _, c := range g.Composites {
 		key := fmt.Sprintf("%s.v%d", c.Name, c.Version)
 		if _, dup := p.composites[key]; dup {
@@ -712,6 +719,11 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 	for _, a := range op.Attrs {
 		if a.Key != "name" && a.Key != "version" {
 			cattrs = append(cattrs, a)
+		}
+	}
+	if fast && key == "conv2d.v1" {
+		if out, handled, err := r.p.convGemm(cattrs, in, dts); err != nil || handled {
+			return out, err
 		}
 	}
 	if fast {
