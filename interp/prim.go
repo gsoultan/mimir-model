@@ -15,6 +15,7 @@ package interp
 
 import (
 	"encoding/binary"
+	"math"
 
 	mim "github.com/gsoultan/mimir-model"
 	"github.com/gsoultan/mimir-model/ref"
@@ -29,7 +30,12 @@ import (
 func (r *run) fastPrimitive(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	switch op.Opcode {
 	case mim.OpAdd, mim.OpMul:
-		return fastAddMul(op.Opcode, in, dt, shape)
+		if t, ok := fastAddMul(op.Opcode, in, dt, shape); ok {
+			return t, true
+		}
+		return fastBroadcast(op.Opcode, in, dt, shape)
+	case mim.OpMax, mim.OpCmplt, mim.OpCmpeq, mim.OpAnd, mim.OpOr, mim.OpXor:
+		return fastBroadcast(op.Opcode, in, dt, shape)
 	case mim.OpPermute:
 		return fastPermute(op, in, dt, shape)
 	case mim.OpScatter:
@@ -272,4 +278,182 @@ func (r *run) scatterInPlace(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape [
 		}
 	}
 	return data, true
+}
+
+// fastBroadcast runs the binary primitives a graph uses on broadcast
+// operands, such as an attention mask built from positions or a
+// per-channel scale, without the reference's per-element index map: f32
+// add, mul and max; cmplt and cmpeq of i32 or i64; and, or, xor and cmpeq
+// of bools. Each element is computed as the reference computes it.
+func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+	if len(in) != 2 || in[0].DType != in[1].DType || len(in[0].Shape) != len(shape) ||
+		len(in[1].Shape) != len(shape) || len(shape) == 0 {
+		return nil, false
+	}
+	a, b := in[0], in[1]
+	for i, d := range shape {
+		if (a.Shape[i] != d && a.Shape[i] != 1) || (b.Shape[i] != d && b.Shape[i] != 1) {
+			return nil, false
+		}
+	}
+	idt := a.DType
+	es := int(idt.BlockBytes())
+	var kind byte
+	switch {
+	case idt == mim.F32 && dt == mim.F32 && (opc == mim.OpAdd || opc == mim.OpMul || opc == mim.OpMax):
+		kind = 'f'
+	case (idt == mim.I64 || idt == mim.I32) && dt == mim.Bool && (opc == mim.OpCmplt || opc == mim.OpCmpeq):
+		kind = 'i'
+	case idt == mim.Bool && dt == mim.Bool && (opc == mim.OpAnd || opc == mim.OpOr || opc == mim.OpXor || opc == mim.OpCmpeq):
+		kind = 'b'
+	default:
+		return nil, false
+	}
+	n := ref.NumElems(shape)
+	if len(a.Data) < es*ref.NumElems(a.Shape) || len(b.Data) < es*ref.NumElems(b.Shape) {
+		return nil, false
+	}
+	var t *ref.Tensor
+	if kind == 'f' {
+		t = f32Tensor(shape, make([]float32, n))
+	} else {
+		t = &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: make([]byte, n)}
+	}
+	if n == 0 {
+		return t, true
+	}
+	// Merge adjacent axes along which both operands are broadcast the
+	// same way, then run the last merged axis as the inner loop.
+	type ax struct{ n, sa, sb int }
+	var axes []ax
+	sa, sb := 1, 1
+	stA, stB := make([]int, len(shape)), make([]int, len(shape))
+	for i := len(shape) - 1; i >= 0; i-- {
+		if a.Shape[i] != 1 {
+			stA[i] = sa
+		}
+		if b.Shape[i] != 1 {
+			stB[i] = sb
+		}
+		sa *= a.Shape[i]
+		sb *= b.Shape[i]
+	}
+	for i, d := range shape {
+		if d == 1 {
+			continue
+		}
+		if k := len(axes) - 1; k >= 0 && axes[k].sa == stA[i]*d && axes[k].sb == stB[i]*d {
+			axes[k] = ax{axes[k].n * d, stA[i], stB[i]}
+			continue
+		}
+		axes = append(axes, ax{d, stA[i], stB[i]})
+	}
+	if len(axes) == 0 {
+		axes = []ax{{1, 0, 0}}
+	}
+	last := axes[len(axes)-1]
+	outer := n / last.n
+	inner := last.n
+	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
+	var fa, fb, fy []float32
+	if kind == 'f' {
+		fa, fb, fy = f32View(a), f32View(b), f32View(t)
+	}
+	row := func(o int) {
+		ia, ib := 0, 0
+		r := o
+		for k := len(axes) - 2; k >= 0; k-- {
+			i := r % axes[k].n
+			r /= axes[k].n
+			ia += i * axes[k].sa
+			ib += i * axes[k].sb
+		}
+		y := t.Data[o*inner*int(dt.BlockBytes()):]
+		switch kind {
+		case 'f':
+			x, z := fa[ia:], fb[ib:]
+			yf := fy[o*inner : (o+1)*inner]
+			ja, jb := 0, 0
+			for j := range yf {
+				u, v := x[ja], z[jb]
+				var r float32
+				switch opc {
+				case mim.OpAdd:
+					r = u + v
+				case mim.OpMul:
+					r = u * v
+				default:
+					r = maxF32(u, v, nan)
+				}
+				if r != r {
+					r = nan // the reference's NaN
+				}
+				yf[j] = r
+				ja += last.sa
+				jb += last.sb
+			}
+		case 'i':
+			ja, jb := ia, ib
+			for j := 0; j < inner; j++ {
+				var u, v int64
+				if es == 8 {
+					u = int64(binary.LittleEndian.Uint64(a.Data[8*ja:]))
+					v = int64(binary.LittleEndian.Uint64(b.Data[8*jb:]))
+				} else {
+					u = int64(int32(binary.LittleEndian.Uint32(a.Data[4*ja:])))
+					v = int64(int32(binary.LittleEndian.Uint32(b.Data[4*jb:])))
+				}
+				if (opc == mim.OpCmplt && u < v) || (opc == mim.OpCmpeq && u == v) {
+					y[j] = 1
+				}
+				ja += last.sa
+				jb += last.sb
+			}
+		case 'b':
+			ja, jb := ia, ib
+			for j := 0; j < inner; j++ {
+				u, v := a.Data[ja] != 0, b.Data[jb] != 0
+				var r bool
+				switch opc {
+				case mim.OpAnd:
+					r = u && v
+				case mim.OpOr:
+					r = u || v
+				case mim.OpXor:
+					r = u != v
+				default:
+					r = u == v
+				}
+				if r {
+					y[j] = 1
+				}
+				ja += last.sa
+				jb += last.sb
+			}
+		}
+	}
+	parallel(outer, func(lo, hi int) {
+		for o := lo; o < hi; o++ {
+			row(o)
+		}
+	})
+	return t, true
+}
+
+// maxF32 is the reference's float max (ref.floatMax) in float32: NaN if
+// either operand is NaN, -0 only when both are -0.
+func maxF32(a, b, nan float32) float32 {
+	if a != a || b != b {
+		return nan
+	}
+	if a == 0 && b == 0 {
+		if math.Signbit(float64(a)) && math.Signbit(float64(b)) {
+			return a
+		}
+		return 0
+	}
+	if a > b {
+		return a
+	}
+	return b
 }
