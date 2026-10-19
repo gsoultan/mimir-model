@@ -15,6 +15,8 @@ from mim.errors import RunError
 from mim.executor import Program
 from mim.prims import Attr
 from mim.tensor import Tensor
+from mim.writer import INPUT, OUTPUT, GraphBuilder, Writer
+from mim import container as C
 
 GRAPH = os.path.join(_paths.TESTDATA, "compat", "0.1-0.1", "graph.mim")
 
@@ -65,6 +67,37 @@ class TestSession(unittest.TestCase):
         self.p.max_iterations = 3
         with self.assertRaisesRegex(RunError, "iterations"):
             self.p.session().run(self.inputs)
+
+    def test_byte_bound(self):
+        self.p.max_bytes = 8
+        with self.assertRaisesRegex(RunError, "byte bound"):
+            self.p.session().run(self.inputs)
+        self.p.max_bytes = -1
+        self.p.session().run(self.inputs)
+
+
+class TestHugeValues(unittest.TestCase):
+    """A graph that declares a value too large to compute fails with a
+    RunError, not inside NumPy or by exhausting memory."""
+
+    def run_expand(self, n):
+        g = GraphBuilder()
+        x = g.value("x", D.F32, [1, 4], INPUT)
+        y = g.value("y", D.F32, [n, 4], OUTPUT)
+        g.op("expand", [x], [y])
+        g.output(y)
+        w = Writer()
+        w.add_section(C.GRAPH, g.encode(), required=True)
+        f = File(w.to_bytes())
+        return Program.load(f).session().run({"x": f32(np.ones((1, 4)))})
+
+    def test_huge_expand(self):
+        for n in (1 << 40, 4971973988617027592):
+            with self.subTest(n=n), self.assertRaisesRegex(RunError, "byte|overflow"):
+                self.run_expand(n)
+
+    def test_small_expand(self):
+        self.assertEqual(self.run_expand(3)["y"].shape, (3, 4))
 
 
 class TestComposites(unittest.TestCase):

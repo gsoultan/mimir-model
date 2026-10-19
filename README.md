@@ -252,7 +252,8 @@ run. Of the standard library it runs `matmul.v1`, `linear.v1`, `conv2d.v1`,
 `layer_norm.v1`, `mean.v1`, `cumsum.v1`, `exp.v1`, `cos.v1`, `erf.v1`,
 `tanh.v1`, `sigmoid.v1`, `silu.v1`, `gelu_erf.v1`, `gelu_tanh.v1`,
 `swiglu.v1`, `rope.v1`, `attention.v1`, `attention.v2` and `embedding.v1` by evaluating their canonical bodies on the primitive
-kernels; other composites are reported as unsupported. With
+kernels, and `top_k.v1` and `argsort.v1`, which have no body, from their
+reference definitions; other composites are reported as unsupported. With
 `p.FastPaths = true` it runs its own float32 kernels for the composites a
 transformer spends its time in (the matrix products, normalisation, rope,
 attention, SwiGLU and embedding lookup) and for `conv2d.v1`. Each fast path is tested against
