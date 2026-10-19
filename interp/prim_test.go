@@ -15,6 +15,7 @@ package interp
 
 import (
 	"bytes"
+	"math"
 	"math/rand"
 	"testing"
 
@@ -202,5 +203,75 @@ func TestFastCastF16(t *testing.T) {
 		if got.Bits(i) != want.Bits(i) {
 			t.Errorf("%08x: got %04x, reference %04x", bits[i], got.Bits(i), want.Bits(i))
 		}
+	}
+}
+
+// TestFastBroadcast checks the broadcasting binary fast paths against the
+// reference kernels, bit for bit, on operands that broadcast along
+// various axes.
+func TestFastBroadcast(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	shapes := [][3][]int{
+		{{1, 1, 5, 1}, {1, 1, 1, 7}, {1, 1, 5, 7}},
+		{{2, 3, 4, 5}, {1, 3, 1, 1}, {2, 3, 4, 5}},
+		{{1, 3, 1, 1}, {2, 3, 4, 5}, {2, 3, 4, 5}},
+		{{2, 1, 4}, {2, 3, 1}, {2, 3, 4}},
+		{{1, 1, 1, 1}, {1, 1, 6, 9}, {1, 1, 6, 9}},
+		{{3, 1}, {1, 1}, {3, 1}},
+		{{4, 6}, {4, 6}, {4, 6}},
+		{{0, 3}, {1, 3}, {0, 3}},
+	}
+	specials := []float32{0, float32(math.Copysign(0, -1)), float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1)), 1, -1}
+	fill := func(dt mim.DType, shape []int) *ref.Tensor {
+		x, _ := ref.New(dt, shape)
+		for i := range x.NumElems() {
+			switch dt {
+			case mim.F32:
+				v := float32(rng.NormFloat64())
+				if rng.Intn(3) == 0 {
+					v = specials[rng.Intn(len(specials))]
+				}
+				x.SetBits(i, uint64(math.Float32bits(v)))
+			case mim.Bool:
+				x.SetBits(i, uint64(rng.Intn(2)))
+			default:
+				x.SetBits(i, uint64(int64(rng.Intn(9)-4)))
+			}
+		}
+		return x
+	}
+	cases := []struct {
+		op      mim.Opcode
+		in, out mim.DType
+	}{
+		{mim.OpAdd, mim.F32, mim.F32}, {mim.OpMul, mim.F32, mim.F32}, {mim.OpMax, mim.F32, mim.F32},
+		{mim.OpCmplt, mim.I64, mim.Bool}, {mim.OpCmpeq, mim.I64, mim.Bool},
+		{mim.OpCmplt, mim.I32, mim.Bool}, {mim.OpCmpeq, mim.I32, mim.Bool},
+		{mim.OpAnd, mim.Bool, mim.Bool}, {mim.OpOr, mim.Bool, mim.Bool},
+		{mim.OpXor, mim.Bool, mim.Bool}, {mim.OpCmpeq, mim.Bool, mim.Bool},
+	}
+	for _, c := range cases {
+		for _, s := range shapes {
+			a, b := fill(c.in, s[0]), fill(c.in, s[1])
+			got, ok := fastBroadcast(c.op, []*ref.Tensor{a, b}, c.out, s[2])
+			if !ok {
+				t.Fatalf("%s %s %v %v: not handled", c.op, c.in, s[0], s[1])
+			}
+			want, err := ref.Eval(c.op, nil, []*ref.Tensor{a, b}, c.out, s[2])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !sameInts(got.Shape, want.Shape) || !bytes.Equal(got.Data, want.Data) {
+				t.Errorf("%s %s %v %v: got %v, want %v", c.op, c.in, s[0], s[1], got.Data, want.Data)
+			}
+		}
+	}
+	// Shapes that do not broadcast and dtypes without a fast path fall back.
+	x := fill(mim.F32, []int{2, 3})
+	if _, ok := fastBroadcast(mim.OpAdd, []*ref.Tensor{x, fill(mim.F32, []int{3, 2})}, mim.F32, []int{2, 3}); ok {
+		t.Error("mismatched shapes were handled")
+	}
+	if _, ok := fastBroadcast(mim.OpPow, []*ref.Tensor{x, x}, mim.F32, []int{2, 3}); ok {
+		t.Error("pow was handled")
 	}
 }
