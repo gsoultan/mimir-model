@@ -271,23 +271,25 @@ func (d *TileDot) Dot(w []byte, a *TileActs, y []float32, stride int, bias []flo
 	if !ok {
 		return false
 	}
-	// tot and off hold [group][weight row][activation row]: each weight
-	// row's results are read in order and written down a column of y.
+	// tot and off hold [group][weight row][activation row]. Each
+	// activation row's 16 results are gathered from a column of the
+	// group's 16 by 16 totals, which stay in the L1 cache, and written to
+	// y as one run of 16.
 	for g := range a.groups {
 		ms := min(TileRows, a.rows-g*TileRows)
-		yg := y[g*TileRows*stride:]
-		for r := range TileRows {
-			t := tot[(g*TileRows+r)*TileRows:][:ms]
-			f := off[(g*TileRows+r)*TileRows:][:ms]
+		tg := tot[g*TileRows*TileRows:][:TileRows*TileRows]
+		og := off[g*TileRows*TileRows:][:TileRows*TileRows]
+		for m := range ms {
+			yr := y[(g*TileRows+m)*stride:][:TileRows]
 			if bias == nil {
-				for m, v := range t {
-					yg[m*stride+r] = v - f[m]
+				for r := range yr {
+					yr[r] = tg[r*TileRows+m] - og[r*TileRows+m]
 				}
 				continue
 			}
-			b := bias[r]
-			for m, v := range t {
-				yg[m*stride+r] = v - f[m] + b
+			b := bias[:TileRows]
+			for r := range yr {
+				yr[r] = tg[r*TileRows+m] - og[r*TileRows+m] + b[r]
 			}
 		}
 	}

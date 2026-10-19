@@ -116,7 +116,10 @@ func BenchmarkTileDot(b *testing.B) {
 	rng := rand.New(rand.NewSource(12))
 	const k = 2048
 	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K} {
-		for _, rows := range []int{16, 32, 64} {
+		for _, rows := range []int{16, 32, 64, 512} {
+			// The results go into a matrix of 2048 columns, as in a model's
+			// matrix product, where they are 16 of the columns.
+			const stride = 2048
 			var batch Q8Batch
 			batch.Reset(k, rows)
 			use := make([]bool, rows)
@@ -128,11 +131,11 @@ func BenchmarkTileDot(b *testing.B) {
 			a.Set(&batch, use)
 			w := randomRows(rng, dt, TileRows, k)
 			d := NewTileDot(dt, k)
-			out := make([]float32, TileRows*rows)
+			out := make([]float32, stride*rows)
 			b.Run(dt.String()+"/"+itoa(rows), func(b *testing.B) {
 				b.SetBytes(int64(len(w)))
 				for i := 0; i < b.N; i++ {
-					d.Dot(w, &a, out, TileRows, nil)
+					d.Dot(w, &a, out, stride, nil)
 				}
 				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(TileRows*rows*k)*1e3, "ps/mac")
 			})
