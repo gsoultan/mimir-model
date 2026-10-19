@@ -59,6 +59,11 @@ func TestEvalRejects(t *testing.T) {
 		{"reshape count", mim.OpReshape, []mim.Attr{{Key: "shape", Type: mim.AttrInts, Ints: []int64{5}}}, []*Tensor{x}, mim.F32, []int{5}},
 		{"bad perm", mim.OpPermute, []mim.Attr{{Key: "perm", Type: mim.AttrInts, Ints: []int64{0, 0}}}, []*Tensor{x}, mim.F32, []int{2, 2}},
 		{"negative pad", mim.OpPad, []mim.Attr{{Key: "pads", Type: mim.AttrInts, Ints: []int64{-1, 0, 0, 0}}}, []*Tensor{x}, mim.F32, []int{1, 3}},
+		// Pads that disagree with the declared shape fail before the
+		// padded tensor is allocated, however large it would be.
+		{"pad off the declared shape", mim.OpPad, []mim.Attr{{Key: "pads", Type: mim.AttrInts, Ints: []int64{1, 0, 0, 0}}}, []*Tensor{x}, mim.F32, []int{2, 3}},
+		{"huge pad", mim.OpPad, []mim.Attr{{Key: "pads", Type: mim.AttrInts, Ints: []int64{1 << 40, 0, 0, 0}}}, []*Tensor{x}, mim.F32, []int{2, 3}},
+		{"overflowing pad", mim.OpPad, []mim.Attr{{Key: "pads", Type: mim.AttrInts, Ints: []int64{math.MaxInt64, math.MaxInt64, 0, 0}}}, []*Tensor{x}, mim.F32, []int{2, 3}},
 		{"shrink past end", mim.OpShrink, []mim.Attr{{Key: "begin", Type: mim.AttrInts, Ints: []int64{0, 0}}, {Key: "end", Type: mim.AttrInts, Ints: []int64{3, 3}}}, []*Tensor{x}, mim.F32, []int{3, 3}},
 		{"reduce bad mode", mim.OpReduce, []mim.Attr{{Key: "mode", Type: mim.AttrString, String: "min"}, {Key: "axes", Type: mim.AttrInts}}, []*Tensor{x}, mim.F32, []int{2, 3}},
 		{"reduce repeated axis", mim.OpReduce, []mim.Attr{{Key: "mode", Type: mim.AttrString, String: "add"}, {Key: "axes", Type: mim.AttrInts, Ints: []int64{1, 1}}}, []*Tensor{x}, mim.F32, []int{2, 1}},
