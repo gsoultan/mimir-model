@@ -318,7 +318,13 @@ func eval(op mim.Opcode, a map[string]*mim.Attr, in []*Tensor, outDType mim.DTyp
 			if pads[2*i] < 0 || pads[2*i+1] < 0 {
 				return nil, fmt.Errorf("negative padding %v", pads)
 			}
-			shape[i] = x.Shape[i] + pads[2*i] + pads[2*i+1]
+			// Check the padded size against the declared one before
+			// allocating it, without overflow: hostile pads may be huge.
+			lo, hi := pads[2*i], pads[2*i+1]
+			if i >= len(outShape) || lo > outShape[i] || hi > outShape[i]-lo || x.Shape[i] != outShape[i]-lo-hi {
+				return nil, fmt.Errorf("pads %v of a %v input do not give the declared shape %v", pads, x.Shape, outShape)
+			}
+			shape[i] = outShape[i]
 		}
 		var value uint64
 		if v := a["value"]; v != nil {
