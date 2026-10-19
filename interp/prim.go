@@ -81,15 +81,21 @@ func fastAddMul(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*r
 	a, b := f32View(in[0]), f32View(in[1])
 	y := make([]float32, len(a))
 	b = b[:len(a)]
-	if opc == mim.OpAdd {
-		for i := range y {
-			y[i] = a[i] + b[i]
+	// Pieces of 4096 elements, so that a small tensor stays on one core.
+	const piece = 4096
+	parallel((len(y)+piece-1)/piece, func(lo, hi int) {
+		lo, hi = lo*piece, min(hi*piece, len(y))
+		a, b, y := a[lo:hi], b[lo:hi], y[lo:hi]
+		if opc == mim.OpAdd {
+			for i := range y {
+				y[i] = a[i] + b[i]
+			}
+		} else {
+			for i := range y {
+				y[i] = a[i] * b[i]
+			}
 		}
-	} else {
-		for i := range y {
-			y[i] = a[i] * b[i]
-		}
-	}
+	})
 	return f32Tensor(shape, y), true
 }
 
