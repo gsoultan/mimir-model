@@ -495,6 +495,77 @@ func TestZeroVariable(t *testing.T) {
 	}
 }
 
+// TestMemoryBudget checks that MaxBytes bounds the zero variables of a
+// session and the values a run computes, failing before allocating.
+func TestMemoryBudget(t *testing.T) {
+	// 8 GiB of zero variable is over the default budget.
+	b := newGB()
+	cache := b.val("k_cache", mim.F32, mim.KindVariable, 1<<31)
+	b.g.Values[cache].Zero = true
+	x := b.input(0, "x", mim.F32, 1<<31)
+	b.g.Updates = []mim.Update{{Variable: cache, Value: x}}
+	p, err := New(b.g, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.StartSession(); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("StartSession: got %v", err)
+	}
+	if _, err := p.NewSession().Run(map[string]*ref.Tensor{}); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("Run: got %v", err)
+	}
+
+	// A configured budget applies to small variables too, and a negative
+	// one lifts it.
+	b = newGB()
+	cache = b.val("k_cache", mim.F32, mim.KindVariable, 1<<10)
+	b.g.Values[cache].Zero = true
+	x = b.input(0, "x", mim.F32, 1<<10)
+	b.g.Updates = []mim.Update{{Variable: cache, Value: x}}
+	p = b.load(t)
+	p.MaxBytes = 1 << 10
+	if _, err := p.StartSession(); err == nil {
+		t.Fatal("a 4 KiB variable fit in a 1 KiB budget")
+	}
+	p.MaxBytes = -1
+	if _, err := p.StartSession(); err != nil {
+		t.Fatal(err)
+	}
+
+	// An intermediate value declared far larger than its input is refused
+	// before it is allocated.
+	b = newGB()
+	x = b.input(0, "x", mim.F32, 1)
+	y := b.val("y", mim.F32, mim.KindIntermediate, 1<<31)
+	b.op(0, mim.OpExpand, []uint32{x}, []uint32{y})
+	b.output(0, y)
+	p = b.load(t)
+	if _, err := p.NewSession().Run(map[string]*ref.Tensor{"x": f32t([]int{1}, 1)}); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("expand: got %v", err)
+	}
+
+	// Values the run still holds count against the budget: two 1 KiB
+	// outputs do not fit in 1.5 KiB, though each does.
+	b = newGB()
+	x = b.input(0, "x", mim.F32, 256)
+	a := b.val("a", mim.F32, mim.KindIntermediate, 256)
+	c := b.val("c", mim.F32, mim.KindIntermediate, 256)
+	b.op(0, mim.OpAdd, []uint32{x, x}, []uint32{a})
+	b.op(0, mim.OpAdd, []uint32{a, a}, []uint32{c})
+	b.output(0, a)
+	b.output(0, c)
+	p = b.load(t)
+	in := map[string]*ref.Tensor{"x": f32t([]int{256})}
+	p.MaxBytes = 3 << 9
+	if _, err := p.NewSession().Run(in); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("held values: got %v", err)
+	}
+	p.MaxBytes = 2 << 10
+	if _, err := p.NewSession().Run(in); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestZeroVariableTooLarge(t *testing.T) {
 	b := newGB()
 	cache := b.val("k_cache", mim.F32, mim.KindVariable, 1<<30, 1<<30)
