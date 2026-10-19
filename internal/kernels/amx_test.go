@@ -95,15 +95,46 @@ func testTileDot(t *testing.T) {
 						}
 					}
 				}
+				// Again with the same TileDot, a bias and rows of y 21 apart:
+				// the results plus the bias.
+				const stride = 21
+				bias := randomVec(rng, TileRows)
+				out2 := make([]float32, (rows-1)*stride+TileRows)
+				if !d.Dot(w, &a, out2, stride, bias) {
+					t.Fatalf("%s K=%d: Dot refused finite weights", dt, k)
+				}
+				checkBias := func(what string) {
+					for i := range rows {
+						for n := range TileRows {
+							if !use[i] {
+								continue
+							}
+							want := out[i*TileRows+n] + bias[n]
+							if got := out2[i*stride+n]; math.Float32bits(got) != math.Float32bits(want) {
+								t.Errorf("%s K=%d rows=%d %s: weight row %d, activation row %d: got %g, want %g",
+									dt, k, rows, what, n, i, got, want)
+							}
+						}
+					}
+				}
+				checkBias("with bias")
 				// A scale that is not finite, in the last row's last block.
 				bad := len(w) - int(dt.BlockBytes())
 				if dt == mim.Q6_K {
 					bad += 208
 				}
+				w0, w1 := w[bad], w[bad+1]
 				w[bad], w[bad+1] = 0x00, 0x7C
 				if d.Dot(w, &a, out, TileRows, nil) {
 					t.Errorf("%s K=%d: Dot accepted an infinite scale", dt, k)
 				}
+				// And the same results after the refusal.
+				w[bad], w[bad+1] = w0, w1
+				clear(out2)
+				if !d.Dot(w, &a, out2, stride, bias) {
+					t.Fatalf("%s K=%d: Dot refused finite weights", dt, k)
+				}
+				checkBias("after a refusal")
 			}
 		}
 	}
@@ -116,7 +147,10 @@ func BenchmarkTileDot(b *testing.B) {
 	rng := rand.New(rand.NewSource(12))
 	const k = 2048
 	for _, dt := range []mim.DType{mim.Q4_K, mim.Q6_K} {
-		for _, rows := range []int{16, 32, 64} {
+		for _, rows := range []int{16, 32, 64, 512} {
+			// The results go into a matrix of 2048 columns, as in a model's
+			// matrix product, where they are 16 of the columns.
+			const stride = 2048
 			var batch Q8Batch
 			batch.Reset(k, rows)
 			use := make([]bool, rows)
@@ -128,11 +162,11 @@ func BenchmarkTileDot(b *testing.B) {
 			a.Set(&batch, use)
 			w := randomRows(rng, dt, TileRows, k)
 			d := NewTileDot(dt, k)
-			out := make([]float32, TileRows*rows)
+			out := make([]float32, stride*rows)
 			b.Run(dt.String()+"/"+itoa(rows), func(b *testing.B) {
 				b.SetBytes(int64(len(w)))
 				for i := 0; i < b.N; i++ {
-					d.Dot(w, &a, out, TileRows, nil)
+					d.Dot(w, &a, out, stride, nil)
 				}
 				b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(TileRows*rows*k)*1e3, "ps/mac")
 			})

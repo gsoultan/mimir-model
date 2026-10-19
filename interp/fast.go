@@ -16,6 +16,7 @@ package interp
 import (
 	"encoding/binary"
 	"math"
+	"slices"
 	"sync"
 
 	mim "github.com/gsoultan/mimir-model"
@@ -50,6 +51,42 @@ var fastPaths = map[string]fastFunc{
 	"attention.v2":         fastAttentionV2,
 	"embedding.v1":         fastEmbedding,
 	"conv2d.v1":            fastConv2d,
+	"sigmoid.v1":           fastSigmoid,
+	"tanh.v1":              fastTanh,
+}
+
+// fastSigmoid and fastTanh compute sigmoid.v1 and tanh.v1 of f32 tensors
+// in float64, rounded once, which is within half a unit in the last place
+// of the exact result plus float64's own error: far inside the spec's
+// tolerances, rel (16 + 2 abs(x)) u and abs 16 u. A NaN gives the
+// reference's NaN, and infinities the limits, as the bodies do.
+func fastSigmoid(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	return fastUnaryF64(list, in, func(x float64) float64 { return 1 / (1 + math.Exp(-x)) })
+}
+
+func fastTanh(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	return fastUnaryF64(list, in, math.Tanh)
+}
+
+func fastUnaryF64(list []mim.Attr, in []*ref.Tensor, f func(float64) float64) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) != 1 || in[0].DType != mim.F32 {
+		return nil, false, nil
+	}
+	x := f32View(in[0])
+	y := make([]float32, len(x))
+	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
+	const piece = 4096
+	parallel((len(y)+piece-1)/piece, func(lo, hi int) {
+		lo, hi = lo*piece, min(hi*piece, len(y))
+		for i, v := range x[lo:hi] {
+			r := float32(f(float64(v)))
+			if r != r {
+				r = nan
+			}
+			y[lo+i] = r
+		}
+	})
+	return []*ref.Tensor{f32Tensor(in[0].Shape, y)}, true, nil
 }
 
 // matrixRows decodes rows of a [N, K] matrix of any decodable dtype.
@@ -229,6 +266,16 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 	// them. Without blocks, each weight row would read all of x, which for
 	// a long prompt does not fit in the cache.
 	rb := a8RowBlock(k, w.t.DType)
+	allQuantized := true
+	for _, q := range quantized {
+		allQuantized = allQuantized && q
+	}
+	// A run of 16 weight rows that the tile kernels computed for every
+	// row of x is done.
+	tileDone := func(j int) bool { return j/kernels.TileRows < len(tiled) && tiled[j/kernels.TileRows] }
+	if allQuantized && n%kernels.TileRows == 0 && len(tiled) == n/kernels.TileRows && !slices.Contains(tiled, false) {
+		return y
+	}
 	parallel(n, func(lo, hi int) {
 		rd := kernels.NewRowDot(w.t.DType, k)
 		var out [4]float32
@@ -238,10 +285,13 @@ func linearA8(x []float32, rows int, w *matrixRows, bias []float32, block int) [
 		for r0 := 0; r0 < rows; r0 += rb {
 			r1 := min(rows, r0+rb)
 			for j := lo; j < hi; j++ {
+				done := tileDone(j)
+				if done && allQuantized {
+					continue
+				}
 				row := w.rowBytesOf(j)
 				rd.LoadQ8(row)
 				q8, loaded := !refused[j-lo], false
-				done := j/kernels.TileRows < len(tiled) && tiled[j/kernels.TileRows]
 				for i := r0; i < r1; {
 					if done && quantized[i] {
 						i++

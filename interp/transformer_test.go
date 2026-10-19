@@ -393,3 +393,51 @@ func TestDequantMatmulA8(t *testing.T) {
 	bad.SetBits(7, uint64(math.Float32bits(float32(math.Inf(1)))))
 	checkFast(t, "dequant_matmul_a8.v1", nil, []*ref.Tensor{bad, kquant(rng, mim.Q4_K, 4, k)}, 1e-5)
 }
+
+// TestFastSigmoidTanh checks the sigmoid.v1 and tanh.v1 fast paths
+// against the definitions in float64 within the spec's tolerances, rel
+// (16 + 2 abs(x)) u and abs 16 u, over ordinary, large, tiny and special
+// inputs, plus half the smallest float32 for the rounding of a result
+// below it; NaN must give the reference's NaN, as the bodies do, and the
+// infinities the limits.
+func TestFastSigmoidTanh(t *testing.T) {
+	const u = 1.0 / (1 << 24)
+	rng := rand.New(rand.NewSource(12))
+	xs := []float32{0, float32(math.Copysign(0, -1)), 1e-30, -1e-30, 1e-8, 20, -20, 88, -88, 104, -104, 1e30, -1e30,
+		float32(math.Inf(1)), float32(math.Inf(-1)), float32(math.NaN())}
+	for range 5000 {
+		xs = append(xs, float32(rng.NormFloat64()*4))
+	}
+	x := f32t([]int{1, len(xs)}, xs...)
+	for _, tc := range []struct {
+		key   string
+		exact func(float64) float64
+		tol   func(x float64) float64
+	}{
+		{"sigmoid.v1", func(x float64) float64 { return 1 / (1 + math.Exp(-x)) },
+			func(x float64) float64 { return (16 + 2*math.Abs(x)) * u / (1 + math.Exp(-x)) }},
+		{"tanh.v1", math.Tanh, func(float64) float64 { return 16 * u }},
+	} {
+		got, handled, err := fastPaths[tc.key](nil, []*ref.Tensor{x}, []mim.DType{mim.F32}, nil)
+		if err != nil || !handled {
+			t.Fatalf("%s: handled %v, %v", tc.key, handled, err)
+		}
+		body, err := stdlib[tc.key](nil, []*ref.Tensor{x}, []mim.DType{mim.F32}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g, b := f32View(got[0]), f32View(body[0])
+		for i, v := range xs {
+			if v != v || math.IsInf(float64(v), 0) {
+				if math.Float32bits(g[i]) != math.Float32bits(b[i]) {
+					t.Errorf("%s(%g) = %x, body %x", tc.key, v, math.Float32bits(g[i]), math.Float32bits(b[i]))
+				}
+				continue
+			}
+			want := tc.exact(float64(v))
+			if d := math.Abs(float64(g[i]) - want); d > tc.tol(float64(v))+math.Ldexp(1, -150) {
+				t.Errorf("%s(%g) = %g, exact %g, tolerance %g", tc.key, v, g[i], want, tc.tol(float64(v)))
+			}
+		}
+	}
+}
