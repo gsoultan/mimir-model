@@ -371,7 +371,12 @@ func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) 
 	if kind == 'f' {
 		fa, fb, fy = f32View(a), f32View(b), f32View(t)
 	}
-	row := func(o int) {
+	// Work goes in pieces of at most piece elements of a row, so that
+	// operands of one shape, merged into a single row, still spread over
+	// the cores.
+	const piece = 8192
+	per := (inner + piece - 1) / piece
+	row := func(o, j0, j1 int) {
 		ia, ib := 0, 0
 		r := o
 		for k := len(axes) - 2; k >= 0; k-- {
@@ -380,33 +385,15 @@ func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) 
 			ia += i * axes[k].sa
 			ib += i * axes[k].sb
 		}
+		ia += j0 * last.sa
+		ib += j0 * last.sb
 		y := t.Data[o*inner*int(dt.BlockBytes()):]
 		switch kind {
 		case 'f':
-			x, z := fa[ia:], fb[ib:]
-			yf := fy[o*inner : (o+1)*inner]
-			ja, jb := 0, 0
-			for j := range yf {
-				u, v := x[ja], z[jb]
-				var r float32
-				switch opc {
-				case mim.OpAdd:
-					r = u + v
-				case mim.OpMul:
-					r = u * v
-				default:
-					r = maxF32(u, v, nan)
-				}
-				if r != r {
-					r = nan // the reference's NaN
-				}
-				yf[j] = r
-				ja += last.sa
-				jb += last.sb
-			}
+			binaryF32(opc, fa[ia:], last.sa, fb[ib:], last.sb, fy[o*inner+j0:o*inner+j1], nan)
 		case 'i':
 			ja, jb := ia, ib
-			for j := 0; j < inner; j++ {
+			for j := j0; j < j1; j++ {
 				var u, v int64
 				if es == 8 {
 					u = int64(binary.LittleEndian.Uint64(a.Data[8*ja:]))
@@ -423,7 +410,7 @@ func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) 
 			}
 		case 'b':
 			ja, jb := ia, ib
-			for j := 0; j < inner; j++ {
+			for j := j0; j < j1; j++ {
 				u, v := a.Data[ja] != 0, b.Data[jb] != 0
 				var r bool
 				switch opc {
@@ -444,12 +431,77 @@ func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) 
 			}
 		}
 	}
-	parallel(outer, func(lo, hi int) {
-		for o := lo; o < hi; o++ {
-			row(o)
+	parallel(outer*per, func(lo, hi int) {
+		for w := lo; w < hi; w++ {
+			o, p := w/per, w%per
+			row(o, p*piece, min((p+1)*piece, inner))
 		}
 	})
 	return t, true
+}
+
+// binaryF32 sets y[j] to x[j*sx] op z[j*sz] for f32 add, mul or max, with
+// the reference's NaN for a NaN result. The common strides get their own
+// loops.
+func binaryF32(opc mim.Opcode, x []float32, sx int, z []float32, sz int, y []float32, nan float32) {
+	n := len(y)
+	switch {
+	case opc == mim.OpMax && sx == 1 && sz == 1:
+		x, z = x[:n], z[:n]
+		for j := range y {
+			y[j] = maxF32(x[j], z[j], nan)
+		}
+	case opc == mim.OpMax && sx == 1 && sz == 0:
+		v := z[0]
+		x = x[:n]
+		for j := range y {
+			y[j] = maxF32(x[j], v, nan)
+		}
+	case opc == mim.OpAdd && sx == 1 && sz == 1:
+		x, z = x[:n], z[:n]
+		for j := range y {
+			y[j] = x[j] + z[j]
+		}
+	case opc == mim.OpAdd && sx == 1 && sz == 0:
+		v := z[0]
+		x = x[:n]
+		for j := range y {
+			y[j] = x[j] + v
+		}
+	case opc == mim.OpMul && sx == 1 && sz == 1:
+		x, z = x[:n], z[:n]
+		for j := range y {
+			y[j] = x[j] * z[j]
+		}
+	case opc == mim.OpMul && sx == 1 && sz == 0:
+		v := z[0]
+		x = x[:n]
+		for j := range y {
+			y[j] = x[j] * v
+		}
+	default:
+		ja, jb := 0, 0
+		for j := range y {
+			u, v := x[ja], z[jb]
+			switch opc {
+			case mim.OpAdd:
+				y[j] = u + v
+			case mim.OpMul:
+				y[j] = u * v
+			default:
+				y[j] = maxF32(u, v, nan)
+			}
+			ja += sx
+			jb += sz
+		}
+	}
+	if opc != mim.OpMax {
+		for j, r := range y {
+			if r != r {
+				y[j] = nan // the reference's NaN
+			}
+		}
+	}
 }
 
 // maxF32 is the reference's float max (ref.floatMax) in float32: NaN if

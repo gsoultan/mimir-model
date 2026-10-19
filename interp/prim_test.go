@@ -220,6 +220,10 @@ func TestFastBroadcast(t *testing.T) {
 		{{3, 1}, {1, 1}, {3, 1}},
 		{{4, 6}, {4, 6}, {4, 6}},
 		{{0, 3}, {1, 3}, {0, 3}},
+		// Large enough to be cut into pieces.
+		{{2, 100, 100}, {2, 100, 100}, {2, 100, 100}},
+		{{1, 3, 90, 90}, {1, 3, 1, 1}, {1, 3, 90, 90}},
+		{{1, 1}, {9000, 1}, {9000, 1}},
 	}
 	specials := []float32{0, float32(math.Copysign(0, -1)), float32(math.NaN()), float32(math.Inf(1)), float32(math.Inf(-1)), 1, -1}
 	fill := func(dt mim.DType, shape []int) *ref.Tensor {
