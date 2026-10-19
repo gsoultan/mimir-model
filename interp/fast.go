@@ -51,6 +51,42 @@ var fastPaths = map[string]fastFunc{
 	"attention.v2":         fastAttentionV2,
 	"embedding.v1":         fastEmbedding,
 	"conv2d.v1":            fastConv2d,
+	"sigmoid.v1":           fastSigmoid,
+	"tanh.v1":              fastTanh,
+}
+
+// fastSigmoid and fastTanh compute sigmoid.v1 and tanh.v1 of f32 tensors
+// in float64, rounded once, which is within half a unit in the last place
+// of the exact result plus float64's own error: far inside the spec's
+// tolerances, rel (16 + 2 abs(x)) u and abs 16 u. A NaN gives the
+// reference's NaN, and infinities the limits, as the bodies do.
+func fastSigmoid(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	return fastUnaryF64(list, in, func(x float64) float64 { return 1 / (1 + math.Exp(-x)) })
+}
+
+func fastTanh(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	return fastUnaryF64(list, in, math.Tanh)
+}
+
+func fastUnaryF64(list []mim.Attr, in []*ref.Tensor, f func(float64) float64) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) != 1 || in[0].DType != mim.F32 {
+		return nil, false, nil
+	}
+	x := f32View(in[0])
+	y := make([]float32, len(x))
+	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
+	const piece = 4096
+	parallel((len(y)+piece-1)/piece, func(lo, hi int) {
+		lo, hi = lo*piece, min(hi*piece, len(y))
+		for i, v := range x[lo:hi] {
+			r := float32(f(float64(v)))
+			if r != r {
+				r = nan
+			}
+			y[lo+i] = r
+		}
+	})
+	return []*ref.Tensor{f32Tensor(in[0].Shape, y)}, true, nil
 }
 
 // matrixRows decodes rows of a [N, K] matrix of any decodable dtype.
