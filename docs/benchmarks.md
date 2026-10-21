@@ -624,3 +624,79 @@ there, and both fall outside conv2d.v1's tolerance. tiny-cnn has about 170
 mim ops on tensors of a few thousand elements, and the interpreter's cost
 per op, a few hundred nanoseconds to a few microseconds, is most of its
 time; onnxruntime runs the whole network in 61 µs.
+
+## CNNs at onnxruntime's speed and past it
+
+The same 4-core Xeon at 2.1 GHz (shared cloud VM, AVX-512), Go 1.24,
+onnxruntime 1.29.0. This VM's cores barely scale (four busy threads run
+about 1.2 times as fast as one) and its timings swing by 20% from minute
+to minute, so each figure is the best of 12 runs, the two runtimes
+alternating in one window; "before" is mim at the previous section. The
+small network is also measured with both on one thread, which is how
+onnxruntime runs it fastest here.
+
+| model | threads | onnxruntime | mim before | mim after | after vs onnxruntime |
+| --- | --- | ---: | ---: | ---: | ---: |
+| tiny-cnn, batch 1 | 1 | 26.0 µs | 60 µs | 15.4 µs | 1.7x |
+| tiny-cnn, batch 8 | 1 | 93.1 µs | 324 µs | 69.8 µs | 1.33x |
+| tiny-cnn, batch 1 | 4 | 60.7 µs | 161 µs | 16.3 µs | 3.7x |
+| tiny-cnn, batch 8 | 4 | 120.1 µs | 545 µs | 74.4 µs | 1.6x |
+| ResNet-18 shape, batch 1 | 1 | 36.9 ms | | 58.3 ms | 0.63x |
+| ResNet-18 shape, batch 1 | 4 | 11.2 ms | 37.1 ms | 22.1 ms | 0.51x |
+
+The ResNet figures are medians of 15 runs of a network with random
+weights (`BatchNormalization` variances positive); mim's logits differ
+from onnxruntime's by at most 4.3e-4, on values up to 1080. Its first
+run, which packs every convolution's weights, takes 109 ms, and loading
+the file 0.5 ms (onnxruntime: 227 ms to load).
+
+On tiny-cnn, which has about 170 ops on tensors of a few thousand
+elements, the interpreter's time was almost all overhead: mim's run of
+batch 8 went from 324 µs to 70 µs, past onnxruntime's 93 µs, by taking
+work out of the step loop rather than by faster arithmetic. The LLM path
+is unchanged (TinyLlama Q4_K_M, 38-token prompt: 225 and 228 tokens per
+second before and after, generation 31.5 and 30.0, within this machine's
+variation). What changed, all in `interp` and `internal/kernels`:
+
+- **Convolutions** no longer copy each receptive field. The padded image
+  is laid out in phases (one per stride offset of each axis) so that
+  every tap of a kernel is one window of it, and `kernels.SgemmWindow`,
+  a 12 by 32 AVX-512 GEMM with a window offset per row of B, multiplies
+  the windows straight from the padded image, dropping the positions past
+  each output row with a mask as the results are stored. Padding runs on
+  a strided-copy kernel. A convolution whose output is small
+  (`convGatherF32`) gathers each tap's inputs with `VGATHERDPS` instead,
+  for up to eight filters at once, which costs less than padding and the
+  GEMM when there are only a few dozen output positions: the grouped and
+  1 by 1 convolutions of tiny-cnn went from 23 µs to 5 µs.
+- **Pooling** is compiled from the importer's chains of movement ops and
+  the maxes or adds over them into one step per pool: a tree of taps
+  over the padded input, run by `poolF32`, which combines all the taps of
+  four rows of output positions in registers (two rows to a vector when
+  the rows are 8 wide or less), or by a gathering kernel when the planes
+  are too narrow for rows. No window is ever stored.
+- **The epilogue of a convolution** (batch norm, bias, ReLU) runs in one
+  pass over each image on `epilogueF32`, with its per-channel operands
+  broadcast from memory, and `sigmoid.v1` and `tanh.v1` have AVX-512
+  kernels (16 lanes, Cephes exp, one division), 1.6 times the AVX2 ones.
+- **Broadcasting element-wise ops, pads, and strided copies** compute
+  their row offsets with counters instead of a division per element; the
+  worker pool is not woken for less than about 8 µs of work; and
+  per-run allocations are gone from the compiled plan, which makes 39
+  allocations for a batch of 8 (the inputs' and outputs' maps and the
+  outputs themselves).
+
+The results are the reference's bit for bit except the convolutions,
+sigmoid and tanh, which stay within their tolerances (conv2d.v1,
+sigmoid.v1 and tanh.v1 in spec/stdlib.md), and the kernels check against
+the reference kernels bit for bit in their tests, NaNs and the sign of
+zero included.
+
+ResNet is still half of onnxruntime's speed on four threads and two
+thirds on one. Three quarters of its time is in the GEMM kernel, which
+runs the network's 1.8 billion multiply-adds at about half of one core's
+float32 peak (the kernel reaches three quarters of it on its own tile
+benchmark; the rest goes to the windows' loads and the tiles' edges),
+where onnxruntime, with direct convolutions on a blocked channel layout,
+is at about three quarters. That layout is the next step for large
+networks; the small ones are now past onnxruntime.

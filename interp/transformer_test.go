@@ -171,6 +171,31 @@ func TestFastPathsMatchBodies(t *testing.T) {
 			t.Error("attention.v1 accepted f16 keys with f32 queries")
 		}
 	})
+	t.Run("matmul", func(t *testing.T) {
+		checkFast(t, "matmul.v1", nil, []*ref.Tensor{randF32(rng, []int{3, 7}, 1), randF32(rng, []int{7, 5}, 1)}, 1e-5)
+		got := checkFast(t, "matmul.v1", nil, []*ref.Tensor{randF32(rng, []int{2, 1, 3, 4}, 1), randF32(rng, []int{1, 3, 4, 2}, 1)}, 1e-5)
+		if !sameInts(got.Shape, []int{2, 3, 3, 2}) {
+			t.Fatalf("shape %v", got.Shape)
+		}
+	})
+	t.Run("softmax", func(t *testing.T) {
+		x := randF32(rng, []int{2, 5, 3}, 4)
+		for _, ax := range []int64{-1, 1, 0} {
+			checkFast(t, "softmax.v1", []mim.Attr{iAttr("axis", ax)}, []*ref.Tensor{x}, 1e-6)
+		}
+		// Rows with a NaN, only -inf, +inf, and a -inf beside finite values.
+		inf := float32(math.Inf(1))
+		y := f32t([]int{4, 3}, 1, float32(math.NaN()), 2, -inf, -inf, -inf, inf, 0, 1, -inf, 3, 4)
+		want, _ := stdlib["softmax.v1"](nil, []*ref.Tensor{y}, []mim.DType{mim.F32}, nil)
+		got, _, _ := fastPaths["softmax.v1"](nil, []*ref.Tensor{y}, []mim.DType{mim.F32}, nil)
+		g, w := f32View(got[0]), f32View(want[0])
+		for i := range w {
+			nan := g[i] != g[i] || w[i] != w[i]
+			if nan && math.Float32bits(g[i]) != math.Float32bits(w[i]) || !nan && math.Abs(float64(g[i]-w[i])) > 1e-6 {
+				t.Errorf("element %d is %g (%x), body %g (%x)", i, g[i], math.Float32bits(g[i]), w[i], math.Float32bits(w[i]))
+			}
+		}
+	})
 	t.Run("embedding", func(t *testing.T) {
 		table := quantized(t, mim.Q8_0, rng, 6, 32)
 		got := checkFast(t, "embedding.v1", nil, []*ref.Tensor{table, i64t([]int{1, 3}, 5, 0, 5)}, 0)
@@ -435,7 +460,8 @@ func TestFastSigmoidTanh(t *testing.T) {
 				continue
 			}
 			want := tc.exact(float64(v))
-			if d := math.Abs(float64(g[i]) - want); d > tc.tol(float64(v))+math.Ldexp(1, -150) {
+			// Plus n_min, the smallest normal float32 (stdlib.md section 1.3).
+			if d := math.Abs(float64(g[i]) - want); d > tc.tol(float64(v))+math.Ldexp(1, -126) {
 				t.Errorf("%s(%g) = %g, exact %g, tolerance %g", tc.key, v, g[i], want, tc.tol(float64(v)))
 			}
 		}
