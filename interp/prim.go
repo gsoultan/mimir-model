@@ -31,26 +31,42 @@ import (
 func (r *run) fastPrimitive(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	switch op.Opcode {
 	case mim.OpAdd, mim.OpMul:
-		if t, ok := fastAddMul(op.Opcode, in, dt, shape); ok {
+		if t, ok := fastAddMul(r.alloc, op.Opcode, in, dt, shape); ok {
 			return t, true
 		}
-		return fastBroadcast(op.Opcode, in, dt, shape)
+		return fastBroadcast(r.alloc, op.Opcode, in, dt, shape)
 	case mim.OpMax, mim.OpCmplt, mim.OpCmpeq, mim.OpAnd, mim.OpOr, mim.OpXor:
-		return fastBroadcast(op.Opcode, in, dt, shape)
+		return fastBroadcast(r.alloc, op.Opcode, in, dt, shape)
 	case mim.OpPermute:
-		return fastPermute(op, in, dt, shape)
+		return fastPermute(r.alloc, op, in, dt, shape)
 	case mim.OpReshape:
 		return r.reshapeView(op, in, dt, shape)
 	case mim.OpShrink:
-		return fastShrink(op, in, dt, shape)
+		return fastShrink(r.alloc, op, in, dt, shape)
 	case mim.OpPad:
-		return fastPad(op, in, dt, shape)
+		return fastPad(r.alloc, op, in, dt, shape)
 	case mim.OpScatter:
 		return r.scatterInPlace(op, in, dt, shape)
 	case mim.OpCast:
 		return fastCastF16(in, dt, shape)
+	case mim.OpNeg:
+		return fastNeg(r.alloc, in, dt)
 	}
 	return nil, false
+}
+
+// fastNeg negates an f32 tensor by flipping each sign bit, as the
+// reference does, NaNs included.
+func fastNeg(a *arena, in []*ref.Tensor, dt mim.DType) (*ref.Tensor, bool) {
+	if len(in) != 1 || dt != mim.F32 || in[0].DType != mim.F32 || !littleEndian {
+		return nil, false
+	}
+	x := f32View(in[0])
+	y := a.f32(len(x), false)
+	for i, v := range x {
+		y[i] = math.Float32frombits(math.Float32bits(v) ^ 1<<31)
+	}
+	return f32Tensor(in[0].Shape, y), true
 }
 
 // fastCastF16 casts an f32 tensor to f16, as a key-value cache in f16
@@ -78,18 +94,18 @@ func fastCastF16(in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool
 // fastAddMul adds or multiplies two f32 tensors of the output's shape.
 // Float32 addition and multiplication are correctly rounded, as the
 // primitives require, and a NaN result is the reference's NaN.
-func fastAddMul(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+func fastAddMul(al *arena, opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	if len(in) != 2 || dt != mim.F32 || in[0].DType != mim.F32 || in[1].DType != mim.F32 ||
 		!sameInts(in[0].Shape, shape) || !sameInts(in[1].Shape, shape) {
 		return nil, false
 	}
 	a, b := f32View(in[0]), f32View(in[1])
-	y := make([]float32, len(a))
+	y := al.f32(len(a), false)
 	b = b[:len(a)]
 	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
 	// Pieces of 4096 elements, so that a small tensor stays on one core.
 	const piece = 4096
-	parallel((len(y)+piece-1)/piece, func(lo, hi int) {
+	parallelWork((len(y)+piece-1)/piece, len(y), func(lo, hi int) {
 		lo, hi = lo*piece, min(hi*piece, len(y))
 		binaryF32(opc, a[lo:hi], 1, b[lo:hi], 1, y[lo:hi], nan)
 	})
@@ -101,7 +117,7 @@ func fastAddMul(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*r
 // same order, so the result is a copy; any other is copied in runs along
 // the last output axis, walking the input with strides instead of
 // recomputing every index as the reference does.
-func fastPermute(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+func fastPermute(al *arena, op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	p := attr(op, "perm")
 	if len(in) != 1 || in[0].DType != dt || p == nil || p.Type != mim.AttrInts ||
 		len(p.Ints) != len(shape) || len(shape) != len(in[0].Shape) {
@@ -123,12 +139,12 @@ func fastPermute(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.
 	if !moved {
 		return &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: append([]byte{}, x.Data...)}, true
 	}
-	return permuteStrided(x, p.Ints, shape)
+	return permuteStrided(al, x, p.Ints, shape)
 }
 
 // permuteStrided permutes x, of a dtype whose elements are whole bytes,
 // into shape.
-func permuteStrided(x *ref.Tensor, perm []int64, shape []int) (*ref.Tensor, bool) {
+func permuteStrided(al *arena, x *ref.Tensor, perm []int64, shape []int) (*ref.Tensor, bool) {
 	if x.DType.IsBlock() {
 		return nil, false
 	}
@@ -151,7 +167,7 @@ func permuteStrided(x *ref.Tensor, perm []int64, shape []int) (*ref.Tensor, bool
 	for _, d := range shape {
 		total *= d
 	}
-	y := make([]byte, total*es)
+	y := al.bytes(total*es, false)
 	if total == 0 {
 		return &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: y}, true
 	}
@@ -290,7 +306,7 @@ func (r *run) scatterInPlace(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape [
 // per-channel scale, without the reference's per-element index map: f32
 // add, mul and max; cmplt and cmpeq of i32 or i64; and, or, xor and cmpeq
 // of bools. Each element is computed as the reference computes it.
-func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+func fastBroadcast(al *arena, opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	if len(in) != 2 || in[0].DType != in[1].DType || len(in[0].Shape) != len(shape) ||
 		len(in[1].Shape) != len(shape) || len(shape) == 0 {
 		return nil, false
@@ -320,9 +336,10 @@ func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) 
 	}
 	var t *ref.Tensor
 	if kind == 'f' {
-		t = f32Tensor(shape, make([]float32, n))
+		t = f32Tensor(shape, al.f32(n, false))
 	} else {
-		t = &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: make([]byte, n)}
+		// Only the true results are written.
+		t = &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: al.bytes(n, true)}
 	}
 	if n == 0 {
 		return t, true
@@ -424,7 +441,7 @@ func fastBroadcast(opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) 
 			}
 		}
 	}
-	parallel(outer*per, func(lo, hi int) {
+	parallelWork(outer*per, ref.NumElems(shape), func(lo, hi int) {
 		for w := lo; w < hi; w++ {
 			o, p := w/per, w%per
 			row(o, p*piece, min((p+1)*piece, inner))
@@ -589,7 +606,7 @@ func noViews(g *mim.Graph) map[uint32]bool {
 
 // fastShrink copies the box of a shrink as runs along the last axes, in
 // parallel, instead of one element at a time.
-func fastShrink(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+func fastShrink(a *arena, op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	b := attr(op, "begin")
 	if len(in) != 1 || in[0].DType != dt || dt.IsBlock() || b == nil || b.Type != mim.AttrInts ||
 		len(b.Ints) != len(shape) || len(in[0].Shape) != len(shape) {
@@ -607,14 +624,14 @@ func fastShrink(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.T
 	if len(x.Data) < x.NumElems()*es {
 		return nil, false
 	}
-	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: make([]byte, ref.NumElems(shape)*es)}
+	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: a.bytes(ref.NumElems(shape)*es, false)}
 	copyBox(t.Data, shape, make([]int, len(shape)), x.Data, x.Shape, begin, shape, es)
 	return t, true
 }
 
 // fastPad fills the padding with the pad value and copies the input into
 // the middle, in parallel.
-func fastPad(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
+func fastPad(a *arena, op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
 	p := attr(op, "pads")
 	if len(in) != 1 || in[0].DType != dt || dt.IsBlock() || p == nil || p.Type != mim.AttrInts ||
 		len(p.Ints) != 2*len(shape) || len(in[0].Shape) != len(shape) {
@@ -645,16 +662,19 @@ func fastPad(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tens
 	}
 	value := pv.Data[:es]
 	n := ref.NumElems(shape)
-	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: make([]byte, n*es)}
 	zero := true
 	for _, c := range value {
 		zero = zero && c == 0
 	}
+	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: a.bytes(n*es, zero)}
 	if !zero {
 		const piece = 4096
-		parallel((n+piece-1)/piece, func(lo, hi int) {
-			for i := lo * piece; i < min(hi*piece, n); i++ {
-				copy(t.Data[i*es:(i+1)*es], value)
+		parallelWork((n+piece-1)/piece, n, func(lo, hi int) {
+			// One element, then the filled part copied after itself.
+			d := t.Data[lo*piece*es : min(hi*piece, n)*es]
+			done := copy(d, value)
+			for done < len(d) {
+				done += copy(d[done:], d[:done])
 			}
 		})
 	}
@@ -702,7 +722,7 @@ func copyBox(dst []byte, dstShape, dstOff []int, src []byte, srcShape, srcOff, b
 	rows := n / inner
 	const piece = 64 << 10 // bytes per parallel piece, at least
 	per := max(1, piece/max(1, runBytes))
-	parallel((rows+per-1)/per, func(lo, hi int) {
+	parallelWork((rows+per-1)/per, n*es/4, func(lo, hi int) {
 		idx := make([]int, k)
 		for row := lo * per; row < min(hi*per, rows); row++ {
 			so, do := sb, db

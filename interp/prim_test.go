@@ -153,7 +153,7 @@ func TestFastPermute(t *testing.T) {
 			}
 			for _, p := range perms {
 				shape := []int{xs[p[0]], xs[p[1]], xs[p[2]], xs[p[3]]}
-				got, ok := fastPermute(perm(p...), []*ref.Tensor{x}, dt, shape)
+				got, ok := fastPermute(nil, perm(p...), []*ref.Tensor{x}, dt, shape)
 				if !ok {
 					t.Errorf("%s %v perm %v: not handled", dt, xs, p)
 					continue
@@ -172,7 +172,7 @@ func TestFastPermute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := fastPermute(perm(1, 0), []*ref.Tensor{q}, mim.Q8_0, []int{32, 2}); ok {
+	if _, ok := fastPermute(nil, perm(1, 0), []*ref.Tensor{q}, mim.Q8_0, []int{32, 2}); ok {
 		t.Error("handled a block dtype")
 	}
 }
@@ -257,7 +257,7 @@ func TestFastBroadcast(t *testing.T) {
 	for _, c := range cases {
 		for _, s := range shapes {
 			a, b := fill(c.in, s[0]), fill(c.in, s[1])
-			got, ok := fastBroadcast(c.op, []*ref.Tensor{a, b}, c.out, s[2])
+			got, ok := fastBroadcast(nil, c.op, []*ref.Tensor{a, b}, c.out, s[2])
 			if !ok {
 				t.Fatalf("%s %s %v %v: not handled", c.op, c.in, s[0], s[1])
 			}
@@ -270,7 +270,7 @@ func TestFastBroadcast(t *testing.T) {
 			}
 			// Same shapes: the same-shape add and multiply too.
 			if (c.op == mim.OpAdd || c.op == mim.OpMul) && sameInts(s[0], s[2]) && sameInts(s[1], s[2]) {
-				got, ok := fastAddMul(c.op, []*ref.Tensor{a, b}, c.out, s[2])
+				got, ok := fastAddMul(nil, c.op, []*ref.Tensor{a, b}, c.out, s[2])
 				if !ok || !bytes.Equal(got.Data, want.Data) {
 					t.Errorf("fastAddMul %s %v: handled %v, differs from the reference", c.op, s[0], ok)
 				}
@@ -279,10 +279,10 @@ func TestFastBroadcast(t *testing.T) {
 	}
 	// Shapes that do not broadcast and dtypes without a fast path fall back.
 	x := fill(mim.F32, []int{2, 3})
-	if _, ok := fastBroadcast(mim.OpAdd, []*ref.Tensor{x, fill(mim.F32, []int{3, 2})}, mim.F32, []int{2, 3}); ok {
+	if _, ok := fastBroadcast(nil, mim.OpAdd, []*ref.Tensor{x, fill(mim.F32, []int{3, 2})}, mim.F32, []int{2, 3}); ok {
 		t.Error("mismatched shapes were handled")
 	}
-	if _, ok := fastBroadcast(mim.OpPow, []*ref.Tensor{x, x}, mim.F32, []int{2, 3}); ok {
+	if _, ok := fastBroadcast(nil, mim.OpPow, []*ref.Tensor{x, x}, mim.F32, []int{2, 3}); ok {
 		t.Error("pow was handled")
 	}
 }
@@ -386,7 +386,7 @@ func TestFastShrinkPad(t *testing.T) {
 		}
 		sh := &mim.Op{Opcode: mim.OpShrink, Attrs: []mim.Attr{
 			{Key: "begin", Type: mim.AttrInts, Ints: begin}, {Key: "end", Type: mim.AttrInts, Ints: end}}}
-		got, ok := fastShrink(sh, []*ref.Tensor{x}, dt, out)
+		got, ok := fastShrink(nil, sh, []*ref.Tensor{x}, dt, out)
 		want, err := ref.Eval(mim.OpShrink, sh.Attrs, []*ref.Tensor{x}, dt, out)
 		if err != nil || !ok || !bytes.Equal(got.Data, want.Data) {
 			t.Fatalf("shrink %v of %v: handled %v, %v", begin, shape, ok, err)
@@ -396,7 +396,7 @@ func TestFastShrinkPad(t *testing.T) {
 			pa = append(pa, mim.Attr{Key: "value", Type: mim.AttrFloat, Float: math.Inf(-1)})
 		}
 		pd := &mim.Op{Opcode: mim.OpPad, Attrs: pa}
-		got, ok = fastPad(pd, []*ref.Tensor{x}, dt, padded)
+		got, ok = fastPad(nil, pd, []*ref.Tensor{x}, dt, padded)
 		want, err = ref.Eval(mim.OpPad, pd.Attrs, []*ref.Tensor{x}, dt, padded)
 		if err != nil || !ok || !bytes.Equal(got.Data, want.Data) {
 			t.Fatalf("pad %v of %v: handled %v, %v", pads, shape, ok, err)

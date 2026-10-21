@@ -141,8 +141,7 @@ func (e *epilogue) apply(y []float32, n, f, nf, plane, p0 int) {
 func (r *run) fusedConv(first int, f *convFusion, in []*ref.Tensor, sc *scope) (*ref.Tensor, bool, error) {
 	ops := r.p.g.Main().Ops
 	call := &ops[first]
-	outV := r.p.g.Values[call.Outputs[0]]
-	shape, err := r.shape(outV)
+	shape, err := r.shapeOf(call.Outputs[0])
 	if err != nil || len(shape) != 4 || len(in) < 2 || in[0].DType != mim.F32 {
 		return nil, false, nil
 	}
@@ -195,7 +194,7 @@ func (r *run) fusedConv(first int, f *convFusion, in []*ref.Tensor, sc *scope) (
 		if err := r.reserve(mim.F32, shape); err != nil {
 			return nil, false, err
 		}
-		out, handled, err := r.p.convGemm(cattrs, in, []mim.DType{mim.F32}, e)
+		out, handled, err := r.p.convGemm(r.alloc, cattrs, in, []mim.DType{mim.F32}, e)
 		if err != nil {
 			return nil, false, err
 		}

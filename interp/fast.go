@@ -53,6 +53,8 @@ var fastPaths = map[string]fastFunc{
 	"conv2d.v1":            fastConv2d,
 	"sigmoid.v1":           fastSigmoid,
 	"tanh.v1":              fastTanh,
+	"matmul.v1":            fastMatmul,
+	"softmax.v1":           fastSoftmax,
 }
 
 // fastSigmoid and fastTanh compute sigmoid.v1 and tanh.v1 of f32 tensors
@@ -76,7 +78,7 @@ func fastUnaryF64(list []mim.Attr, in []*ref.Tensor, f func(float64) float64) ([
 	y := make([]float32, len(x))
 	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
 	const piece = 4096
-	parallel((len(y)+piece-1)/piece, func(lo, hi int) {
+	parallelWork((len(y)+piece-1)/piece, 8*len(y), func(lo, hi int) {
 		lo, hi = lo*piece, min(hi*piece, len(y))
 		for i, v := range x[lo:hi] {
 			r := float32(f(float64(v)))
@@ -121,7 +123,7 @@ func (m *matrixRows) row(i int, dst []float32) {
 func linearF32(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
 	n, k := w.t.Shape[0], w.k
 	y := make([]float32, rows*n)
-	parallel(n, func(lo, hi int) {
+	parallelWork(n, rows*n*k/16, func(lo, hi int) {
 		rd := kernels.NewRowDot(w.t.DType, k)
 		for j := lo; j < hi; j++ {
 			rd.Load(w.rowBytesOf(j), rows)
@@ -794,4 +796,134 @@ func fastEmbedding(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int
 	}
 	shape := append(append([]int{}, ids.Shape...), m.k)
 	return []*ref.Tensor{f32Tensor(shape, y)}, true, nil
+}
+
+// fastMatmul computes matmul.v1 of f32 matrices, batch dimensions
+// broadcast, summing each output element in float64 and rounding once:
+// within the composite's tolerance, K u sum |a b|. A NaN result is the
+// reference's NaN.
+func fastMatmul(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) != 2 || in[0].DType != mim.F32 || in[1].DType != mim.F32 {
+		return nil, false, nil
+	}
+	a, b := in[0], in[1]
+	r := len(a.Shape)
+	if r < 2 || len(b.Shape) != r {
+		return nil, false, nil
+	}
+	m, k, n := a.Shape[r-2], a.Shape[r-1], b.Shape[r-1]
+	if b.Shape[r-2] != k {
+		return nil, false, nil
+	}
+	// The output's shape, and the strides of a and b over its batch
+	// index, 0 along a broadcast dimension.
+	shape := make([]int, r)
+	shape[r-2], shape[r-1] = m, n
+	batch := 1
+	sa, sb := make([]int, r-2), make([]int, r-2)
+	for i, za, zb := r-3, m*k, k*n; i >= 0; i-- {
+		da, db := a.Shape[i], b.Shape[i]
+		if da != db && da != 1 && db != 1 {
+			return nil, false, nil
+		}
+		shape[i] = max(da, db)
+		if da != 1 {
+			sa[i] = za
+		}
+		if db != 1 {
+			sb[i] = zb
+		}
+		za, zb = za*da, zb*db
+		batch *= shape[i]
+	}
+	av, bv := f32View(a), f32View(b)
+	y := make([]float32, batch*m*n)
+	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
+	parallelWork(batch*m, batch*m*n*k/4, func(lo, hi int) {
+		acc := make([]float64, n)
+		for bi := lo; bi < hi; bi++ {
+			bt, i := bi/m, bi%m
+			oa, ob := 0, 0
+			for d, q := r-3, bt; d >= 0; d-- {
+				oa += q % shape[d] * sa[d]
+				ob += q % shape[d] * sb[d]
+				q /= shape[d]
+			}
+			clear(acc)
+			arow := av[oa+i*k : oa+(i+1)*k]
+			for kk, x := range arow {
+				xf := float64(x)
+				for j, w := range bv[ob+kk*n : ob+(kk+1)*n] {
+					acc[j] += xf * float64(w)
+				}
+			}
+			out := y[bi*n : (bi+1)*n]
+			for j, v := range acc {
+				f := float32(v)
+				if f != f {
+					f = nan
+				}
+				out[j] = f
+			}
+		}
+	})
+	return []*ref.Tensor{f32Tensor(shape, y)}, true, nil
+}
+
+// fastSoftmax computes softmax.v1 of an f32 tensor in float64, rounding
+// each result once: within the composite's tolerance, rel (N + 32 +
+// 2 |x - m|) u. As in the body, a NaN anywhere along the axis, an axis of
+// only -inf or one with +inf gives NaN, the reference's.
+func fastSoftmax(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(in) != 1 || in[0].DType != mim.F32 {
+		return nil, false, nil
+	}
+	a, err := readAttrs(list, "axis")
+	if err != nil {
+		return nil, false, err
+	}
+	ax64, err := a.int("axis", -1)
+	if err != nil {
+		return nil, false, err
+	}
+	x := in[0]
+	ax, err := axis(ax64, len(x.Shape))
+	if err != nil {
+		return nil, false, err
+	}
+	l := x.Shape[ax]
+	inner := ref.NumElems(x.Shape[ax+1:])
+	outer := ref.NumElems(x.Shape[:ax])
+	xv := f32View(x)
+	y := make([]float32, len(xv))
+	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
+	parallelWork(outer*inner, len(xv)*8, func(lo, hi int) {
+		e := make([]float64, l)
+		for oi := lo; oi < hi; oi++ {
+			base := oi/inner*l*inner + oi%inner
+			m := math.Inf(-1)
+			for j := range l {
+				v := float64(xv[base+j*inner])
+				if v > m || v != v {
+					m = v
+				}
+				if m != m {
+					break
+				}
+			}
+			var s float64
+			for j := range l {
+				e[j] = math.Exp(float64(xv[base+j*inner]) - m)
+				s += e[j]
+			}
+			for j := range l {
+				f := float32(e[j] / s)
+				if f != f {
+					f = nan
+				}
+				y[base+j*inner] = f
+			}
+		}
+	})
+	return []*ref.Tensor{f32Tensor(x.Shape, y)}, true, nil
 }

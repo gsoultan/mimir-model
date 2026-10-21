@@ -50,6 +50,23 @@ func parallel(n int, f func(lo, hi int)) {
 	workers.cur.Store(nil) // f may hold large buffers
 }
 
+// parallelWork is parallel for a call that does about work units of work
+// in all, a unit being about a nanosecond of one core's time: an element
+// read and written, or 16 multiply-adds. Below minParallelWork, f runs on
+// the calling goroutine alone. A small model's ops are mostly this small,
+// and for them waking and joining the workers costs more than it saves.
+func parallelWork(n, work int, f func(lo, hi int)) {
+	if work < minParallelWork {
+		f(0, n)
+		return
+	}
+	parallel(n, f)
+}
+
+// minParallelWork is the least work that parallelWork hands to the
+// workers.
+const minParallelWork = 1 << 17
+
 // parallelPieces is the number of pieces per CPU.
 const parallelPieces = 8
 

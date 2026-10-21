@@ -76,25 +76,42 @@ var dtypes = map[DType]dtypeInfo{
 	Affine4: {"affine4_g64", 64, 36, true},
 }
 
+// dtypeTable is dtypes indexed by dtype, for the lookups that the kernels
+// make for every op: an array index rather than a map access.
+var dtypeTable = func() (t [Affine4 + 1]dtypeInfo) {
+	for d, i := range dtypes {
+		t[d] = i
+	}
+	return t
+}()
+
+// lookup returns d's description, and whether d is defined.
+func lookup(d DType) (dtypeInfo, bool) {
+	if d >= DType(len(dtypeTable)) || dtypeTable[d].name == "" {
+		return dtypeInfo{}, false
+	}
+	return dtypeTable[d], true
+}
+
 // Valid reports whether d is a dtype defined by this version of the spec.
-func (d DType) Valid() bool { _, ok := dtypes[d]; return ok }
+func (d DType) Valid() bool { _, ok := lookup(d); return ok }
 
 // String returns the spec name of d.
 func (d DType) String() string {
-	if i, ok := dtypes[d]; ok {
+	if i, ok := lookup(d); ok {
 		return i.name
 	}
 	return "invalid"
 }
 
 // IsBlock reports whether d is a block-quantized dtype.
-func (d DType) IsBlock() bool { return dtypes[d].blockElems > 1 }
+func (d DType) IsBlock() bool { i, _ := lookup(d); return i.blockElems > 1 }
 
 // BlockElems is the number of elements per block (1 for plain dtypes).
-func (d DType) BlockElems() uint64 { return dtypes[d].blockElems }
+func (d DType) BlockElems() uint64 { i, _ := lookup(d); return i.blockElems }
 
 // BlockBytes is the number of bytes per block (the element size for plain dtypes).
-func (d DType) BlockBytes() uint64 { return dtypes[d].blockBytes }
+func (d DType) BlockBytes() uint64 { i, _ := lookup(d); return i.blockBytes }
 
 // ParseDType returns the dtype with the given spec name.
 func ParseDType(name string) (DType, bool) {
@@ -110,7 +127,7 @@ func ParseDType(name string) (DType, bool) {
 // occupies, checking every multiplication for overflow. For block dtypes the
 // last dimension must be a multiple of the block size and the rank at least 1.
 func ByteSize(d DType, shape []uint64) (uint64, error) {
-	info, ok := dtypes[d]
+	info, ok := lookup(d)
 	if !ok {
 		return 0, errf(CodeBadDType, "unknown dtype %d", uint32(d))
 	}
