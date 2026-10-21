@@ -116,6 +116,18 @@ func expSumF32AVX2(x *float32, n int, m float32) float32
 func siluMulF32AVX2(a, b, out *float32, n int)
 
 //go:noescape
+func sigmoidF32AVX2(x, y *float32, n int, nan float32)
+
+//go:noescape
+func sigmoidF32AVX512(x, y *float32, n int, nan float32)
+
+//go:noescape
+func tanhF32AVX2(x, y *float32, n int, nan float32)
+
+//go:noescape
+func tanhF32AVX512(x, y *float32, n int, nan float32)
+
+//go:noescape
 func wsumF32AVX2(p, v *float32, n, d int, acc *float32)
 
 //go:noescape

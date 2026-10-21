@@ -132,6 +132,9 @@ func TestConvGemm(t *testing.T) {
 		{1, 3, 33, 35, 13, 7, 7, 1, 2, 2, 1, 1, 3, 3, 3, 3, false},
 		{3, 8, 10, 10, 8, 3, 3, 8, 1, 1, 1, 1, 1, 1, 1, 1, true},
 		{1, 6, 4, 4, 6, 3, 3, 3, 1, 1, 2, 2, 2, 2, 2, 2, false},
+		// Small images side by side in one product.
+		{5, 6, 6, 7, 20, 3, 3, 1, 1, 2, 1, 1, 1, 1, 1, 1, true},
+		{4, 16, 4, 4, 4, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, false},
 	}
 	const u = 1.0 / (1 << 24)
 	p := &Program{isFixed: map[*ref.Tensor]bool{}}
@@ -151,7 +154,7 @@ func TestConvGemm(t *testing.T) {
 			intsAttr("pads", int64(tc.top), int64(tc.bottom), int64(tc.left), int64(tc.right)),
 			iAttr("groups", int64(tc.g)),
 		}
-		out, handled, err := p.convGemm(attrs, in, []mim.DType{mim.F32}, nil)
+		out, handled, err := p.convGemm(nil, attrs, in, []mim.DType{mim.F32}, nil)
 		if err != nil || !handled {
 			t.Fatalf("case %d: handled %v, %v", ci, handled, err)
 		}

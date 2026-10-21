@@ -53,41 +53,54 @@ var fastPaths = map[string]fastFunc{
 	"conv2d.v1":            fastConv2d,
 	"sigmoid.v1":           fastSigmoid,
 	"tanh.v1":              fastTanh,
+	"matmul.v1":            fastMatmul,
+	"softmax.v1":           fastSoftmax,
 }
 
 // fastSigmoid and fastTanh compute sigmoid.v1 and tanh.v1 of f32 tensors
-// in float64, rounded once, which is within half a unit in the last place
-// of the exact result plus float64's own error: far inside the spec's
-// tolerances, rel (16 + 2 abs(x)) u and abs 16 u. A NaN gives the
-// reference's NaN, and infinities the limits, as the bodies do.
+// with the kernels of package kernels: in float32 within a few units in
+// the last place where there is a vector kernel, else in float64 rounded
+// once; both inside the spec's tolerances, rel (16 + 2 abs(x)) u and abs
+// 16 u. A NaN gives the reference's NaN, and infinities the limits, as
+// the bodies do.
 func fastSigmoid(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	return fastUnaryF64(list, in, func(x float64) float64 { return 1 / (1 + math.Exp(-x)) })
+	return fastUnaryF32(list, in, kernels.SigmoidF32)
 }
 
 func fastTanh(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	return fastUnaryF64(list, in, math.Tanh)
+	return fastUnaryF32(list, in, kernels.TanhF32)
 }
 
-func fastUnaryF64(list []mim.Attr, in []*ref.Tensor, f func(float64) float64) ([]*ref.Tensor, bool, error) {
+func fastUnaryF32(list []mim.Attr, in []*ref.Tensor, f func(y, x []float32, nan float32)) ([]*ref.Tensor, bool, error) {
 	if len(list) != 0 || len(in) != 1 || in[0].DType != mim.F32 {
 		return nil, false, nil
 	}
-	x := f32View(in[0])
-	y := make([]float32, len(x))
-	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
-	const piece = 4096
-	parallel((len(y)+piece-1)/piece, func(lo, hi int) {
-		lo, hi = lo*piece, min(hi*piece, len(y))
-		for i, v := range x[lo:hi] {
-			r := float32(f(float64(v)))
-			if r != r {
-				r = nan
-			}
-			y[lo+i] = r
-		}
-	})
+	y := make([]float32, in[0].NumElems())
+	unaryF32(y, f32View(in[0]), f)
 	return []*ref.Tensor{f32Tensor(in[0].Shape, y)}, true, nil
 }
+
+// unaryF32 sets y = f(x), in pieces across the workers when y is long.
+func unaryF32(y, x []float32, f func(y, x []float32, nan float32)) {
+	parallelWork(pieces(len(y), unaryPiece), len(y), func(lo, hi int) {
+		unaryF32Piece(y, x, f, lo, hi)
+	})
+}
+
+// unaryPiece is the elements of a piece of a unary op's work.
+const unaryPiece = 4096
+
+// pieces is the number of pieces of n elements, per pieces each.
+func pieces(n, per int) int { return (n + per - 1) / per }
+
+// unaryF32Piece sets pieces lo to hi-1 of y = f(x).
+func unaryF32Piece(y, x []float32, f func(y, x []float32, nan float32), lo, hi int) {
+	lo, hi = lo*unaryPiece, min(hi*unaryPiece, len(y))
+	f(y[lo:hi], x[lo:hi], nanF32)
+}
+
+// nanF32 is the reference's NaN.
+var nanF32 = math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
 
 // matrixRows decodes rows of a [N, K] matrix of any decodable dtype.
 type matrixRows struct {
@@ -121,20 +134,25 @@ func (m *matrixRows) row(i int, dst []float32) {
 func linearF32(x []float32, rows int, w *matrixRows, bias []float32) []float32 {
 	n, k := w.t.Shape[0], w.k
 	y := make([]float32, rows*n)
-	parallel(n, func(lo, hi int) {
-		rd := kernels.NewRowDot(w.t.DType, k)
-		for j := lo; j < hi; j++ {
-			rd.Load(w.rowBytesOf(j), rows)
-			for i := 0; i < rows; i++ {
-				s := rd.Dot(x[i*k : (i+1)*k])
-				if bias != nil {
-					s += bias[j]
-				}
-				y[i*n+j] = s
-			}
-		}
-	})
+	parallelWork(n, rows*n*k/16, func(lo, hi int) { linearCols(y, x, rows, w, bias, lo, hi) })
 	return y
+}
+
+// linearCols computes columns lo to hi-1 of y = x w^T + bias, y of
+// rows rows of the n rows of w.
+func linearCols(y, x []float32, rows int, w *matrixRows, bias []float32, lo, hi int) {
+	n, k := w.t.Shape[0], w.k
+	rd := kernels.NewRowDot(w.t.DType, k)
+	for j := lo; j < hi; j++ {
+		rd.Load(w.rowBytesOf(j), rows)
+		for i := 0; i < rows; i++ {
+			s := rd.Dot(x[i*k : (i+1)*k])
+			if bias != nil {
+				s += bias[j]
+			}
+			y[i*n+j] = s
+		}
+	}
 }
 
 func linearFast(in []*ref.Tensor) ([]*ref.Tensor, bool) {
@@ -794,4 +812,163 @@ func fastEmbedding(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int
 	}
 	shape := append(append([]int{}, ids.Shape...), m.k)
 	return []*ref.Tensor{f32Tensor(shape, y)}, true, nil
+}
+
+// fastMatmul computes matmul.v1 of f32 matrices, batch dimensions
+// broadcast, summing each output element in float64 and rounding once:
+// within the composite's tolerance, K u sum |a b|. A NaN result is the
+// reference's NaN.
+func fastMatmul(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(list) != 0 || len(in) != 2 || in[0].DType != mim.F32 || in[1].DType != mim.F32 {
+		return nil, false, nil
+	}
+	mm, ok := newMatmul(in[0].Shape, in[1].Shape)
+	if !ok {
+		return nil, false, nil
+	}
+	av, bv := f32View(in[0]), f32View(in[1])
+	y := make([]float32, mm.batch*mm.m*mm.n)
+	parallelWork(mm.batch*mm.m, mm.batch*mm.m*mm.n*mm.k/4, func(lo, hi int) { mm.rows(y, av, bv, lo, hi) })
+	return []*ref.Tensor{f32Tensor(mm.shape, y)}, true, nil
+}
+
+// A matmul is the shape of a matmul.v1 of f32 tensors.
+type matmul struct {
+	shape   []int
+	sa, sb  []int // the strides of a and b over the output's batch index, 0 along a broadcast dimension
+	batch   int
+	m, k, n int
+}
+
+func newMatmul(aShape, bShape []int) (*matmul, bool) {
+	r := len(aShape)
+	if r < 2 || len(bShape) != r {
+		return nil, false
+	}
+	mm := &matmul{m: aShape[r-2], k: aShape[r-1], n: bShape[r-1], batch: 1}
+	if bShape[r-2] != mm.k {
+		return nil, false
+	}
+	mm.shape = make([]int, r)
+	mm.shape[r-2], mm.shape[r-1] = mm.m, mm.n
+	mm.sa, mm.sb = make([]int, r-2), make([]int, r-2)
+	for i, za, zb := r-3, mm.m*mm.k, mm.k*mm.n; i >= 0; i-- {
+		da, db := aShape[i], bShape[i]
+		if da != db && da != 1 && db != 1 {
+			return nil, false
+		}
+		mm.shape[i] = max(da, db)
+		if da != 1 {
+			mm.sa[i] = za
+		}
+		if db != 1 {
+			mm.sb[i] = zb
+		}
+		za, zb = za*da, zb*db
+		mm.batch *= mm.shape[i]
+	}
+	return mm, true
+}
+
+// rows computes rows lo to hi-1 of y, over all batches, each element a
+// float64 sum in order rounded once.
+func (mm *matmul) rows(y, av, bv []float32, lo, hi int) {
+	m, k, n, r := mm.m, mm.k, mm.n, len(mm.shape)
+	acc := make([]float64, n)
+	for bi := lo; bi < hi; bi++ {
+		bt, i := bi/m, bi%m
+		oa, ob := 0, 0
+		for d, q := r-3, bt; d >= 0; d-- {
+			oa += q % mm.shape[d] * mm.sa[d]
+			ob += q % mm.shape[d] * mm.sb[d]
+			q /= mm.shape[d]
+		}
+		clear(acc)
+		arow := av[oa+i*k : oa+(i+1)*k]
+		for kk, x := range arow {
+			xf := float64(x)
+			for j, w := range bv[ob+kk*n : ob+(kk+1)*n] {
+				acc[j] += xf * float64(w)
+			}
+		}
+		out := y[bi*n : (bi+1)*n]
+		for j, v := range acc {
+			f := float32(v)
+			if f != f {
+				f = nanF32
+			}
+			out[j] = f
+		}
+	}
+}
+
+func fastSoftmax(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	if len(in) != 1 || in[0].DType != mim.F32 {
+		return nil, false, nil
+	}
+	x := in[0]
+	sm, err := newSoftmax(list, x.Shape)
+	if err != nil {
+		return nil, false, err
+	}
+	xv := f32View(x)
+	y := make([]float32, len(xv))
+	parallelWork(sm.outer*sm.inner, len(xv)*8, func(lo, hi int) { sm.rows(y, xv, lo, hi) })
+	return []*ref.Tensor{f32Tensor(x.Shape, y)}, true, nil
+}
+
+// A softmax is the shape of a softmax.v1 of an f32 tensor: rows of l
+// elements inner apart, outer*inner of them.
+type softmax struct {
+	l, inner, outer int
+}
+
+// newSoftmax reads the axis of a softmax.v1 over shape.
+func newSoftmax(list []mim.Attr, shape []int) (*softmax, error) {
+	a, err := readAttrs(list, "axis")
+	if err != nil {
+		return nil, err
+	}
+	ax64, err := a.int("axis", -1)
+	if err != nil {
+		return nil, err
+	}
+	ax, err := axis(ax64, len(shape))
+	if err != nil {
+		return nil, err
+	}
+	return &softmax{l: shape[ax], inner: ref.NumElems(shape[ax+1:]), outer: ref.NumElems(shape[:ax])}, nil
+}
+
+// rows computes rows lo to hi-1 of y = softmax(x), in float64 rounded
+// once, with the body's NaN handling: a NaN anywhere in a row makes the
+// row NaN.
+func (sm *softmax) rows(y, xv []float32, lo, hi int) {
+	l, inner := sm.l, sm.inner
+	e := make([]float64, l)
+	for oi := lo; oi < hi; oi++ {
+		base := oi/inner*l*inner + oi%inner
+		m := math.Inf(-1)
+		for j := range l {
+			v := float64(xv[base+j*inner])
+			if v > m || v != v {
+				m = v
+			}
+			if m != m {
+				break
+			}
+		}
+		var s float64
+		for j := range l {
+			e[j] = math.Exp(float64(xv[base+j*inner]) - m)
+			s += e[j]
+		}
+		for j := range l {
+			f := float32(e[j] / s)
+			if f != f {
+				f = nanF32
+			}
+			y[base+j*inner] = f
+		}
+	}
 }

@@ -35,7 +35,7 @@ import (
 // and unknown dtypes CodeBadDType. Integer dtypes are converted to float32
 // with Go's conversion rules (64-bit integers and F64 may lose precision).
 func Dequantize(dt DType, src []byte, dst []float32) error {
-	info, ok := dtypes[dt]
+	info, ok := lookup(dt)
 	if !ok {
 		return errf(CodeBadDType, "unknown dtype %d", uint32(dt))
 	}
@@ -169,7 +169,7 @@ func decode(dt DType, src []byte, dst []float32) bool {
 // be a multiple of the block size and len(dst) the matching byte size;
 // otherwise CodeSizeMismatch is returned.
 func Quantize(dt DType, src []float32, dst []byte) error {
-	info, ok := dtypes[dt]
+	info, ok := lookup(dt)
 	if !ok {
 		return errf(CodeBadDType, "unknown dtype %d", uint32(dt))
 	}

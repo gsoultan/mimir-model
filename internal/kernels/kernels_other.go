@@ -48,6 +48,30 @@ func sgemm12x32(a, b *float32, ldb int, c *float32, ldc, k, rows int, mask uint3
 	panic("no assembly")
 }
 
+func sgemm12x32w(a, b *float32, boff *int, c *float32, ldc, k, rows int, mask uint32, acc int, bias *float32) {
+	panic("no assembly")
+}
+
 func binF32(op int, y, x, z *float32, n, scalar int, nan float32) { panic("no assembly") }
 
+func poolF32(op int, y, x *float32, offs *int, taps, w, rows, stride, xrs, yrs int, nan float32) {
+	panic("no assembly")
+}
+
+func poolGatherF32(op int, y, x *float32, idx *int32, np, taps, n int, nan float32) {
+	panic("no assembly")
+}
+
 func tileOut(tot, off, y *float32, stride, ms int, bias *float32) { panic("no assembly") }
+
+func rowsF32(op int, y, v *float32, rows, plane int, nan float32) { panic("no assembly") }
+
+func convGatherF32(x *float32, idx *int32, masks *uint16, chunks, k int, w *float32, ws, rows int, bias *float32, y *float32, plane, tail int) {
+	panic("no assembly")
+}
+
+func epilogueF32(y *float32, rows, plane int, ops *int, steps int, v *float32, vs int, nan float32) {
+	panic("no assembly")
+}
+
+func padPlaneF32(y, x *float32, h, w, hp, wp, top, left int, v float32) { panic("no assembly") }

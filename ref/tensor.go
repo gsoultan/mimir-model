@@ -49,7 +49,12 @@ func NumElems(shape []int) int {
 // ByteSize returns the number of bytes a tensor of dtype dt and the given
 // shape occupies, or an error when the shape is invalid for dt.
 func ByteSize(dt mim.DType, shape []int) (int, error) {
-	us := make([]uint64, len(shape))
+	var buf [8]uint64 // no allocation for the usual ranks
+	us := buf[:0]
+	if len(shape) > len(buf) {
+		us = make([]uint64, 0, len(shape))
+	}
+	us = us[:len(shape)]
 	for i, s := range shape {
 		if s < 0 {
 			return 0, fmt.Errorf("negative dimension %d", s)

@@ -17,3 +17,18 @@ package kernels
 
 //go:noescape
 func binF32(op int, y, x, z *float32, n, scalar int, nan float32)
+
+//go:noescape
+func poolF32(op int, y, x *float32, offs *int, taps, w, rows, stride, xrs, yrs int, nan float32)
+
+//go:noescape
+func poolGatherF32(op int, y, x *float32, idx *int32, np, taps, n int, nan float32)
+
+//go:noescape
+func rowsF32(op int, y, v *float32, rows, plane int, nan float32)
+
+//go:noescape
+func epilogueF32(y *float32, rows, plane int, ops *int, steps int, v *float32, vs int, nan float32)
+
+//go:noescape
+func padPlaneF32(y, x *float32, h, w, hp, wp, top, left int, v float32)
