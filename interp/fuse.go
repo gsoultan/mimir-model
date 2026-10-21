@@ -17,6 +17,7 @@ import (
 	"math"
 
 	mim "github.com/gsoultan/mimir-model"
+	"github.com/gsoultan/mimir-model/internal/kernels"
 	"github.com/gsoultan/mimir-model/ref"
 )
 
@@ -115,6 +116,33 @@ type epilogue struct {
 	vals  [][]float32 // each step's other operand
 	kinds []byte      // 's' scalar, 'c' one per channel, 'f' the output's shape
 	nan   float32
+	// For kernels.EpilogueF32, when no step's operand has the output's
+	// shape: each step's op, and its operand per channel.
+	bops  []int
+	table []float32
+	nf    int
+}
+
+// prepare lays the steps' operands out for an output of nf channels,
+// before a convolution's images are run.
+func (e *epilogue) prepare(nf int) {
+	e.table, e.nf = e.table[:0], nf
+	e.bops = e.bops[:0]
+	for s, opc := range e.ops {
+		v := e.vals[s]
+		switch e.kinds[s] {
+		case 's':
+			for range nf {
+				e.table = append(e.table, v[0])
+			}
+		case 'c':
+			e.table = append(e.table, v[:nf]...)
+		default:
+			e.table = nil
+			return
+		}
+		e.bops = append(e.bops, binOp(opc))
+	}
 }
 
 // apply runs the epilogue on y, the outputs of channel f of image n at
@@ -130,6 +158,31 @@ func (e *epilogue) apply(y []float32, n, f, nf, plane, p0 int) {
 			binaryF32(opc, y, 1, v[f:], 0, y, e.nan)
 		default:
 			binaryF32(opc, y, 1, v[(n*nf+f)*plane+p0:], 1, y, e.nan)
+		}
+	}
+}
+
+// applyImage runs the epilogue on y, the outputs of channels f0 to
+// f0+fs-1 of image n, planes of plane positions, in an output of nf
+// channels.
+func (e *epilogue) applyImage(y []float32, n, f0, fs, nf, plane int) {
+	if e.table != nil && e.nf == nf && kernels.EpilogueF32(y, fs, plane, e.bops, e.table[f0:], nf, e.nan) {
+		return
+	}
+	for s, opc := range e.ops {
+		v := e.vals[s]
+		switch e.kinds[s] {
+		case 's':
+			binaryF32(opc, y, 1, v, 0, y, e.nan)
+		case 'c':
+			if kernels.RowsF32(binOp(opc), y, v[f0:], fs, plane, e.nan) {
+				continue
+			}
+			for f := range fs {
+				binaryF32(opc, y[f*plane:(f+1)*plane], 1, v[f0+f:], 0, y[f*plane:(f+1)*plane], e.nan)
+			}
+		default:
+			binaryF32(opc, y, 1, v[(n*nf+f0)*plane:], 1, y, e.nan)
 		}
 	}
 }

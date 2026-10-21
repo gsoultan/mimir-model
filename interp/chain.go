@@ -115,58 +115,80 @@ func (r *run) moveChain(first int, ch *chain, x *ref.Tensor) (*ref.Tensor, error
 	if x.DType != last.DType || x.DType.IsBlock() || n >= 1<<31 || len(x.Data) < n*int(x.DType.BlockBytes()) {
 		return r.chainOps(first, ch, x)
 	}
-	var key strings.Builder
-	fmt.Fprint(&key, first, x.Shape)
-	var idx []int32
-	if v, ok := r.p.gathers.Load(key.String()); ok {
-		idx = v.([]int32)
-	} else {
-		it := &ref.Tensor{DType: mim.I32, Shape: append([]int{}, x.Shape...), Data: make([]byte, 4*n)}
-		for i := range n {
-			binary.LittleEndian.PutUint32(it.Data[4*i:], uint32(i))
-		}
-		for oi := first; oi <= ch.last; oi++ {
-			op := &ops[oi]
-			s, err := r.shape(r.p.g.Values[op.Outputs[0]])
-			if err != nil {
-				return nil, err
-			}
-			if t, ok := r.fastPrimitive(op, []*ref.Tensor{it}, mim.I32, s); ok {
-				it = t
-			} else if it, err = ref.Eval(op.Opcode, op.Attrs, []*ref.Tensor{it}, mim.I32, s); err != nil {
-				return nil, err
-			}
-		}
-		if !sameInts(it.Shape, shape) {
-			return nil, fmt.Errorf("a chain of movement ops gives %v, declared %v", it.Shape, shape)
-		}
-		idx = make([]int32, it.NumElems())
-		for i := range idx {
-			idx[i] = int32(binary.LittleEndian.Uint32(it.Data[4*i:]))
-		}
-		if r.p.gatherElems.Add(int64(len(idx))) <= maxGatherElems {
-			r.p.gathers.Store(key.String(), idx)
-		}
+	idx, err := r.chainIndices(first, ch, x.Shape, shape)
+	if err != nil {
+		return nil, err
 	}
 	es := int(x.DType.BlockBytes())
 	t := &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: r.alloc.bytes(len(idx)*es, false)}
-	const piece = 16 << 10
-	parallelWork((len(idx)+piece-1)/piece, len(idx), func(lo, hi int) {
-		lo, hi = lo*piece, min(hi*piece, len(idx))
-		if es == 4 && littleEndian {
-			src := unsafe.Slice((*uint32)(unsafe.Pointer(unsafe.SliceData(x.Data))), n)
-			dst := unsafe.Slice((*uint32)(unsafe.Pointer(unsafe.SliceData(t.Data))), len(idx))
-			for i, j := range idx[lo:hi] {
-				dst[lo+i] = src[j]
-			}
-			return
-		}
-		for i := lo; i < hi; i++ {
-			j := int(idx[i])
-			copy(t.Data[i*es:(i+1)*es], x.Data[j*es:(j+1)*es])
-		}
-	})
+	gather(t.Data, x.Data, idx, es)
 	return t, nil
+}
+
+// chainIndices returns, for each element of the chain's output of the
+// given shape, the index of the element of its input, of shape xShape,
+// that it copies. The indices are kept with the program.
+func (r *run) chainIndices(first int, ch *chain, xShape, shape []int) ([]int32, error) {
+	ops := r.p.g.Main().Ops
+	n := ref.NumElems(xShape)
+	var key strings.Builder
+	fmt.Fprint(&key, first, xShape)
+	if v, ok := r.p.gathers.Load(key.String()); ok {
+		return v.([]int32), nil
+	}
+	it := &ref.Tensor{DType: mim.I32, Shape: append([]int{}, xShape...), Data: make([]byte, 4*n)}
+	for i := range n {
+		binary.LittleEndian.PutUint32(it.Data[4*i:], uint32(i))
+	}
+	for oi := first; oi <= ch.last; oi++ {
+		op := &ops[oi]
+		s, err := r.shape(r.p.g.Values[op.Outputs[0]])
+		if err != nil {
+			return nil, err
+		}
+		if t, ok := r.fastPrimitive(op, []*ref.Tensor{it}, mim.I32, s); ok {
+			it = t
+		} else if it, err = ref.Eval(op.Opcode, op.Attrs, []*ref.Tensor{it}, mim.I32, s); err != nil {
+			return nil, err
+		}
+	}
+	if !sameInts(it.Shape, shape) {
+		return nil, fmt.Errorf("a chain of movement ops gives %v, declared %v", it.Shape, shape)
+	}
+	idx := make([]int32, it.NumElems())
+	for i := range idx {
+		idx[i] = int32(binary.LittleEndian.Uint32(it.Data[4*i:]))
+	}
+	if r.p.gatherElems.Add(int64(len(idx))) <= maxGatherElems {
+		r.p.gathers.Store(key.String(), idx)
+	}
+	return idx, nil
+}
+
+// gather copies element idx[i] of src, of es bytes each, to element i of
+// dst.
+func gather(dst, src []byte, idx []int32, es int) {
+	parallelWork(pieces(len(idx), gatherPiece), len(idx), func(lo, hi int) { gatherPieces(dst, src, idx, es, lo, hi) })
+}
+
+// gatherPiece is the elements of a piece of a gather's work.
+const gatherPiece = 16 << 10
+
+// gatherPieces does pieces lo to hi-1 of gather.
+func gatherPieces(dst, src []byte, idx []int32, es, lo, hi int) {
+	lo, hi = lo*gatherPiece, min(hi*gatherPiece, len(idx))
+	if es == 4 && littleEndian {
+		s := unsafe.Slice((*uint32)(unsafe.Pointer(unsafe.SliceData(src))), len(src)/4)
+		d := unsafe.Slice((*uint32)(unsafe.Pointer(unsafe.SliceData(dst))), len(idx))
+		for i, j := range idx[lo:hi] {
+			d[lo+i] = s[j]
+		}
+		return
+	}
+	for i := lo; i < hi; i++ {
+		j := int(idx[i])
+		copy(dst[i*es:(i+1)*es], src[j*es:(j+1)*es])
+	}
 }
 
 // chainOps runs the ops of a chain one by one.

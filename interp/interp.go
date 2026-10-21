@@ -75,7 +75,9 @@ type Program struct {
 	gathers     sync.Map               // a chain and input shape to its gather indices
 	gatherElems atomic.Int64           // the indices in gathers, and those not kept
 	arenas      sync.Pool              // *arena, one for each run going on at once
-	colTables   sync.Map               // a convolution's shape to its colTable
+	planable    bool                   // the main graph can be compiled (plan.go)
+	plans       sync.Map               // a binding of the symbolic dimensions to its *planSlot
+	planKeys    atomic.Int32           // the bindings in plans
 	static      [][]int                // each value's shape when it has no symbolic dimension, by value id
 	calls       map[*mim.Op]*callSite  // the call ops of every subgraph, resolved
 }
@@ -162,6 +164,7 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 	p.noView = noViews(g)
 	p.chains = moveChains(g)
 	p.convFusions = convFusions(g)
+	p.planable = planable(g)
 	p.static = make([][]int, len(g.Values))
 	for id, v := range g.Values {
 		s := make([]int, len(v.Shape))
@@ -465,6 +468,14 @@ func (s *Session) RunContext(ctx context.Context, inputs map[string]*ref.Tensor)
 	}
 	if used != len(inputs) {
 		return nil, fmt.Errorf("%d inputs given, the graph takes %d", len(inputs), used)
+	}
+	if pl := s.p.planFor(r.sym); pl != nil {
+		defer s.p.release(r.sym, pl)
+		in := make([]*ref.Tensor, len(main.Inputs))
+		for i, id := range main.Inputs {
+			in[i] = top.vals[id]
+		}
+		return pl.run(ctx, in)
 	}
 	if err := r.exec(0, top); err != nil {
 		return nil, err

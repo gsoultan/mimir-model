@@ -15,6 +15,7 @@ package interp
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 
@@ -102,6 +103,53 @@ func TestRunsReuseBuffers(t *testing.T) {
 		for k, v := range again {
 			if string(v.Data) != string(copies[i][k]) {
 				t.Fatalf("run %d output %s differs when run again", i, k)
+			}
+		}
+	}
+}
+
+// TestParallelOutput runs tiny-cnn on a batch large enough for its last
+// steps to run on the workers, and checks the outputs against runs of
+// eight images at a time, which run on the calling goroutine: an
+// output's buffer is made once per run, before the workers start on it.
+func TestParallelOutput(t *testing.T) {
+	f, err := mim.Open(filepath.Join("..", "testdata", "onnx", "tiny-cnn.mim"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.FastPaths = true
+	const batch, small = 128, 8
+	x := make([]float32, batch*3*16*16)
+	for i := range x {
+		x[i] = float32(i%13)/13 - 0.5
+	}
+	var want []float32
+	s := p.NewSession()
+	for i := 0; i < batch; i += small {
+		out, err := s.Run(map[string]*ref.Tensor{"x": f32t([]int{small, 3, 16, 16}, x[i*3*16*16:(i+small)*3*16*16]...)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, f32View(out["probs"])...)
+	}
+	in := map[string]*ref.Tensor{"x": f32t([]int{batch, 3, 16, 16}, x...)}
+	s = p.NewSession()
+	for run := range 3 {
+		out, err := s.Run(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := f32View(out["probs"])
+		if len(got) != len(want) {
+			t.Fatalf("run %d: %d outputs, want %d", run, len(got), len(want))
+		}
+		for i := range want {
+			if d := math.Abs(float64(got[i] - want[i])); !(d <= 1e-6) {
+				t.Fatalf("run %d: probs[%d] = %g, in a batch of %d %g", run, i, got[i], small, want[i])
 			}
 		}
 	}

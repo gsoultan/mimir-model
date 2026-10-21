@@ -64,8 +64,8 @@ func parallelWork(n, work int, f func(lo, hi int)) {
 }
 
 // minParallelWork is the least work that parallelWork hands to the
-// workers.
-const minParallelWork = 1 << 17
+// workers: waking and joining them costs one or two microseconds.
+const minParallelWork = 8192
 
 // parallelPieces is the number of pieces per CPU.
 const parallelPieces = 8

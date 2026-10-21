@@ -18,6 +18,9 @@ package kernels
 //go:noescape
 func sgemm12x32(a, b *float32, ldb int, c *float32, ldc, k, rows int, mask uint32, acc int, bias *float32)
 
+//go:noescape
+func sgemm12x32w(a, b *float32, boff *int, c *float32, ldc, k, rows int, mask uint32, acc int, bias *float32)
+
 // useAVX512 reports whether the CPU has AVX-512 F and the operating system
 // saves its state.
 var useAVX512 = detectAVX512()
@@ -33,3 +36,6 @@ func detectAVX512() bool {
 	lo, _ := xgetbv()
 	return lo&0xE6 == 0xE6
 }
+
+//go:noescape
+func convGatherF32(x *float32, idx *int32, masks *uint16, chunks, k int, w *float32, ws, rows int, bias *float32, y *float32, plane, tail int)
