@@ -460,7 +460,8 @@ func TestFastSigmoidTanh(t *testing.T) {
 				continue
 			}
 			want := tc.exact(float64(v))
-			if d := math.Abs(float64(g[i]) - want); d > tc.tol(float64(v))+math.Ldexp(1, -150) {
+			// Plus n_min, the smallest normal float32 (stdlib.md section 1.3).
+			if d := math.Abs(float64(g[i]) - want); d > tc.tol(float64(v))+math.Ldexp(1, -126) {
 				t.Errorf("%s(%g) = %g, exact %g, tolerance %g", tc.key, v, g[i], want, tc.tol(float64(v)))
 			}
 		}

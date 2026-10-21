@@ -105,7 +105,7 @@ func fastAddMul(al *arena, opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape
 	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
 	// Pieces of 4096 elements, so that a small tensor stays on one core.
 	const piece = 4096
-	parallelWork((len(y)+piece-1)/piece, len(y), func(lo, hi int) {
+	parallelWork((len(y)+piece-1)/piece, len(y)/4, func(lo, hi int) {
 		lo, hi = lo*piece, min(hi*piece, len(y))
 		binaryF32(opc, a[lo:hi], 1, b[lo:hi], 1, y[lo:hi], nan)
 	})
@@ -152,8 +152,18 @@ func permuteStrided(al *arena, x *ref.Tensor, perm []int64, shape []int) (*ref.T
 	if n8, err8 := ref.ByteSize(x.DType, []int{8}); err != nil || err8 != nil || n8 != 8*es {
 		return nil, false
 	}
-	r := len(shape)
-	in := make([]int, r) // input stride, in elements, of each output axis
+	in := permStrides(perm, x.Shape)
+	total := ref.NumElems(shape)
+	y := al.bytes(total*es, false)
+	permuteInto(y, x.Data, in, shape, es)
+	return &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: y}, true
+}
+
+// permStrides returns the input stride, in elements, of each output axis
+// of a permutation of xShape by perm.
+func permStrides(perm []int64, xShape []int) []int {
+	r := len(xShape)
+	in := make([]int, r)
 	acc := 1
 	for a := r - 1; a >= 0; a-- {
 		for k, pa := range perm {
@@ -161,25 +171,28 @@ func permuteStrided(al *arena, x *ref.Tensor, perm []int64, shape []int) (*ref.T
 				in[k] = acc
 			}
 		}
-		acc *= x.Shape[a]
+		acc *= xShape[a]
 	}
-	total := 1
-	for _, d := range shape {
-		total *= d
-	}
-	y := al.bytes(total*es, false)
+	return in
+}
+
+// permuteInto writes the permutation of x into y, in holding the input
+// stride of each output axis (permStrides), elements of es bytes.
+func permuteInto(y, x []byte, in, shape []int, es int) {
+	r := len(shape)
+	total := ref.NumElems(shape)
 	if total == 0 {
-		return &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: y}, true
+		return
 	}
 	inner, step := shape[r-1], in[r-1]
 	idx := make([]int, r-1)
 	src := 0
 	for dst := 0; dst < total; dst += inner {
 		if step == 1 {
-			copy(y[dst*es:(dst+inner)*es], x.Data[src*es:(src+inner)*es])
+			copy(y[dst*es:(dst+inner)*es], x[src*es:(src+inner)*es])
 		} else {
 			for i := 0; i < inner; i++ {
-				copy(y[(dst+i)*es:(dst+i+1)*es], x.Data[(src+i*step)*es:])
+				copy(y[(dst+i)*es:(dst+i+1)*es], x[(src+i*step)*es:])
 			}
 		}
 		// Advance the outer index, last axis first.
@@ -193,7 +206,6 @@ func permuteStrided(al *arena, x *ref.Tensor, perm []int64, shape []int) (*ref.T
 			idx[k] = 0
 		}
 	}
-	return &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: y}, true
 }
 
 // In-place scatter. A key-value cache is a variable that each step
@@ -307,85 +319,122 @@ func (r *run) scatterInPlace(op *mim.Op, in []*ref.Tensor, dt mim.DType, shape [
 // add, mul and max; cmplt and cmpeq of i32 or i64; and, or, xor and cmpeq
 // of bools. Each element is computed as the reference computes it.
 func fastBroadcast(al *arena, opc mim.Opcode, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
-	if len(in) != 2 || in[0].DType != in[1].DType || len(in[0].Shape) != len(shape) ||
-		len(in[1].Shape) != len(shape) || len(shape) == 0 {
+	if len(in) != 2 {
 		return nil, false
 	}
-	a, b := in[0], in[1]
-	for i, d := range shape {
-		if (a.Shape[i] != d && a.Shape[i] != 1) || (b.Shape[i] != d && b.Shape[i] != 1) {
-			return nil, false
-		}
-	}
-	idt := a.DType
-	es := int(idt.BlockBytes())
-	var kind byte
-	switch {
-	case idt == mim.F32 && dt == mim.F32 && (opc == mim.OpAdd || opc == mim.OpMul || opc == mim.OpMax):
-		kind = 'f'
-	case (idt == mim.I64 || idt == mim.I32) && dt == mim.Bool && (opc == mim.OpCmplt || opc == mim.OpCmpeq):
-		kind = 'i'
-	case idt == mim.Bool && dt == mim.Bool && (opc == mim.OpAnd || opc == mim.OpOr || opc == mim.OpXor || opc == mim.OpCmpeq):
-		kind = 'b'
-	default:
-		return nil, false
-	}
-	n := ref.NumElems(shape)
-	if len(a.Data) < es*ref.NumElems(a.Shape) || len(b.Data) < es*ref.NumElems(b.Shape) {
+	bc, ok := newBroadcast(opc, in[0].DType, in[0].Shape, in[1].Shape, dt, shape)
+	if !ok {
 		return nil, false
 	}
 	var t *ref.Tensor
-	if kind == 'f' {
-		t = f32Tensor(shape, al.f32(n, false))
+	if bc.kind == 'f' {
+		t = f32Tensor(shape, al.f32(bc.n, false))
 	} else {
 		// Only the true results are written.
-		t = &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: al.bytes(n, true)}
+		t = &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: al.bytes(bc.n, true)}
 	}
-	if n == 0 {
-		return t, true
+	bc.run(in[0], in[1], t)
+	return t, true
+}
+
+// bcastAxis is one merged axis of a broadcast: its length and each
+// operand's stride along it, 0 where the operand is broadcast.
+type bcastAxis struct{ n, sa, sb int }
+
+// A broadcast is a binary primitive on two operands broadcast to a shape,
+// worked out once for the shapes.
+type broadcast struct {
+	opc   mim.Opcode
+	kind  byte // 'f' f32 arithmetic, 'i' integer compare, 'b' boolean
+	es    int  // bytes per input element
+	oes   int  // bytes per output element
+	n     int  // elements of the output
+	axes  []bcastAxis
+	outer int // rows: the product of the axes but the last
+	inner int // the last axis
+	per   int // pieces per row
+	nan   float32
+}
+
+// newBroadcast plans opc on operands of dtype idt and shapes as and bs,
+// giving dt of the given shape. See fastBroadcast for what it handles.
+func newBroadcast(opc mim.Opcode, idt mim.DType, as, bs []int, dt mim.DType, shape []int) (*broadcast, bool) {
+	if len(as) != len(shape) || len(bs) != len(shape) || len(shape) == 0 {
+		return nil, false
+	}
+	for i, d := range shape {
+		if (as[i] != d && as[i] != 1) || (bs[i] != d && bs[i] != 1) {
+			return nil, false
+		}
+	}
+	bc := &broadcast{opc: opc, es: int(idt.BlockBytes()), oes: int(dt.BlockBytes()), n: ref.NumElems(shape)}
+	switch {
+	case idt == mim.F32 && dt == mim.F32 && (opc == mim.OpAdd || opc == mim.OpMul || opc == mim.OpMax):
+		bc.kind = 'f'
+	case (idt == mim.I64 || idt == mim.I32) && dt == mim.Bool && (opc == mim.OpCmplt || opc == mim.OpCmpeq):
+		bc.kind = 'i'
+	case idt == mim.Bool && dt == mim.Bool && (opc == mim.OpAnd || opc == mim.OpOr || opc == mim.OpXor || opc == mim.OpCmpeq):
+		bc.kind = 'b'
+	default:
+		return nil, false
 	}
 	// Merge adjacent axes along which both operands are broadcast the
 	// same way, then run the last merged axis as the inner loop.
-	type ax struct{ n, sa, sb int }
-	var axes []ax
 	sa, sb := 1, 1
 	stA, stB := make([]int, len(shape)), make([]int, len(shape))
 	for i := len(shape) - 1; i >= 0; i-- {
-		if a.Shape[i] != 1 {
+		if as[i] != 1 {
 			stA[i] = sa
 		}
-		if b.Shape[i] != 1 {
+		if bs[i] != 1 {
 			stB[i] = sb
 		}
-		sa *= a.Shape[i]
-		sb *= b.Shape[i]
+		sa *= as[i]
+		sb *= bs[i]
 	}
 	for i, d := range shape {
 		if d == 1 {
 			continue
 		}
-		if k := len(axes) - 1; k >= 0 && axes[k].sa == stA[i]*d && axes[k].sb == stB[i]*d {
-			axes[k] = ax{axes[k].n * d, stA[i], stB[i]}
+		if k := len(bc.axes) - 1; k >= 0 && bc.axes[k].sa == stA[i]*d && bc.axes[k].sb == stB[i]*d {
+			bc.axes[k] = bcastAxis{bc.axes[k].n * d, stA[i], stB[i]}
 			continue
 		}
-		axes = append(axes, ax{d, stA[i], stB[i]})
+		bc.axes = append(bc.axes, bcastAxis{d, stA[i], stB[i]})
 	}
-	if len(axes) == 0 {
-		axes = []ax{{1, 0, 0}}
+	if len(bc.axes) == 0 {
+		bc.axes = []bcastAxis{{1, 0, 0}}
 	}
-	last := axes[len(axes)-1]
-	outer := n / last.n
-	inner := last.n
-	nan := math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
-	var fa, fb, fy []float32
-	if kind == 'f' {
-		fa, fb, fy = f32View(a), f32View(b), f32View(t)
+	last := bc.axes[len(bc.axes)-1]
+	bc.inner = last.n
+	bc.outer = 0
+	if bc.n > 0 {
+		bc.outer = bc.n / last.n
 	}
 	// Work goes in pieces of at most piece elements of a row, so that
 	// operands of one shape, merged into a single row, still spread over
 	// the cores.
 	const piece = 8192
-	per := (inner + piece - 1) / piece
+	bc.per = (bc.inner + piece - 1) / piece
+	bc.nan = math.Float32frombits(uint32(ref.RoundFloat(mim.F32, math.NaN(), false)))
+	return bc, true
+}
+
+// run computes the broadcast of a and b into t, whose data must hold the
+// output and, for a compare or boolean result, be all zero.
+// rows computes pieces lo to hi-1 of t = a op b: each is up to piece
+// elements of one row of the output (the last broadcast axis).
+func (bc *broadcast) rows(a, b, t *ref.Tensor, lo, hi int) {
+	if bc.n == 0 || len(a.Data) < bc.es*ref.NumElems(a.Shape) || len(b.Data) < bc.es*ref.NumElems(b.Shape) {
+		return
+	}
+	opc, es, axes, inner, nan := bc.opc, bc.es, bc.axes, bc.inner, bc.nan
+	last := axes[len(axes)-1]
+	var fa, fb, fy []float32
+	if bc.kind == 'f' {
+		fa, fb, fy = f32View(a), f32View(b), f32View(t)
+	}
+	const piece = 8192
 	row := func(o, j0, j1 int) {
 		ia, ib := 0, 0
 		r := o
@@ -397,8 +446,8 @@ func fastBroadcast(al *arena, opc mim.Opcode, in []*ref.Tensor, dt mim.DType, sh
 		}
 		ia += j0 * last.sa
 		ib += j0 * last.sb
-		y := t.Data[o*inner*int(dt.BlockBytes()):]
-		switch kind {
+		y := t.Data[o*inner*bc.oes:]
+		switch bc.kind {
 		case 'f':
 			binaryF32(opc, fa[ia:], last.sa, fb[ib:], last.sb, fy[o*inner+j0:o*inner+j1], nan)
 		case 'i':
@@ -441,13 +490,16 @@ func fastBroadcast(al *arena, opc mim.Opcode, in []*ref.Tensor, dt mim.DType, sh
 			}
 		}
 	}
-	parallelWork(outer*per, ref.NumElems(shape), func(lo, hi int) {
-		for w := lo; w < hi; w++ {
-			o, p := w/per, w%per
-			row(o, p*piece, min((p+1)*piece, inner))
-		}
-	})
-	return t, true
+	per := bc.per
+	for w := lo; w < hi; w++ {
+		o, p := w/per, w%per
+		row(o, p*piece, min((p+1)*piece, inner))
+	}
+}
+
+// run computes t = a op b over the workers.
+func (bc *broadcast) run(a, b, t *ref.Tensor) {
+	parallelWork(bc.outer*bc.per, bc.n, func(lo, hi int) { bc.rows(a, b, t, lo, hi) })
 }
 
 // binaryF32 sets y[j] to x[j*sx] op z[j*sz] for f32 add, mul or max, with
@@ -632,54 +684,159 @@ func fastShrink(a *arena, op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []in
 // fastPad fills the padding with the pad value and copies the input into
 // the middle, in parallel.
 func fastPad(a *arena, op *mim.Op, in []*ref.Tensor, dt mim.DType, shape []int) (*ref.Tensor, bool) {
-	p := attr(op, "pads")
-	if len(in) != 1 || in[0].DType != dt || dt.IsBlock() || p == nil || p.Type != mim.AttrInts ||
-		len(p.Ints) != 2*len(shape) || len(in[0].Shape) != len(shape) {
+	if len(in) != 1 {
 		return nil, false
 	}
-	x := in[0]
-	off := make([]int, len(shape))
+	pd, ok := newPad(op, in[0].DType, in[0].Shape, dt, shape)
+	if !ok {
+		return nil, false
+	}
+	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: a.bytes(pd.n*pd.es, pd.zero)}
+	pd.run(in[0], t, !pd.zero)
+	return t, true
+}
+
+// A pad is a pad op worked out for its shapes.
+type pad struct {
+	off   []int  // where the input goes in the output
+	zeros []int  // a zero offset per axis
+	value []byte // the pad value's bytes
+	zero  bool   // the value is all zero bytes
+	es, n int
+	shape []int
+	// With planes set, only the last two axes are padded, and the input's
+	// planes of h by w go to the output's of hp by wp, at top, left.
+	planes                  bool
+	h, w, hp, wp, top, left int
+	slab                    []float32 // a run of the pad value, to copy from
+}
+
+func newPad(op *mim.Op, idt mim.DType, xShape []int, dt mim.DType, shape []int) (*pad, bool) {
+	p := attr(op, "pads")
+	if idt != dt || dt.IsBlock() || p == nil || p.Type != mim.AttrInts ||
+		len(p.Ints) != 2*len(shape) || len(xShape) != len(shape) {
+		return nil, false
+	}
+	pd := &pad{off: make([]int, len(shape)), zeros: make([]int, len(shape)), es: int(dt.BlockBytes()), n: ref.NumElems(shape), shape: shape}
 	for i := range shape {
 		lo, hi := p.Ints[2*i], p.Ints[2*i+1]
-		if lo < 0 || hi < 0 || int(lo)+x.Shape[i]+int(hi) != shape[i] {
+		if lo < 0 || hi < 0 || int(lo)+xShape[i]+int(hi) != shape[i] {
 			return nil, false
 		}
-		off[i] = int(lo)
-	}
-	es := int(dt.BlockBytes())
-	if len(x.Data) < x.NumElems()*es {
-		return nil, false
+		pd.off[i] = int(lo)
 	}
 	// The pad value, as the reference computes it: pad one element.
 	var va []mim.Attr
 	if v := attr(op, "value"); v != nil {
 		va = append(va, *v)
 	}
-	one := &ref.Tensor{DType: dt, Shape: []int{1}, Data: make([]byte, es)}
+	one := &ref.Tensor{DType: dt, Shape: []int{1}, Data: make([]byte, pd.es)}
 	pv, err := ref.Eval(mim.OpPad, append(va, mim.Attr{Key: "pads", Type: mim.AttrInts, Ints: []int64{1, 0}}), []*ref.Tensor{one}, dt, []int{2})
 	if err != nil {
 		return nil, false
 	}
-	value := pv.Data[:es]
-	n := ref.NumElems(shape)
-	zero := true
-	for _, c := range value {
-		zero = zero && c == 0
+	pd.value = pv.Data[:pd.es]
+	pd.zero = true
+	for _, c := range pd.value {
+		pd.zero = pd.zero && c == 0
 	}
-	t := &ref.Tensor{DType: dt, Shape: append([]int{}, shape...), Data: a.bytes(n*es, zero)}
-	if !zero {
-		const piece = 4096
-		parallelWork((n+piece-1)/piece, n, func(lo, hi int) {
-			// One element, then the filled part copied after itself.
-			d := t.Data[lo*piece*es : min(hi*piece, n)*es]
-			done := copy(d, value)
-			for done < len(d) {
-				done += copy(d[done:], d[:done])
+	if r := len(shape); r >= 2 && pd.es == 4 {
+		pd.planes = true
+		for i := range r - 2 {
+			pd.planes = pd.planes && xShape[i] == shape[i]
+		}
+		pd.h, pd.w, pd.hp, pd.wp = xShape[r-2], xShape[r-1], shape[r-2], shape[r-1]
+		pd.top, pd.left = pd.off[r-2], pd.off[r-1]
+		pd.slab = make([]float32, min(pd.hp*pd.wp, padSlab))
+		fillF32(pd.slab, math.Float32frombits(binary.LittleEndian.Uint32(pd.value)))
+	}
+	return pd, true
+}
+
+// run pads x into t, filling the padding first when fill is set (a fresh
+// zero buffer with a zero value needs no fill).
+func (pd *pad) run(x, t *ref.Tensor, fill bool) {
+	if pd.planes && len(x.Data) >= x.NumElems()*pd.es {
+		pd.runPlanes(f32View(x), f32View(t), fill)
+		return
+	}
+	if fill {
+		parallelWork(pieces(pd.n, padPiece), pd.n/8, func(lo, hi int) { pd.fill(t, lo, hi) })
+	}
+	pd.copy(x, t)
+}
+
+// runPlanes pads x into t plane by plane, with the border filled when
+// fill is set.
+func (pd *pad) runPlanes(x, y []float32, fill bool) {
+	v := math.Float32frombits(binary.LittleEndian.Uint32(pd.value))
+	plane, planes := pd.hp*pd.wp, pd.n/max(1, pd.hp*pd.wp)
+	per := max(1, 4096/max(1, plane))
+	var one [1]int
+	body := func(lo, hi int) {
+		for p := lo * per; p < min(hi*per, planes); p++ {
+			dst, src := y[p*plane:(p+1)*plane], x[p*pd.h*pd.w:(p+1)*pd.h*pd.w]
+			if kernels.PadPlaneF32(dst, src, pd.h, pd.w, pd.hp, pd.wp, pd.top, pd.left, v) {
+				continue
 			}
-		})
+			if fill {
+				// The whole plane: a border's many short runs cost more.
+				for done := 0; done < len(dst); {
+					done += copy(dst[done:], pd.slab)
+				}
+			}
+			if pd.h == 0 || pd.w == 0 {
+				continue
+			}
+			at := dst[pd.top*pd.wp+pd.left:]
+			if kernels.PoolF32(kernels.BinAdd, at, src, one[:], pd.w, pd.h, 1, pd.w, pd.wp, 0) {
+				continue
+			}
+			for r := range pd.h {
+				copy(at[r*pd.wp:r*pd.wp+pd.w], src[r*pd.w:(r+1)*pd.w])
+			}
+		}
 	}
-	copyBox(t.Data, shape, off, x.Data, x.Shape, make([]int, len(shape)), x.Shape, es)
-	return t, true
+	parallelWork(pieces(planes, per), pd.n/8, body)
+}
+
+// padSlab is the most elements of a pad's slab.
+const padSlab = 4096
+
+// fillF32 sets every element of d to v.
+func fillF32(d []float32, v float32) {
+	if len(d) == 0 {
+		return
+	}
+	if v == 0 && !math.Signbit(float64(v)) {
+		clear(d)
+		return
+	}
+	d[0] = v
+	for done := 1; done < len(d); {
+		done += copy(d[done:], d[:done])
+	}
+}
+
+// padPiece is the elements of a piece of a pad's fill.
+const padPiece = 4096
+
+// fill sets pieces lo to hi-1 of t to the pad value.
+func (pd *pad) fill(t *ref.Tensor, lo, hi int) {
+	// One element, then the filled part copied after itself.
+	d := t.Data[lo*padPiece*pd.es : min(hi*padPiece, pd.n)*pd.es]
+	done := copy(d, pd.value)
+	for done < len(d) {
+		done += copy(d[done:], d[:done])
+	}
+}
+
+// copy puts x in its place in t.
+func (pd *pad) copy(x, t *ref.Tensor) {
+	if len(x.Data) < x.NumElems()*pd.es {
+		return
+	}
+	copyBox(t.Data, pd.shape, pd.off, x.Data, x.Shape, pd.zeros, x.Shape, pd.es)
 }
 
 // copyBox copies the box of the given shape at srcOff in src (of shape
@@ -703,37 +860,68 @@ func copyBox(dst []byte, dstShape, dstOff []int, src []byte, srcShape, srcOff, b
 		inner *= box[k]
 	}
 	// Axes 0..k-1 are walked; axis k is part of the run from its offset.
-	ss, ds := make([]int, r), make([]int, r)
+	var ssa, dsa [8]int
+	ss, ds := ssa[:0], dsa[:0]
+	if r > len(ssa) {
+		ss, ds = make([]int, 0, r), make([]int, 0, r)
+	}
+	ss, ds = ss[:r], ds[:r]
 	s, d := es, es
 	for i := r - 1; i >= 0; i-- {
 		ss[i], ds[i] = s, d
 		s *= srcShape[i]
 		d *= dstShape[i]
 	}
-	base := func(off, st []int) int {
-		o := 0
-		for i := range r {
-			o += off[i] * st[i]
-		}
-		return o
+	sb, db := 0, 0
+	for i := range r {
+		sb += srcOff[i] * ss[i]
+		db += dstOff[i] * ds[i]
 	}
-	sb, db := base(srcOff, ss), base(dstOff, ds)
 	runBytes := inner * es
 	rows := n / inner
+	if n*es/16 < minParallelWork {
+		copyRows(dst, src, db, sb, box[:k], ss, ds, runBytes, 0, rows)
+		return
+	}
 	const piece = 64 << 10 // bytes per parallel piece, at least
 	per := max(1, piece/max(1, runBytes))
-	parallelWork((rows+per-1)/per, n*es/4, func(lo, hi int) {
-		idx := make([]int, k)
-		for row := lo * per; row < min(hi*per, rows); row++ {
-			so, do := sb, db
-			q := row
-			for i := k - 1; i >= 0; i-- {
-				idx[i] = q % box[i]
-				q /= box[i]
-				so += idx[i] * ss[i]
-				do += idx[i] * ds[i]
-			}
-			copy(dst[do:do+runBytes], src[so:so+runBytes])
-		}
+	parallel((rows+per-1)/per, func(lo, hi int) {
+		copyRows(dst, src, db, sb, box[:k], ss, ds, runBytes, lo*per, min(hi*per, rows))
 	})
+}
+
+// copyRows copies rows lo to hi-1 of a box for copyBox: the runs of
+// runBytes at the positions walked over the axes of box (the strides of
+// the source and destination ss and ds), from sb and db for row 0.
+func copyRows(dst, src []byte, db, sb int, box, ss, ds []int, runBytes, lo, hi int) {
+	k := len(box)
+	var idxa [8]int
+	idx := idxa[:0]
+	if k > len(idxa) {
+		idx = make([]int, 0, k)
+	}
+	idx = idx[:k]
+	// Where row lo is.
+	so, do := sb, db
+	for i, q := k-1, lo; i >= 0; i-- {
+		idx[i] = q % box[i]
+		q /= box[i]
+		so += idx[i] * ss[i]
+		do += idx[i] * ds[i]
+	}
+	for row := lo; row < hi; row++ {
+		copy(dst[do:do+runBytes], src[so:so+runBytes])
+		// The next row: count up, carrying.
+		for i := k - 1; i >= 0; i-- {
+			idx[i]++
+			so += ss[i]
+			do += ds[i]
+			if idx[i] < box[i] {
+				break
+			}
+			so -= idx[i] * ss[i]
+			do -= idx[i] * ds[i]
+			idx[i] = 0
+		}
+	}
 }

@@ -13,6 +13,8 @@
 
 package kernels
 
+import "math/bits"
+
 // A float32 matrix product C = A B (+ bias) on AVX-512, for convolutions
 // and other float32 products: a tile of 12 rows of A by 32 columns of B
 // at a time, with A packed once into panels of 12 rows. Each element of C
@@ -73,4 +75,60 @@ func SgemmTile(pa []float32, k, panel, rows int, b []float32, ldb, cols int, c [
 		}
 		sgemm12x32(&a[k0*SgemmRows], &b[k0*ldb], ldb, &c[0], ldc, kc, rows, mask, acc, bp)
 	}
+}
+
+// SgemmWindow is SgemmTile for the products of convolutions: row kk of B
+// is b[boff[kk]:] rather than b[kk*ldb:], so the rows are windows of b,
+// such as the receptive fields in a padded image; and the columns are
+// those of mask (bit j for column j), which row r of the tile holds
+// packed together from c[r*ldc], so that the positions past the end of
+// an output row are dropped as they are made. Every boff[kk] plus the
+// last column's index must be below len(b), which the caller sees to
+// (checking each row would cost as much as its multiply-adds); boff has
+// at least k entries.
+func SgemmWindow(pa []float32, k, panel, rows int, b []float32, boff []int, mask uint32, c []float32, ldc int, bias []float32) {
+	cols := bits.OnesCount32(mask)
+	if !useAVX512 || rows < 1 || rows > SgemmRows || cols < 1 || k < 1 ||
+		len(pa) < (panel+1)*k*SgemmRows || len(boff) < k || len(c) < (rows-1)*ldc+cols ||
+		(bias != nil && len(bias) < rows) {
+		panic("kernels: SgemmWindow with operands of another shape")
+	}
+	a := pa[panel*k*SgemmRows:]
+	for k0 := 0; k0 < k; k0 += sgemmKC {
+		kc := min(sgemmKC, k-k0)
+		var bp *float32
+		if k0+kc == k && bias != nil {
+			bp = &bias[0]
+		}
+		acc := 0
+		if k0 > 0 {
+			acc = 1
+		}
+		sgemm12x32w(&a[k0*SgemmRows], &b[0], &boff[k0], &c[0], ldc, kc, rows, mask, acc, bp)
+	}
+}
+
+// ConvGatherRows is the most filters ConvGatherF32 computes in one call.
+const ConvGatherRows = 8
+
+// ConvGatherF32 computes a convolution's outputs for rows filters (at
+// most ConvGatherRows) sixteen positions at a time, each tap's inputs
+// gathered: for chunk c < chunks and filter f, y[f*plane + c*16 + j] =
+// bias[f] + the sum over the taps t < k of w[t*ws+f] * x[idx[(c*k+t)*16
+// + j]], for the lanes j set in masks[c*k+t] (the others read 0), the
+// sum accumulated by fused multiply-adds in the taps' order as SgemmTile
+// does, and bias (when not nil) added last. The last chunk stores only
+// the lanes of tail. The indices of set lanes are all below len(x),
+// which the caller sees to. Sgemm must be true.
+func ConvGatherF32(x []float32, idx []int32, masks []uint16, chunks, k int, w []float32, ws, rows int, bias []float32, y []float32, plane, tail int) {
+	if !useAVX512 || chunks < 1 || k < 1 || rows < 1 || rows > ConvGatherRows || ws < rows || plane < 1 || tail < 1 || tail > 0xffff ||
+		len(x) == 0 || len(idx) < chunks*k*16 || len(masks) < chunks*k || len(w) < (k-1)*ws+rows ||
+		(bias != nil && len(bias) < rows) || len(y) < (rows-1)*plane+(chunks-1)*16+bits.Len(uint(tail)) {
+		panic("kernels: ConvGatherF32 with operands of another shape")
+	}
+	var bp *float32
+	if bias != nil {
+		bp = &bias[0]
+	}
+	convGatherF32(&x[0], &idx[0], &masks[0], chunks, k, &w[0], ws, rows, bp, &y[0], plane, tail)
 }
