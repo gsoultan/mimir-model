@@ -24,6 +24,7 @@
 package interp
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -318,6 +319,7 @@ func (s *Session) Variable(name string) (*ref.Tensor, bool) {
 
 // run is the state of one Run call.
 type run struct {
+	ctx  context.Context
 	p    *Program
 	s    *Session
 	sym  []int  // bound size of each symbolic dimension, -1 when unbound
@@ -362,12 +364,22 @@ func (s *scope) get(id uint32) (*ref.Tensor, bool) {
 // Run executes the main graph once. inputs maps the names of the main
 // graph's inputs to tensors; the result maps output names to tensors. If
 // the run fails, no variable changes (spec/primitives.md section 7).
-func (s *Session) Run(inputs map[string]*ref.Tensor) (out map[string]*ref.Tensor, err error) {
+func (s *Session) Run(inputs map[string]*ref.Tensor) (map[string]*ref.Tensor, error) {
+	return s.RunContext(context.Background(), inputs)
+}
+
+// RunContext is Run, stopping with ctx's error once ctx is done. It looks
+// before each op and each while iteration, so a run stops within one op of
+// being cancelled; as for any failed run, no variable changes.
+func (s *Session) RunContext(ctx context.Context, inputs map[string]*ref.Tensor) (out map[string]*ref.Tensor, err error) {
 	if s.err != nil {
 		return nil, s.err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	g := s.p.g
-	r := &run{p: s.p, s: s, sym: make([]int, len(g.SymDims))}
+	r := &run{ctx: ctx, p: s.p, s: s, sym: make([]int, len(g.SymDims))}
 	defer func() {
 		if err != nil {
 			for i := len(r.undo) - 1; i >= 0; i-- {
@@ -518,6 +530,9 @@ func (r *run) exec(si int, sc *scope) error {
 	g := r.p.g
 	sg := &g.Subgraphs[si]
 	for oi := 0; oi < len(sg.Ops); oi++ {
+		if err := r.ctx.Err(); err != nil {
+			return err
+		}
 		op := &sg.Ops[oi]
 		in := make([]*ref.Tensor, len(op.Inputs))
 		for k, id := range op.Inputs {
@@ -673,6 +688,9 @@ func (r *run) while(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, err
 	}
 	v := in
 	for i := 0; ; i++ {
+		if err := r.ctx.Err(); err != nil {
+			return nil, err
+		}
 		c, err := r.sub(cond, v, sc)
 		if err != nil {
 			return nil, err

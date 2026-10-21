@@ -661,3 +661,59 @@ func TestQuantizeRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// A tensor large enough to decode in parallel decodes to the same bits as
+// one decoded block run by block run.
+func TestDequantizeParallelMatchesSerial(t *testing.T) {
+	n := 4 * parallelDequantize
+	x := make([]float32, n)
+	for i := range x {
+		x[i] = float32(math.Sin(float64(i) * 0.37))
+	}
+	for _, dt := range []DType{Q8_0, Q4_0, Affine4} {
+		info := dtypes[dt]
+		q := make([]byte, uint64(n)/info.blockElems*info.blockBytes)
+		if err := Quantize(dt, x, q); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]float32, n)
+		if err := Dequantize(dt, q, got); err != nil {
+			t.Fatal(err)
+		}
+		want := make([]float32, n)
+		decode(dt, q, want)
+		for i := range want {
+			if math.Float32bits(got[i]) != math.Float32bits(want[i]) {
+				t.Fatalf("%s element %d: %v, want %v", info.name, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+func BenchmarkDequantize(b *testing.B) {
+	const n = 1 << 22
+	x := make([]float32, n)
+	for i := range x {
+		x[i] = float32(i%97) / 97
+	}
+	for _, dt := range []DType{F16, Q8_0, Q4_0} {
+		info := dtypes[dt]
+		q := make([]byte, uint64(n)/info.blockElems*info.blockBytes)
+		if dt == F16 {
+			for i := range x {
+				binary.LittleEndian.PutUint16(q[2*i:], F32ToF16(x[i]))
+			}
+		} else if err := Quantize(dt, x, q); err != nil {
+			b.Fatal(err)
+		}
+		dst := make([]float32, n)
+		b.Run(info.name, func(b *testing.B) {
+			b.SetBytes(int64(len(q)))
+			for range b.N {
+				if err := Dequantize(dt, q, dst); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
