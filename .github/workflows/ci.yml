@@ -43,8 +43,9 @@ jobs:
       - name: fuzz
         if: runner.os == 'Linux'
         run: |
-          go test -run xxx -fuzz FuzzParse -fuzztime 30s .
+          go test -run xxx -fuzz '^FuzzParse$' -fuzztime 30s .
           go test -run xxx -fuzz '^FuzzParseONNX$' -fuzztime 20s ./importer
+          go test -run xxx -fuzz '^FuzzParseGGUF$' -fuzztime 20s ./importer
 
   python:
     strategy:

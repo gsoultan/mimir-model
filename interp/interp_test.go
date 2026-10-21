@@ -15,12 +15,15 @@ package interp
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	mim "github.com/gsoultan/mimir-model"
 	"github.com/gsoultan/mimir-model/conformance"
@@ -332,6 +335,23 @@ func TestWhileIf(t *testing.T) {
 		!strings.Contains(err.Error(), "iterations") {
 		t.Errorf("iteration limit: %v", err)
 	}
+
+	// A long loop stops when its context ends.
+	p.MaxIterations = 0
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := p.NewSession().RunContext(ctx, map[string]*ref.Tensor{"n": i64t(nil, 1<<23), "negate": boolT(false)}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("cancelled loop: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("the cancelled loop ran on for %v", d)
+	}
+	done, stop := context.WithCancel(context.Background())
+	stop()
+	if _, err := p.NewSession().RunContext(done, map[string]*ref.Tensor{"n": i64t(nil, 1), "negate": boolT(false)}); !errors.Is(err, context.Canceled) {
+		t.Errorf("run on a done context: %v", err)
+	}
 }
 
 // TestMLP runs a small shape-polymorphic network with stdlib calls:
@@ -574,5 +594,33 @@ func TestZeroVariableTooLarge(t *testing.T) {
 	b.g.Updates = []mim.Update{{Variable: cache, Value: x}}
 	if _, err := New(b.g, nil); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// BenchmarkRunMLP runs one 256-wide linear and silu over a batch of 16:
+// the interpreter's cost per op on a small model, on its fast paths.
+func BenchmarkRunMLP(b *testing.B) {
+	g := newGB()
+	B := g.sym("batch", 16)
+	x := g.input(0, "x", mim.F32, B, 256)
+	wv := make([]float32, 256*256)
+	for i := range wv {
+		wv[i] = float32(i%7) / 7
+	}
+	w := g.stored("w", mim.KindWeight, mim.F32, []uint64{256, 256}, f32bytes(wv...))
+	bias := g.stored("bias", mim.KindWeight, mim.F32, []uint64{256}, f32bytes(make([]float32, 256)...))
+	h, y := g.val("h", mim.F32, 0, B, 256), g.val("y", mim.F32, 0, B, 256)
+	g.op(0, mim.OpCall, []uint32{x, w, bias}, []uint32{h}, callAttrs("linear")...)
+	g.op(0, mim.OpCall, []uint32{h}, []uint32{y}, callAttrs("silu")...)
+	g.output(0, y)
+	p := g.load(b)
+	p.FastPaths = true
+	in := map[string]*ref.Tensor{"x": f32t([]int{16, 256}, make([]float32, 16*256)...)}
+	s := p.NewSession()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := s.Run(in); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

@@ -128,3 +128,30 @@ func TestWriterRejects(t *testing.T) {
 		t.Fatal("overflow not caught")
 	}
 }
+
+// benchFile is a file with a 16 MiB weight, for the Parse and hash benchmarks.
+func benchFile(b *testing.B) []byte {
+	w := sampleWriter(b)
+	must(b, w.AddTensor("weights", F32, []uint64{4 << 20}, make([]byte, 16<<20)))
+	return encode(b, w)
+}
+
+func BenchmarkParse(b *testing.B) {
+	data := benchFile(b)
+	b.ResetTimer()
+	for range b.N {
+		if _, err := Parse(data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkVerifyHashes(b *testing.B) {
+	f, err := Parse(benchFile(b))
+	must(b, err)
+	b.SetBytes(int64(len(f.Weights())))
+	b.ResetTimer()
+	for range b.N {
+		must(b, f.VerifyHashes())
+	}
+}
