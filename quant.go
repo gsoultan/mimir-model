@@ -16,6 +16,8 @@ package mim
 import (
 	"encoding/binary"
 	"math"
+	"runtime"
+	"sync"
 )
 
 // This file decodes every dtype to float32 and holds reference encoders for a
@@ -44,6 +46,39 @@ func Dequantize(dt DType, src []byte, dst []float32) error {
 	if want := n / info.blockElems * info.blockBytes; uint64(len(src)) != want {
 		return errf(CodeSizeMismatch, "%s: %d elements need %d bytes, got %d", info.name, n, want, len(src))
 	}
+	if !decode(dt, nil, nil) {
+		return errf(CodeUnsupportedDType, "cannot decode %s", info.name)
+	}
+	// Blocks decode independently, so a large tensor is split into runs
+	// of whole blocks decoded side by side; the result is the same bits.
+	blocks := int(n / info.blockElems)
+	workers := min(runtime.GOMAXPROCS(0), int(n/parallelDequantize))
+	if workers <= 1 {
+		decode(dt, src, dst)
+		return nil
+	}
+	per := (blocks + workers - 1) / workers
+	be, bb := int(info.blockElems), int(info.blockBytes)
+	var wg sync.WaitGroup
+	for b := 0; b < blocks; b += per {
+		e := min(b+per, blocks)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			decode(dt, src[b*bb:e*bb], dst[b*be:e*be])
+		}()
+	}
+	wg.Wait()
+	return nil
+}
+
+// parallelDequantize is the fewest elements each goroutine of Dequantize
+// decodes: below it, starting one costs more than it saves.
+const parallelDequantize = 1 << 16
+
+// decode decodes src into dst, which Dequantize has checked fit, and
+// reports whether it knows dt; with empty slices it only reports.
+func decode(dt DType, src []byte, dst []float32) bool {
 	switch dt {
 	case F32:
 		for i := range dst {
@@ -122,9 +157,9 @@ func Dequantize(dt DType, src []byte, dst []float32) error {
 	case Affine4:
 		dequantizeAffine4(src, dst)
 	default:
-		return errf(CodeUnsupportedDType, "cannot decode %s", info.name)
+		return false
 	}
-	return nil
+	return true
 }
 
 // Quantize encodes src into dst as dtype dt. Only Q8_0, Q4_0 and Affine4 are

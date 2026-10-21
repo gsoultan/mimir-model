@@ -15,6 +15,7 @@ package tokenizer
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	mim "github.com/gsoultan/mimir-model"
@@ -142,5 +143,18 @@ func TestBPERejects(t *testing.T) {
 	delete(md, "tokenizer.ggml.merges")
 	if _, err := New(md); err == nil {
 		t.Error("accepted a vocabulary without merges")
+	}
+}
+
+func BenchmarkBPEEncode(b *testing.B) {
+	tok, err := New(bpeVocab("qwen2", "a b", "Ġ a", "b c", "Ġa b"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	text := strings.Repeat("abc x ab, x ac! The quick brown fox 123 jumps. ", 200)
+	b.SetBytes(int64(len(text)))
+	b.ResetTimer()
+	for range b.N {
+		tok.Encode(text, true)
 	}
 }
