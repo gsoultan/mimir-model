@@ -246,7 +246,7 @@ func (p *Program) compile(sym []int) (*plan, error) {
 				return nil, err
 			}
 			if n, err := ref.ByteSize(dt, s); err != nil || int64(n) > budget {
-				return nil, fmt.Errorf("value %q does not fit the budget", g.Values[id].Name)
+				return nil, fmt.Errorf("%w: value %q does not fit it", ErrBudget, g.Values[id].Name)
 			}
 		}
 	}
@@ -279,7 +279,7 @@ func (p *Program) compile(sym []int) (*plan, error) {
 		c.materialize(len(main.Ops), id)
 	}
 	if budget >= 0 && c.bytes > budget {
-		return nil, fmt.Errorf("the plan's %d bytes exceed the %d-byte budget", c.bytes, budget)
+		return nil, fmt.Errorf("%w: the plan's %d bytes exceed the %d-byte budget", ErrBudget, c.bytes, budget)
 	}
 	return pl, nil
 }
