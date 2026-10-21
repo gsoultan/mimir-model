@@ -193,7 +193,7 @@ func fastConv2d(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) (
 	cg, fg := p.c/p.g, p.f/p.g
 	plane := p.ho * p.wo
 	y := make([]float32, p.nb*p.f*plane)
-	parallel(p.nb*p.f, func(lo, hi int) {
+	parallelWork(p.nb*p.f, len(y)*cg*p.kh*p.kw*2, func(lo, hi int) {
 		for nf := lo; nf < hi; nf++ {
 			n, f := nf/p.f, nf%p.f
 			c0 := f / fg * cg
@@ -240,7 +240,7 @@ func fastConv2d(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) (
 // own tensors are laid out for the kernel once and kept.
 //
 // With epi not nil, its ops run on each tile of the output as it is made.
-func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, epi *epilogue) ([]*ref.Tensor, bool, error) {
+func (p *Program) convGemm(a *arena, list []mim.Attr, in []*ref.Tensor, dts []mim.DType, epi *epilogue) ([]*ref.Tensor, bool, error) {
 	if !kernels.Sgemm() || len(in) < 2 || in[0].DType != mim.F32 {
 		return nil, false, nil
 	}
@@ -256,46 +256,125 @@ func (p *Program) convGemm(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, e
 	cg, fg := c.c/c.g, c.f/c.g
 	k := cg * c.kh * c.kw
 	plane, hw := c.ho*c.wo, c.h*c.w
-	y := make([]float32, c.nb*c.f*plane)
+	y := a.f32(c.nb*c.f*plane, false)
 	if len(y) == 0 {
 		return []*ref.Tensor{f32Tensor([]int{c.nb, c.f, c.ho, c.wo}, y)}, true, nil
 	}
 	pa := p.packConv(in[1], w, c.g, fg, k)
 	panels := (fg + kernels.SgemmRows - 1) / kernels.SgemmRows
 	strips := (plane + kernels.SgemmCols - 1) / kernels.SgemmCols
+	// tiles computes tiles lo to hi-1 of image n, group g, from its
+	// receptive fields in col.
+	tiles := func(n, g int, col []float32, lo, hi int) {
+		yg := y[(n*c.f+g*fg)*plane : (n*c.f+(g+1)*fg)*plane]
+		var bg []float32
+		if bias != nil {
+			bg = bias[g*fg : (g+1)*fg]
+		}
+		for t := lo; t < hi; t++ {
+			s, pn := t/panels, t%panels
+			rows := min(kernels.SgemmRows, fg-pn*kernels.SgemmRows)
+			j0 := s * kernels.SgemmCols
+			var bp []float32
+			if bg != nil {
+				bp = bg[pn*kernels.SgemmRows:]
+			}
+			cols := min(kernels.SgemmCols, plane-j0)
+			kernels.SgemmTile(pa[g], k, pn, rows, col[s*k*kernels.SgemmCols:], kernels.SgemmCols,
+				cols, yg[pn*kernels.SgemmRows*plane+j0:], plane, bp)
+			if epi != nil {
+				for r := range rows {
+					f := pn*kernels.SgemmRows + r
+					epi.apply(yg[f*plane+j0:f*plane+j0+cols], n, g*fg+f, c.f, plane, j0)
+				}
+			}
+		}
+	}
 	// The receptive fields, packed by runs of SgemmCols output positions:
 	// strip s holds k rows of SgemmCols floats, so that the kernel reads
 	// each row of a strip from the next 128 bytes.
-	col := colBufs.get(strips * k * kernels.SgemmCols)
+	colLen := strips * k * kernels.SgemmCols
+	// The multiply-adds of one image and group, and the elements of its
+	// receptive fields.
+	work := fg*plane*k/16 + colLen
+	tab := p.colTable(c, colLen)
+	if c.g == 1 && c.nb > 1 && plane < 2*kernels.SgemmCols && tab != nil {
+		// Small images side by side: one product whose columns are the
+		// output positions of every image, so that the kernel's strips
+		// are full rather than mostly padding.
+		const sc = kernels.SgemmCols
+		total := c.nb * plane
+		bs := (total + sc - 1) / sc // strips
+		col := colBufs.get(bs * k * sc)
+		defer colBufs.put(col)
+		xz := make([]float32, hw*c.c+1) // an image behind a zero, as gatherCols reads it
+		for n := range c.nb {
+			copy(xz[1:], x[n*c.c*hw:(n+1)*c.c*hw])
+			for p := range plane {
+				q := n*plane + p
+				dst := col[q/sc*k*sc+q%sc:]
+				src := tab[p/sc*k*sc+p%sc:]
+				for r := range k {
+					dst[r*sc] = xz[uint32(src[r*sc]+1)]
+				}
+			}
+		}
+		for q := total; q < bs*sc; q++ {
+			for r := range k {
+				col[q/sc*k*sc+r*sc+q%sc] = 0
+			}
+		}
+		out := make([]float32, c.f*bs*sc) // row f holds filter f at every position of every image
+		parallelWork(panels*bs, panels*bs*kernels.SgemmRows*sc*k/16, func(lo, hi int) {
+			for t := lo; t < hi; t++ {
+				s, pn := t/panels, t%panels
+				rows := min(kernels.SgemmRows, c.f-pn*kernels.SgemmRows)
+				var bp []float32
+				if bias != nil {
+					bp = bias[pn*kernels.SgemmRows:]
+				}
+				kernels.SgemmTile(pa[0], k, pn, rows, col[s*k*sc:], sc, min(sc, total-s*sc),
+					out[pn*kernels.SgemmRows*bs*sc+s*sc:], bs*sc, bp)
+			}
+		})
+		for n := range c.nb {
+			for f := range c.f {
+				seg := y[(n*c.f+f)*plane : (n*c.f+f+1)*plane]
+				copy(seg, out[f*bs*sc+n*plane:])
+				if epi != nil {
+					epi.apply(seg, n, f, c.f, plane, 0)
+				}
+			}
+		}
+		return []*ref.Tensor{f32Tensor([]int{c.nb, c.f, c.ho, c.wo}, y)}, true, nil
+	}
+	if c.nb*c.g > 1 && work < minParallelWork {
+		// Images too small to split go whole to one worker each.
+		parallelWork(c.nb*c.g, c.nb*c.g*work, func(lo, hi int) {
+			col := make([]float32, colLen)
+			for ng := lo; ng < hi; ng++ {
+				n, g := ng/c.g, ng%c.g
+				xg := x[(n*c.c+g*cg)*hw : (n*c.c+(g+1)*cg)*hw]
+				if tab != nil {
+					gatherCols(tab, xg, col)
+				} else {
+					im2colRows(c, xg, col, 0, k)
+				}
+				tiles(n, g, col, 0, panels*strips)
+			}
+		})
+		return []*ref.Tensor{f32Tensor([]int{c.nb, c.f, c.ho, c.wo}, y)}, true, nil
+	}
+	col := colBufs.get(colLen)
 	defer colBufs.put(col)
 	for n := range c.nb {
 		for g := range c.g {
-			im2col(c, x[(n*c.c+g*cg)*hw:(n*c.c+(g+1)*cg)*hw], col)
-			yg := y[(n*c.f+g*fg)*plane : (n*c.f+(g+1)*fg)*plane]
-			var bg []float32
-			if bias != nil {
-				bg = bias[g*fg : (g+1)*fg]
+			if xg := x[(n*c.c+g*cg)*hw : (n*c.c+(g+1)*cg)*hw]; tab != nil {
+				parallelWork(colLen, colLen, func(lo, hi int) { gatherCols(tab[lo:hi], xg, col[lo:hi]) })
+			} else {
+				im2col(c, xg, col)
 			}
-			parallel(panels*strips, func(lo, hi int) {
-				for t := lo; t < hi; t++ {
-					s, pn := t/panels, t%panels
-					rows := min(kernels.SgemmRows, fg-pn*kernels.SgemmRows)
-					j0 := s * kernels.SgemmCols
-					var bp []float32
-					if bg != nil {
-						bp = bg[pn*kernels.SgemmRows:]
-					}
-					cols := min(kernels.SgemmCols, plane-j0)
-					kernels.SgemmTile(pa[g], k, pn, rows, col[s*k*kernels.SgemmCols:], kernels.SgemmCols,
-						cols, yg[pn*kernels.SgemmRows*plane+j0:], plane, bp)
-					if epi != nil {
-						for r := range rows {
-							f := pn*kernels.SgemmRows + r
-							epi.apply(yg[f*plane+j0:f*plane+j0+cols], n, g*fg+f, c.f, plane, j0)
-						}
-					}
-				}
-			})
+			parallelWork(panels*strips, work, func(lo, hi int) { tiles(n, g, col, lo, hi) })
 		}
 	}
 	return []*ref.Tensor{f32Tensor([]int{c.nb, c.f, c.ho, c.wo}, y)}, true, nil
@@ -327,51 +406,117 @@ func (p *Program) packConv(wt *ref.Tensor, w []float32, g, fg, k int) [][]float3
 // under kernel element (i, j) of channel ci, 0 in the padding and past
 // the last position.
 func im2col(c *convParams, x, col []float32) {
-	cg := c.c / c.g
-	k := cg * c.kh * c.kw
+	k := c.c / c.g * c.kh * c.kw
+	const sc = kernels.SgemmCols
+	plane := c.ho * c.wo
+	strips := (plane + sc - 1) / sc
+	parallelWork(k, k*strips*sc, func(lo, hi int) { im2colRows(c, x, col, lo, hi) })
+}
+
+// im2colRows writes rows lo to hi-1 of im2col's receptive fields,
+// straight into their strips.
+func im2colRows(c *convParams, x, col []float32, lo, hi int) {
+	k := c.c / c.g * c.kh * c.kw
 	const sc = kernels.SgemmCols
 	strip := k * sc
 	plane := c.ho * c.wo
 	strips := (plane + sc - 1) / sc
-	parallel(k, func(lo, hi int) {
-		row := make([]float32, strips*sc) // one row, before it is cut into strips
-		for r := lo; r < hi; r++ {
-			ci, i, j := r/(c.kh*c.kw), r/c.kw%c.kh, r%c.kw
-			xc := x[ci*c.h*c.w : (ci+1)*c.h*c.w]
-			// The output columns whose input column is inside the image.
-			ox0, ox1 := 0, c.wo
-			for ox0 < c.wo && ox0*c.sw+j*c.dw-c.left < 0 {
-				ox0++
-			}
-			for ox1 > ox0 && (ox1-1)*c.sw+j*c.dw-c.left >= c.w {
-				ox1--
-			}
-			for oy := range c.ho {
-				out := row[oy*c.wo : (oy+1)*c.wo]
-				iy := oy*c.sh + i*c.dh - c.top
-				if iy < 0 || iy >= c.h || ox0 >= ox1 {
-					clear(out)
-					continue
+	for r := lo; r < hi; r++ {
+		// put writes src, or n zeros when src is nil, to output positions
+		// p to p+n-1 of row r.
+		put := func(p, n int, src []float32) {
+			for n > 0 {
+				o := p % sc
+				m := min(n, sc-o)
+				d := col[p/sc*strip+r*sc+o:][:m]
+				if src == nil {
+					clear(d)
+				} else {
+					copy(d, src[:m])
+					src = src[m:]
 				}
-				clear(out[:ox0])
-				clear(out[ox1:])
-				src := xc[iy*c.w:]
-				ix := ox0*c.sw + j*c.dw - c.left
-				if c.sw == 1 {
-					copy(out[ox0:ox1], src[ix:ix+ox1-ox0])
-					continue
-				}
-				for ox := ox0; ox < ox1; ox++ {
-					out[ox] = src[ix]
-					ix += c.sw
-				}
-			}
-			clear(row[plane:])
-			for st := range strips {
-				copy(col[st*strip+r*sc:st*strip+(r+1)*sc], row[st*sc:(st+1)*sc])
+				p, n = p+m, n-m
 			}
 		}
-	})
+		ci, i, j := r/(c.kh*c.kw), r/c.kw%c.kh, r%c.kw
+		xc := x[ci*c.h*c.w : (ci+1)*c.h*c.w]
+		// The output columns whose input column is inside the image.
+		ox0, ox1 := 0, c.wo
+		for ox0 < c.wo && ox0*c.sw+j*c.dw-c.left < 0 {
+			ox0++
+		}
+		for ox1 > ox0 && (ox1-1)*c.sw+j*c.dw-c.left >= c.w {
+			ox1--
+		}
+		for oy := range c.ho {
+			p := oy * c.wo
+			iy := oy*c.sh + i*c.dh - c.top
+			if iy < 0 || iy >= c.h || ox0 >= ox1 {
+				put(p, c.wo, nil)
+				continue
+			}
+			put(p, ox0, nil)
+			put(p+ox1, c.wo-ox1, nil)
+			src := xc[iy*c.w:]
+			ix := ox0*c.sw + j*c.dw - c.left
+			if c.sw == 1 {
+				put(p+ox0, ox1-ox0, src[ix:ix+ox1-ox0])
+				continue
+			}
+			for ox := ox0; ox < ox1; ox++ {
+				q := p + ox
+				col[q/sc*strip+r*sc+q%sc] = src[ix]
+				ix += c.sw
+			}
+		}
+		put(plane, strips*sc-plane, nil)
+	}
+}
+
+// maxColTable bounds the entries of one convolution's colTable: a table
+// costs four bytes for each element of the receptive fields, which for a
+// small image is little and saves working out each element's source on
+// every run.
+const maxColTable = 1 << 18
+
+// colTable returns, for each element of im2col's receptive fields of a
+// convolution of c's shape, the index in the group's input of the element
+// it copies, or -1 for a zero. It is kept with the program, and nil when
+// it would have more than maxColTable entries.
+func (p *Program) colTable(c *convParams, n int) []int32 {
+	if n > maxColTable || c.c/c.g*c.h*c.w >= 1<<24 { // indices pass through float32
+		return nil
+	}
+	key := *c
+	key.nb, key.f = 0, 0 // the table depends on neither
+	if v, ok := p.colTables.Load(key); ok {
+		return v.([]int32)
+	}
+	// The table is im2col of the indices themselves, with -1 as zero.
+	cg := c.c / c.g
+	idx := make([]float32, cg*c.h*c.w)
+	for i := range idx {
+		idx[i] = float32(i + 1)
+	}
+	col := make([]float32, n)
+	im2colRows(c, idx, col, 0, cg*c.kh*c.kw)
+	tab := make([]int32, n)
+	for i, v := range col {
+		tab[i] = int32(v) - 1
+	}
+	p.colTables.Store(key, tab)
+	return tab
+}
+
+// gatherCols writes col[i] = x[tab[i]], or 0 where tab[i] is -1.
+func gatherCols(tab []int32, x, col []float32) {
+	// x behind a zero, so that every entry reads without a branch.
+	xz := make([]float32, len(x)+1)
+	copy(xz[1:], x)
+	col = col[:len(tab)]
+	for i, j := range tab {
+		col[i] = xz[uint32(j+1)]
+	}
 }
 
 // colBuf keeps one buffer between calls, for the receptive fields of

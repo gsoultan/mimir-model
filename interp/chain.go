@@ -104,7 +104,7 @@ func moveChains(g *mim.Graph) map[int]*chain {
 func (r *run) moveChain(first int, ch *chain, x *ref.Tensor) (*ref.Tensor, error) {
 	ops := r.p.g.Main().Ops
 	last := r.p.g.Values[ops[ch.last].Outputs[0]]
-	shape, err := r.shape(last)
+	shape, err := r.shapeOf(ops[ch.last].Outputs[0])
 	if err != nil {
 		return nil, err
 	}
@@ -149,9 +149,9 @@ func (r *run) moveChain(first int, ch *chain, x *ref.Tensor) (*ref.Tensor, error
 		}
 	}
 	es := int(x.DType.BlockBytes())
-	t := &ref.Tensor{DType: x.DType, Shape: shape, Data: make([]byte, len(idx)*es)}
+	t := &ref.Tensor{DType: x.DType, Shape: append([]int{}, shape...), Data: r.alloc.bytes(len(idx)*es, false)}
 	const piece = 16 << 10
-	parallel((len(idx)+piece-1)/piece, func(lo, hi int) {
+	parallelWork((len(idx)+piece-1)/piece, len(idx), func(lo, hi int) {
 		lo, hi = lo*piece, min(hi*piece, len(idx))
 		if es == 4 && littleEndian {
 			src := unsafe.Slice((*uint32)(unsafe.Pointer(unsafe.SliceData(x.Data))), n)

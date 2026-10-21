@@ -74,6 +74,18 @@ type Program struct {
 	convFusions map[int]*convFusion    // convolutions with an epilogue, by op of the main graph
 	gathers     sync.Map               // a chain and input shape to its gather indices
 	gatherElems atomic.Int64           // the indices in gathers, and those not kept
+	arenas      sync.Pool              // *arena, one for each run going on at once
+	colTables   sync.Map               // a convolution's shape to its colTable
+	static      [][]int                // each value's shape when it has no symbolic dimension, by value id
+	calls       map[*mim.Op]*callSite  // the call ops of every subgraph, resolved
+}
+
+// callSite is a call op with its composite's key and attributes worked
+// out once, rather than on every run.
+type callSite struct {
+	key   string     // "name.vN"
+	attrs []mim.Attr // the attributes other than name and version
+	err   error      // why the op is not a well-formed call
 }
 
 // Load decodes f's graph and resolves its weight, const and variable values
@@ -150,6 +162,26 @@ func New(g *mim.Graph, tensor func(uint32) (*ref.Tensor, error)) (*Program, erro
 	p.noView = noViews(g)
 	p.chains = moveChains(g)
 	p.convFusions = convFusions(g)
+	p.static = make([][]int, len(g.Values))
+	for id, v := range g.Values {
+		s := make([]int, len(v.Shape))
+		for k, d := range v.Shape {
+			if d.Symbolic() {
+				s = nil
+				break
+			}
+			s[k] = int(d)
+		}
+		p.static[id] = s
+	}
+	p.calls = map[*mim.Op]*callSite{}
+	for si := range g.Subgraphs {
+		for oi := range g.Subgraphs[si].Ops {
+			if op := &g.Subgraphs[si].Ops[oi]; op.Opcode == mim.OpCall {
+				p.calls[op] = newCallSite(op)
+			}
+		}
+	}
 	p.isFixed = map[*ref.Tensor]bool{}
 	for _, t := range p.fixed {
 		p.isFixed[t] = true
@@ -319,12 +351,13 @@ func (s *Session) Variable(name string) (*ref.Tensor, bool) {
 
 // run is the state of one Run call.
 type run struct {
-	ctx  context.Context
-	p    *Program
-	s    *Session
-	sym  []int  // bound size of each symbolic dimension, -1 when unbound
-	undo []undo // bytes of owned variables overwritten in place
-	live int64  // bytes of the main graph's computed values still held
+	ctx   context.Context
+	p     *Program
+	s     *Session
+	sym   []int  // bound size of each symbolic dimension, -1 when unbound
+	undo  []undo // bytes of owned variables overwritten in place
+	live  int64  // bytes of the main graph's computed values still held
+	alloc *arena // buffers of the main graph's values on the fast paths; nil elsewhere
 }
 
 // reserve checks that a value of dtype dt and the given shape fits in the
@@ -389,6 +422,18 @@ func (s *Session) RunContext(ctx context.Context, inputs map[string]*ref.Tensor)
 	}()
 	for i := range r.sym {
 		r.sym[i] = -1
+	}
+	if s.p.FastPaths {
+		a, _ := s.p.arenas.Get().(*arena)
+		if a == nil {
+			a = newArena()
+		}
+		a.begin()
+		r.alloc = a
+		defer func() {
+			a.end()
+			s.p.arenas.Put(a)
+		}()
 	}
 	top := &scope{vals: map[uint32]*ref.Tensor{}}
 	for id, t := range s.p.fixed {
@@ -498,21 +543,34 @@ func (r *run) shape(v mim.Value) ([]int, error) {
 	return s, nil
 }
 
+// shapeOf is shape for the value with the given id. The result of a value
+// with no symbolic dimension is the program's own: the caller must not
+// change it.
+func (r *run) shapeOf(id uint32) ([]int, error) {
+	if s := r.p.static[id]; s != nil {
+		return s, nil
+	}
+	return r.shape(r.p.g.Values[id])
+}
+
 // check verifies that t has the declared dtype and resolved shape of v.
 func (r *run) check(v mim.Value, t *ref.Tensor) error {
+	ok := t.DType == v.DType && len(t.Shape) == len(v.Shape)
+	for k := 0; ok && k < len(v.Shape); k++ {
+		want := int64(v.Shape[k])
+		if d := v.Shape[k]; d.Symbolic() {
+			want = int64(r.sym[d.SymIndex()])
+		}
+		ok = want >= 0 && int64(t.Shape[k]) == want
+	}
+	if ok {
+		return nil
+	}
 	want, err := r.shape(v)
 	if err != nil {
 		return err
 	}
-	if t.DType != v.DType || len(t.Shape) != len(want) {
-		return fmt.Errorf("%q is %s%v, declared %s%v", v.Name, t.DType, t.Shape, v.DType, want)
-	}
-	for k := range want {
-		if t.Shape[k] != want[k] {
-			return fmt.Errorf("%q is %s%v, declared %s%v", v.Name, t.DType, t.Shape, v.DType, want)
-		}
-	}
-	return nil
+	return fmt.Errorf("%q is %s%v, declared %s%v", v.Name, t.DType, t.Shape, v.DType, want)
 }
 
 func attr(op *mim.Op, key string) *mim.Attr {
@@ -529,12 +587,21 @@ func attr(op *mim.Op, key string) *mim.Attr {
 func (r *run) exec(si int, sc *scope) error {
 	g := r.p.g
 	sg := &g.Subgraphs[si]
+	if si != 0 && r.alloc != nil {
+		a := r.alloc
+		r.alloc = nil
+		defer func() { r.alloc = a }()
+	}
+	var buf []*ref.Tensor // the inputs of each op in turn
 	for oi := 0; oi < len(sg.Ops); oi++ {
 		if err := r.ctx.Err(); err != nil {
 			return err
 		}
 		op := &sg.Ops[oi]
-		in := make([]*ref.Tensor, len(op.Inputs))
+		if cap(buf) < len(op.Inputs) {
+			buf = make([]*ref.Tensor, len(op.Inputs))
+		}
+		in := buf[:len(op.Inputs)]
 		for k, id := range op.Inputs {
 			t, ok := sc.get(id)
 			if !ok {
@@ -580,6 +647,7 @@ func (r *run) exec(si int, sc *scope) error {
 			sc.vals[id] = outs[k]
 			if si == 0 {
 				r.live += int64(len(outs[k].Data))
+				r.alloc.retain(outs[k])
 			}
 		}
 		if si == 0 {
@@ -588,6 +656,7 @@ func (r *run) exec(si int, sc *scope) error {
 					// Run inputs are dropped too, but were never counted.
 					if t, ok := sc.vals[id]; ok && g.Values[id].Kind != mim.KindInput {
 						r.live -= int64(len(t.Data))
+						r.alloc.release(t)
 					}
 					delete(sc.vals, id)
 				}
@@ -636,7 +705,7 @@ func (r *run) op(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error)
 		return nil, fmt.Errorf("a primitive has exactly one output")
 	}
 	v := g.Values[op.Outputs[0]]
-	shape, err := r.shape(v)
+	shape, err := r.shapeOf(op.Outputs[0])
 	if err != nil {
 		return nil, err
 	}
@@ -734,11 +803,14 @@ func (r *run) ifOp(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 }
 
 func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, error) {
-	name, ver := attr(op, "name"), attr(op, "version")
-	if name == nil || name.Type != mim.AttrString || ver == nil || ver.Type != mim.AttrInt {
-		return nil, fmt.Errorf("call needs a string name and an int version")
+	cs := r.p.calls[op]
+	if cs == nil {
+		cs = newCallSite(op)
 	}
-	key := fmt.Sprintf("%s.v%d", name.String, ver.Int)
+	if cs.err != nil {
+		return nil, cs.err
+	}
+	key := cs.key
 	if si, ok := r.p.composites[key]; ok {
 		// Model-local composite: run its body. Its scope is the top level,
 		// not the caller's (spec/primitives.md section 6.4).
@@ -757,7 +829,7 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 	dts := make([]mim.DType, len(op.Outputs))
 	for k, id := range op.Outputs {
 		v := r.p.g.Values[id]
-		s, err := r.shape(v)
+		s, err := r.shapeOf(id)
 		if err != nil {
 			return nil, err
 		}
@@ -766,14 +838,9 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 		}
 		shapes[k], dts[k] = s, v.DType
 	}
-	var cattrs []mim.Attr
-	for _, a := range op.Attrs {
-		if a.Key != "name" && a.Key != "version" {
-			cattrs = append(cattrs, a)
-		}
-	}
+	cattrs := cs.attrs
 	if fast && key == "conv2d.v1" {
-		if out, handled, err := r.p.convGemm(cattrs, in, dts, nil); err != nil || handled {
+		if out, handled, err := r.p.convGemm(r.alloc, cattrs, in, dts, nil); err != nil || handled {
 			return out, err
 		}
 	}
@@ -784,4 +851,18 @@ func (r *run) call(op *mim.Op, in []*ref.Tensor, sc *scope) ([]*ref.Tensor, erro
 		}
 	}
 	return fn(cattrs, in, dts, shapes)
+}
+
+func newCallSite(op *mim.Op) *callSite {
+	name, ver := attr(op, "name"), attr(op, "version")
+	if name == nil || name.Type != mim.AttrString || ver == nil || ver.Type != mim.AttrInt {
+		return &callSite{err: fmt.Errorf("call needs a string name and an int version")}
+	}
+	cs := &callSite{key: fmt.Sprintf("%s.v%d", name.String, ver.Int)}
+	for _, a := range op.Attrs {
+		if a.Key != "name" && a.Key != "version" {
+			cs.attrs = append(cs.attrs, a)
+		}
+	}
+	return cs
 }
