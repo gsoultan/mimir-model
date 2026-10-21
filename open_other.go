@@ -11,14 +11,14 @@
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-//go:build !unix
+//go:build !unix && !windows
 
 package mim
 
 import "os"
 
 // Open reads the file at path into memory and validates it. Platforms without
-// a unix mmap fall back to a plain read.
+// a memory mapping fall back to a plain read.
 func Open(path string) (*File, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

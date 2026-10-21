@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"sort"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -405,13 +406,25 @@ func (f *File) Weights() []byte {
 func (f *File) Bytes() []byte { return f.data }
 
 // VerifyHashes checks every section that carries a hash. It reads every byte
-// of those sections, so it is not done by Parse.
+// of those sections, so it is not done by Parse. The sections are hashed
+// side by side; each one's SHA-256 is a single stream, so the largest
+// section, usually the weights, sets how long it takes.
 func (f *File) VerifyHashes() error {
-	for _, s := range f.sections {
+	bad := make([]bool, len(f.sections))
+	var wg sync.WaitGroup
+	for i, s := range f.sections {
 		if s.HashAlg != HashSHA256 {
 			continue
 		}
-		if sha256.Sum256(f.SectionBytes(s)) != s.Hash {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bad[i] = sha256.Sum256(f.SectionBytes(s)) != s.Hash
+		}()
+	}
+	wg.Wait()
+	for i, s := range f.sections {
+		if bad[i] {
 			return errf(CodeHashMismatch, "%s section", s.Kind)
 		}
 	}
