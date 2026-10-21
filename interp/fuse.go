@@ -145,23 +145,6 @@ func (e *epilogue) prepare(nf int) {
 	}
 }
 
-// apply runs the epilogue on y, the outputs of channel f of image n at
-// positions p0 to p0+len(y)-1, in an output of nf channels of plane
-// positions each.
-func (e *epilogue) apply(y []float32, n, f, nf, plane, p0 int) {
-	for s, opc := range e.ops {
-		v := e.vals[s]
-		switch e.kinds[s] {
-		case 's':
-			binaryF32(opc, y, 1, v, 0, y, e.nan)
-		case 'c':
-			binaryF32(opc, y, 1, v[f:], 0, y, e.nan)
-		default:
-			binaryF32(opc, y, 1, v[(n*nf+f)*plane+p0:], 1, y, e.nan)
-		}
-	}
-}
-
 // applyImage runs the epilogue on y, the outputs of channels f0 to
 // f0+fs-1 of image n, planes of plane positions, in an output of nf
 // channels.
