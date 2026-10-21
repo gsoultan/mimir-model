@@ -25,6 +25,7 @@ package interp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,11 @@ const DefaultMaxIterations = 1 << 24
 // or broken graph that declares huge variables or intermediate values
 // fails with an error instead of exhausting memory.
 const DefaultMaxBytes = 4 << 30
+
+// ErrBudget is wrapped by the error of a session or run that would take
+// more than MaxBytes, so a caller can tell a model too large for its
+// memory from a model that is broken.
+var ErrBudget = errors.New("over the memory budget")
 
 // Program is a loaded graph with its weights and constants resolved.
 type Program struct {
@@ -294,7 +300,7 @@ func (p *Program) StartSession() (*Session, error) {
 		var total int64
 		for id, z := range p.zeroVars {
 			if total += int64(z.bytes); total > budget {
-				return nil, fmt.Errorf("variable %q takes the zero variables past the %d-byte budget", p.g.Values[id].Name, budget)
+				return nil, fmt.Errorf("%w: variable %q takes the zero variables past the %d-byte budget", ErrBudget, p.g.Values[id].Name, budget)
 			}
 		}
 	}
@@ -376,7 +382,7 @@ func (r *run) reserve(dt mim.DType, shape []int) error {
 		return err
 	}
 	if int64(n) > budget-r.live {
-		return fmt.Errorf("a %s%v value of %d bytes, with %d bytes held, exceeds the %d-byte budget", dt, shape, n, r.live, budget)
+		return fmt.Errorf("%w: a %s%v value of %d bytes, with %d bytes held, exceeds the %d-byte budget", ErrBudget, dt, shape, n, r.live, budget)
 	}
 	return nil
 }

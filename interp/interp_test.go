@@ -528,10 +528,10 @@ func TestMemoryBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.StartSession(); err == nil || !strings.Contains(err.Error(), "budget") {
+	if _, err := p.StartSession(); !errors.Is(err, ErrBudget) {
 		t.Fatalf("StartSession: got %v", err)
 	}
-	if _, err := p.NewSession().Run(map[string]*ref.Tensor{}); err == nil || !strings.Contains(err.Error(), "budget") {
+	if _, err := p.NewSession().Run(map[string]*ref.Tensor{}); !errors.Is(err, ErrBudget) {
 		t.Fatalf("Run: got %v", err)
 	}
 
@@ -560,7 +560,7 @@ func TestMemoryBudget(t *testing.T) {
 	b.op(0, mim.OpExpand, []uint32{x}, []uint32{y})
 	b.output(0, y)
 	p = b.load(t)
-	if _, err := p.NewSession().Run(map[string]*ref.Tensor{"x": f32t([]int{1}, 1)}); err == nil || !strings.Contains(err.Error(), "budget") {
+	if _, err := p.NewSession().Run(map[string]*ref.Tensor{"x": f32t([]int{1}, 1)}); !errors.Is(err, ErrBudget) {
 		t.Fatalf("expand: got %v", err)
 	}
 
@@ -577,7 +577,7 @@ func TestMemoryBudget(t *testing.T) {
 	p = b.load(t)
 	in := map[string]*ref.Tensor{"x": f32t([]int{256})}
 	p.MaxBytes = 3 << 9
-	if _, err := p.NewSession().Run(in); err == nil || !strings.Contains(err.Error(), "budget") {
+	if _, err := p.NewSession().Run(in); !errors.Is(err, ErrBudget) {
 		t.Fatalf("held values: got %v", err)
 	}
 	p.MaxBytes = 2 << 10
