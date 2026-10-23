@@ -442,6 +442,8 @@ func TestFastSigmoidTanh(t *testing.T) {
 		{"sigmoid.v1", func(x float64) float64 { return 1 / (1 + math.Exp(-x)) },
 			func(x float64) float64 { return (16 + 2*math.Abs(x)) * u / (1 + math.Exp(-x)) }},
 		{"tanh.v1", math.Tanh, func(float64) float64 { return 16 * u }},
+		{"silu.v1", func(x float64) float64 { return x / (1 + math.Exp(-x)) },
+			func(x float64) float64 { return (20 + 2*math.Abs(x)) * u * math.Abs(x/(1+math.Exp(-x))) }},
 	} {
 		got, handled, err := fastPaths[tc.key](nil, []*ref.Tensor{x}, []mim.DType{mim.F32}, nil)
 		if err != nil || !handled {
