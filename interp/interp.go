@@ -429,6 +429,15 @@ func (s *Session) RunContext(ctx context.Context, inputs map[string]*ref.Tensor)
 			}
 		}
 	}()
+	// A kernel that trips over a file it should have refused fails the run
+	// rather than the process: the server runs files people upload. This
+	// runs before the undo above, so a failed run still changes no
+	// variable.
+	defer func() {
+		if p := recover(); p != nil {
+			out, err = nil, fmt.Errorf("interp: %v", p)
+		}
+	}()
 	for i := range r.sym {
 		r.sym[i] = -1
 	}
