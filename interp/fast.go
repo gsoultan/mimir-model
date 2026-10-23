@@ -53,6 +53,7 @@ var fastPaths = map[string]fastFunc{
 	"conv2d.v1":            fastConv2d,
 	"sigmoid.v1":           fastSigmoid,
 	"tanh.v1":              fastTanh,
+	"silu.v1":              fastSilu,
 	"matmul.v1":            fastMatmul,
 	"softmax.v1":           fastSoftmax,
 }
@@ -69,6 +70,32 @@ func fastSigmoid(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([
 
 func fastTanh(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
 	return fastUnaryF32(list, in, kernels.TanhF32)
+}
+
+// fastSilu computes silu.v1 of f32 tensors: x times the sigmoid of
+// fastSigmoid, multiplied in float32, within the spec's rel (20 + 2
+// abs(x)) u. A NaN, and the NaN of -inf times 0, give the reference's
+// NaN, as the body does.
+func fastSilu(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	return fastUnaryF32(list, in, siluF32)
+}
+
+// siluF32 sets y = x * sigmoid(x) for the elements of y. Far below zero
+// the sigmoid is about to underflow, and a float32 product with it would
+// lose what the body keeps, so the few such elements are computed in
+// float64 and rounded once.
+func siluF32(y, x []float32, nan float32) {
+	kernels.SigmoidF32(y, x, nan)
+	for i, s := range y {
+		r := x[i] * s
+		if x[i] < -80 {
+			r = float32(float64(x[i]) / (1 + math.Exp(-float64(x[i]))))
+		}
+		if r != r {
+			r = nan
+		}
+		y[i] = r
+	}
 }
 
 func fastUnaryF32(list []mim.Attr, in []*ref.Tensor, f func(y, x []float32, nan float32)) ([]*ref.Tensor, bool, error) {
