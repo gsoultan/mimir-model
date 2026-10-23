@@ -369,6 +369,9 @@ func (c *compiler) op(oi int, op *mim.Op) error {
 		c.materializeAll(oi, op.Inputs)
 		return c.call(oi, op)
 	}
+	if len(op.Outputs) != 1 {
+		return fmt.Errorf("op %d (%s): a primitive has exactly one output", oi, op.Opcode)
+	}
 	out := op.Outputs[0]
 	v := g.Values[out]
 	dt, shape := v.DType, c.shape(out)
@@ -376,7 +379,10 @@ func (c *compiler) op(oi int, op *mim.Op) error {
 	if err != nil {
 		return err
 	}
-	if c.treeOp(oi, op) {
+	// The fast paths index the inputs a well-formed op has; one with the
+	// wrong number is left to the reference kernels, which name the fault.
+	fast := len(op.Inputs) == ref.NumInputs(op.Opcode)
+	if fast && c.treeOp(oi, op) {
 		return nil
 	}
 	c.materializeAll(oi, op.Inputs)
@@ -385,6 +391,9 @@ func (c *compiler) op(oi int, op *mim.Op) error {
 		ins[k] = &ref.Tensor{DType: g.Values[id].DType, Shape: c.shape(id)}
 	}
 	in := func(k int) *ref.Tensor { return sl[op.Inputs[k]] }
+	if !fast {
+		goto generic
+	}
 	switch op.Opcode {
 	case mim.OpConst:
 		t, err := ref.Eval(op.Opcode, op.Attrs, nil, dt, shape)
@@ -537,6 +546,7 @@ func (c *compiler) op(oi int, op *mim.Op) error {
 	}
 	// Anything else runs on the reference kernels, which make a tensor of
 	// their own.
+generic:
 	attrs := op.Attrs
 	opc := op.Opcode
 	args := make([]*ref.Tensor, len(op.Inputs))
