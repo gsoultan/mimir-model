@@ -24,6 +24,8 @@ jobs:
           - { pkg: "./importer", name: FuzzParseONNX }
           - { pkg: "./importer", name: FuzzParseGGUF }
           - { pkg: "./importer", name: FuzzParseSafetensors }
+          - { pkg: "./interp", name: FuzzRun }
+          - { pkg: "./tokenizer", name: FuzzMetadata }
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
