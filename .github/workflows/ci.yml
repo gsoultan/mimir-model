@@ -46,6 +46,8 @@ jobs:
           go test -run xxx -fuzz '^FuzzParse$' -fuzztime 30s .
           go test -run xxx -fuzz '^FuzzParseONNX$' -fuzztime 20s ./importer
           go test -run xxx -fuzz '^FuzzParseGGUF$' -fuzztime 20s ./importer
+          go test -run xxx -fuzz '^FuzzRun$' -fuzztime 30s ./interp
+          go test -run xxx -fuzz '^FuzzMetadata$' -fuzztime 20s ./tokenizer
 
   python:
     strategy:

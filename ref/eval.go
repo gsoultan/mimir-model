@@ -52,6 +52,9 @@ var inputCount = map[mim.Opcode]int{
 	mim.OpWhere: 3, mim.OpScatter: 3, mim.OpConst: 0, mim.OpGather: 2,
 }
 
+// NumInputs is how many inputs primitive op takes.
+func NumInputs(op mim.Opcode) int { return numInputs(op) }
+
 func numInputs(op mim.Opcode) int {
 	if n, ok := inputCount[op]; ok {
 		return n
