@@ -36,6 +36,7 @@ treated as untrusted input throughout.
 | `spec/dtypes.md` | plain and block-quantized element types |
 | `spec/metadata.md` | the typed key-value section |
 | `spec/training.md` | the training section: optimizer state, hyperparameters and progress, for resuming training |
+| `spec/adapters.md` | adapter files: LoRA pairs that fine-tune a base model without copying it |
 | `spec/conformance.md` | the primitive conformance corpus and how results are checked |
 | `spec/versioning.md`, `spec/security.md` | compatibility promise and threat model |
 | `*.go` | reference reader and writer, zero dependencies |
