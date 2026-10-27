@@ -63,6 +63,8 @@ decoding the rest. Keys are namespaced with dots.
 | `tokenizer.merges` | strings | BPE merges in priority order |
 | `tokenizer.scores` | floats | unigram scores |
 | `tokenizer.chat_template` | string | chat template, see §3 |
+| `general.type` | string | `adapter` for an adapter file (spec/adapters.md); a model otherwise |
+| `adapter.type`, `adapter.lora.alpha`, `adapter.base.sha256` | | an adapter's kind, scale and base (spec/adapters.md) |
 
 Unknown keys MUST be preserved by tools that rewrite files.
 

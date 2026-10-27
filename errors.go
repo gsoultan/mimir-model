@@ -48,6 +48,7 @@ const (
 	CodeBadMetadata        Code = "bad-metadata"
 	CodeBadGraph           Code = "bad-graph"
 	CodeBadTraining        Code = "bad-training"
+	CodeBadAdapter         Code = "bad-adapter"
 	CodeNotFound           Code = "not-found"
 	CodeUnsupportedDType   Code = "unsupported-dtype"
 )
