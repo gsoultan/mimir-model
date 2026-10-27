@@ -357,6 +357,7 @@ codes are strings so that two readers in different languages can be compared.
 | `bad-metadata` | reserved for the metadata section parser (spec/metadata.md) |
 | `bad-graph` | reserved for the graph section parser (spec/graph.md) |
 | `bad-training` | reserved for the training section parser (spec/training.md) |
+| `bad-adapter` | reserved for readers of adapter files (spec/adapters.md) |
 | `not-found` | reserved for lookups of a missing tensor or section by name by API layers; not a parse error |
 | `unsupported-dtype` | reserved for runtimes that know a dtype id but cannot operate on it; not a parse error |
 
