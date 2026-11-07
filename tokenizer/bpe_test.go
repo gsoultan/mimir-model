@@ -15,6 +15,7 @@ package tokenizer
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -152,6 +153,24 @@ func BenchmarkBPEEncode(b *testing.B) {
 		b.Fatal(err)
 	}
 	text := strings.Repeat("abc x ab, x ac! The quick brown fox 123 jumps. ", 200)
+	b.SetBytes(int64(len(text)))
+	b.ResetTimer()
+	for range b.N {
+		tok.Encode(text, true)
+	}
+}
+
+// Words a text has not had before, so nothing comes from the cache of words.
+func BenchmarkBPEEncodeUnique(b *testing.B) {
+	tok, err := New(bpeVocab("qwen2", "a b", "Ġ a", "b c", "Ġa b"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	var sb strings.Builder
+	for i := range 2000 {
+		sb.WriteString(" w" + strconv.Itoa(i*7919%100000) + "ab")
+	}
+	text := sb.String()
 	b.SetBytes(int64(len(text)))
 	b.ResetTimer()
 	for range b.N {

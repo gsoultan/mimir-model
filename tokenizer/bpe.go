@@ -14,9 +14,9 @@
 package tokenizer
 
 import (
-	"container/heap"
 	"fmt"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -64,6 +64,11 @@ type BPE struct {
 	addBOS       bool
 	pre          int
 	ignoreMerges bool // a word that is a token is not split
+
+	// words remembers the tokens of words seen before (see remember), as
+	// most text repeats its words; mu guards it.
+	mu    sync.Mutex
+	words map[string][]int32
 }
 
 // BPEFromMetadata builds a byte-level BPE tokenizer from a file's metadata.
@@ -157,17 +162,38 @@ func init() {
 	}
 }
 
-// split cuts text into the words of the Llama 3 and Qwen 2 pre-tokenizer,
+// split cuts text into the words of the Llama 3 and Qwen 2 pre-tokenizer.
+func split(text string, pre int) []string {
+	var words []string
+	splitWords(text, pre, func(w string) { words = append(words, w) })
+	return words
+}
+
+// splitWords calls fn with each word of text, in order, cut as the Llama 3
+// and Qwen 2 pre-tokenizer does,
 //
 //	(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}|
 //	 ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
 //
 // with \p{N} for \p{N}{1,3} in Qwen 2's. It follows llama.cpp's
 // hand-written matcher for this expression, which Go's regexp cannot run
-// because of the lookahead.
-func split(text string, pre int) []string {
+// because of the lookahead. A word is a substring of text, so it costs no
+// copy, unless text is not valid UTF-8: then each word is its code points
+// written back, as []rune(text) reads them.
+func splitWords(text string, pre int, fn func(w string)) {
 	cpts := []rune(text)
 	n := len(cpts)
+	// offs[i] is where code point i starts in text.
+	var offs []int
+	if utf8.ValidString(text) {
+		offs = make([]int, n+1)
+		i := 0
+		for off := range text {
+			offs[i] = off
+			i++
+		}
+		offs[n] = len(text)
+	}
 	const none = -1
 	get := func(i int) rune {
 		if i < n {
@@ -181,12 +207,15 @@ func split(text string, pre int) []string {
 	// defined is false past the end, like llama.cpp's undefined flags.
 	defined := func(i int) bool { return i < n }
 
-	var words []string
 	start := 0
 	add := func(end int) int {
 		l := end - start
 		if l > 0 {
-			words = append(words, string(cpts[start:end]))
+			if offs != nil {
+				fn(text[offs[start]:offs[end]])
+			} else {
+				fn(string(cpts[start:end]))
+			}
 		}
 		start = end
 		return l
@@ -272,30 +301,83 @@ func split(text string, pre int) []string {
 		}
 		add(pos)
 	}
-	return words
+}
+
+// bpeSymbol is a span of a word in the merge list.
+type bpeSymbol struct {
+	prev, next int
+	start, end int // its bytes in encoder.buf; end < 0 once merged away
 }
 
 // bpeBigram is a mergeable pair of adjacent symbols.
 type bpeBigram struct {
 	left, right int
 	rank        int
-	text        string
+	size        int // bytes of the pair, to notice one an earlier merge left stale
 }
 
-// bpeQueue is a min-heap by rank; ties go to the leftmost pair.
-type bpeQueue []bpeBigram
-
-func (h bpeQueue) Len() int { return len(h) }
-func (h bpeQueue) Less(i, j int) bool {
-	return h[i].rank < h[j].rank || (h[i].rank == h[j].rank && h[i].left < h[j].left)
+// before says whether b merges ahead of o: the lower rank first, and of
+// equal ranks the leftmost pair.
+func (b bpeBigram) before(o bpeBigram) bool {
+	return b.rank < o.rank || b.rank == o.rank && b.left < o.left
 }
-func (h bpeQueue) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *bpeQueue) Push(x any)   { *h = append(*h, x.(bpeBigram)) }
-func (h *bpeQueue) Pop() any {
-	old := *h
-	x := old[len(old)-1]
-	*h = old[:len(old)-1]
-	return x
+
+// encoder holds what tokenizing a word needs, kept from one word to the
+// next so that a text costs a few allocations rather than a few per
+// word.
+type encoder struct {
+	buf  []byte      // the word's bytes mapped to characters (see byteRune)
+	syms []bpeSymbol // the word's symbols, merged in place
+	q    []bpeBigram // the pairs to merge, a min-heap by before
+	key  []byte      // scratch for looking up a pair's rank
+}
+
+func (e *encoder) push(b bpeBigram) {
+	e.q = append(e.q, b)
+	for i := len(e.q) - 1; i > 0; {
+		p := (i - 1) / 2
+		if !e.q[i].before(e.q[p]) {
+			break
+		}
+		e.q[i], e.q[p] = e.q[p], e.q[i]
+		i = p
+	}
+}
+
+func (e *encoder) pop() bpeBigram {
+	top := e.q[0]
+	last := len(e.q) - 1
+	e.q[0] = e.q[last]
+	e.q = e.q[:last]
+	for i := 0; ; {
+		c := 2*i + 1
+		if c >= last {
+			break
+		}
+		if r := c + 1; r < last && e.q[r].before(e.q[c]) {
+			c = r
+		}
+		if !e.q[c].before(e.q[i]) {
+			break
+		}
+		e.q[i], e.q[c] = e.q[c], e.q[i]
+		i = c
+	}
+	return top
+}
+
+// add queues the pair of symbols l and r when the merges have it.
+func (e *encoder) add(t *BPE, l, r int) {
+	if l < 0 || r < 0 {
+		return
+	}
+	ls, rs := &e.syms[l], &e.syms[r]
+	e.key = append(append(append(e.key[:0], e.buf[ls.start:ls.end]...), ' '), e.buf[rs.start:rs.end]...)
+	rank, ok := t.ranks[string(e.key)] // no copy: a lookup converts for free
+	if !ok {
+		return
+	}
+	e.push(bpeBigram{left: l, right: r, rank: rank, size: ls.end - ls.start + rs.end - rs.start})
 }
 
 // Encode tokenizes text, adding the beginning-of-sequence token first when
@@ -306,74 +388,104 @@ func (t *BPE) Encode(text string, bos bool) []int32 {
 	if bos && t.addBOS {
 		out = append(out, t.bos)
 	}
-	var sb strings.Builder
-	for _, w := range split(text, t.pre) {
-		sb.Reset()
-		for _, b := range []byte(w) {
-			sb.WriteRune(byteRune[b])
+	var e encoder
+	splitWords(text, t.pre, func(w string) {
+		if ids, ok := t.recall(w); ok {
+			out = append(out, ids...)
+			return
 		}
-		out = t.word(out, sb.String())
-	}
+		n := len(out)
+		out = t.word(out, &e, w)
+		t.remember(w, out[n:])
+	})
 	return out
 }
 
-// word appends the tokens of one byte-mapped word.
-func (t *BPE) word(out []int32, w string) []int32 {
+// cacheWords is the most words Encode remembers the tokens of, and
+// cacheWordLen the longest; past the first the cache starts over.
+const (
+	cacheWords   = 1 << 15
+	cacheWordLen = 64
+)
+
+// recall returns the tokens of a word seen before.
+func (t *BPE) recall(w string) ([]int32, bool) {
+	if len(w) > cacheWordLen {
+		return nil, false
+	}
+	t.mu.Lock()
+	ids, ok := t.words[w]
+	t.mu.Unlock()
+	return ids, ok
+}
+
+// remember keeps the tokens of w for recall.
+func (t *BPE) remember(w string, ids []int32) {
+	if len(w) > cacheWordLen {
+		return
+	}
+	ids = append([]int32(nil), ids...) // the caller's slice grows on
+	t.mu.Lock()
+	if t.words == nil || len(t.words) >= cacheWords {
+		t.words = make(map[string][]int32, 1024)
+	}
+	t.words[strings.Clone(w)] = ids // w is a substring of a whole text
+	t.mu.Unlock()
+}
+
+// word appends the tokens of one word.
+func (t *BPE) word(out []int32, e *encoder, w string) []int32 {
+	e.buf = e.buf[:0]
+	for i := 0; i < len(w); i++ {
+		e.buf = utf8.AppendRune(e.buf, byteRune[w[i]])
+	}
+	buf := e.buf
 	if t.ignoreMerges {
-		if id, ok := t.ids[w]; ok {
+		if id, ok := t.ids[string(buf)]; ok {
 			return append(out, id)
 		}
 	}
-	var syms []symbol
-	for i := 0; i < len(w); {
-		_, n := utf8.DecodeRuneInString(w[i:])
-		syms = append(syms, symbol{prev: len(syms) - 1, next: len(syms) + 1, text: w[i : i+n]})
+	e.syms = e.syms[:0]
+	for i := 0; i < len(buf); {
+		_, n := utf8.DecodeRune(buf[i:])
+		e.syms = append(e.syms, bpeSymbol{prev: len(e.syms) - 1, next: len(e.syms) + 1, start: i, end: i + n})
 		i += n
 	}
+	syms := e.syms
 	if len(syms) == 0 {
 		return out
 	}
 	syms[len(syms)-1].next = -1
-	q := &bpeQueue{}
-	add := func(l, r int) {
-		if l < 0 || r < 0 {
-			return
-		}
-		rank, ok := t.ranks[syms[l].text+" "+syms[r].text]
-		if !ok {
-			return
-		}
-		heap.Push(q, bpeBigram{left: l, right: r, rank: rank, text: syms[l].text + syms[r].text})
-	}
+	e.q = e.q[:0]
 	for i := 1; i < len(syms); i++ {
-		add(i-1, i)
+		e.add(t, i-1, i)
 	}
-	for q.Len() > 0 {
-		bg := heap.Pop(q).(bpeBigram)
+	for len(e.q) > 0 {
+		bg := e.pop()
 		l, r := &syms[bg.left], &syms[bg.right]
 		// Skip pairs made stale by an earlier merge.
-		if l.text == "" || r.text == "" || l.text+r.text != bg.text {
+		if l.end < 0 || r.end < 0 || l.end-l.start+r.end-r.start != bg.size {
 			continue
 		}
-		l.text = bg.text
-		r.text = ""
+		l.end = r.end
+		r.end = -1
 		l.next = r.next
 		if r.next >= 0 {
 			syms[r.next].prev = bg.left
 		}
-		add(l.prev, bg.left)
-		add(bg.left, l.next)
+		e.add(t, l.prev, bg.left)
+		e.add(t, bg.left, l.next)
 	}
 	for i := 0; i >= 0; i = syms[i].next {
-		s := syms[i].text
-		if id, ok := t.ids[s]; ok {
+		s := buf[syms[i].start:syms[i].end]
+		if id, ok := t.ids[string(s)]; ok {
 			out = append(out, id)
 			continue
 		}
 		// Not in the vocabulary: llama.cpp looks up each byte of the
 		// mapped text on its own and drops those it does not find.
-		for j := 0; j < len(s); j++ {
-			if id, ok := t.ids[s[j:j+1]]; ok {
+		for j := range s {
+			if id, ok := t.ids[string(s[j:j+1])]; ok {
 				out = append(out, id)
 			}
 		}
