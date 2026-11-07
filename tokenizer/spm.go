@@ -23,7 +23,6 @@
 package tokenizer
 
 import (
-	"container/heap"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -147,7 +146,7 @@ func (t *SPM) EOS() int32 { return t.eos }
 // symbol is a span of the input in the merge list.
 type symbol struct {
 	prev, next int
-	text       string
+	start, end int // its bytes in the text; end < 0 once merged away
 }
 
 type bigram struct {
@@ -156,20 +155,50 @@ type bigram struct {
 	size        int
 }
 
-// bigrams is a max-heap by score; ties go to the leftmost pair.
+// before says whether b merges ahead of o: the higher score first, and of
+// equal scores the leftmost pair.
+func (b bigram) before(o bigram) bool {
+	return b.score > o.score || b.score == o.score && b.left < o.left
+}
+
+// bigrams is a max-heap by before.
 type bigrams []bigram
 
-func (h bigrams) Len() int { return len(h) }
-func (h bigrams) Less(i, j int) bool {
-	return h[i].score > h[j].score || (h[i].score == h[j].score && h[i].left < h[j].left)
+func (h *bigrams) push(b bigram) {
+	q := append(*h, b)
+	for i := len(q) - 1; i > 0; {
+		p := (i - 1) / 2
+		if !q[i].before(q[p]) {
+			break
+		}
+		q[i], q[p] = q[p], q[i]
+		i = p
+	}
+	*h = q
 }
-func (h bigrams) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-func (h *bigrams) Push(x any)   { *h = append(*h, x.(bigram)) }
-func (h *bigrams) Pop() any {
-	old := *h
-	x := old[len(old)-1]
-	*h = old[:len(old)-1]
-	return x
+
+func (h *bigrams) pop() bigram {
+	q := *h
+	top := q[0]
+	last := len(q) - 1
+	q[0] = q[last]
+	q = q[:last]
+	for i := 0; ; {
+		c := 2*i + 1
+		if c >= last {
+			break
+		}
+		if r := c + 1; r < last && q[r].before(q[c]) {
+			c = r
+		}
+		if !q[c].before(q[i]) {
+			break
+		}
+		q[i], q[c] = q[c], q[i]
+		i = c
+	}
+	*h = q
+	return top
 }
 
 // Encode tokenizes text, adding the beginning-of-sequence token first when
@@ -188,20 +217,22 @@ func (t *SPM) Encode(text string, bos bool) []int32 {
 	text = strings.ReplaceAll(text, " ", space)
 
 	// One symbol per UTF-8 character; invalid bytes are one symbol each.
-	var syms []symbol
+	// A symbol is a span of text, and adjacent ones merge into the span
+	// over both, so no merge copies text.
+	syms := make([]symbol, 0, len(text))
 	for i := 0; i < len(text); {
 		_, n := utf8.DecodeRuneInString(text[i:])
-		syms = append(syms, symbol{prev: len(syms) - 1, next: len(syms) + 1, text: text[i : i+n]})
+		syms = append(syms, symbol{prev: len(syms) - 1, next: len(syms) + 1, start: i, end: i + n})
 		i += n
 	}
 	syms[len(syms)-1].next = -1
 
-	h := &bigrams{}
+	var h bigrams
 	add := func(l, r int) {
 		if l < 0 || r < 0 {
 			return
 		}
-		s := syms[l].text + syms[r].text
+		s := text[syms[l].start:syms[r].end]
 		if len(s) > t.maxTextLen {
 			return
 		}
@@ -209,20 +240,20 @@ func (t *SPM) Encode(text string, bos bool) []int32 {
 		if !ok {
 			return
 		}
-		heap.Push(h, bigram{left: l, right: r, score: t.scores[id], size: len(s)})
+		h.push(bigram{left: l, right: r, score: t.scores[id], size: len(s)})
 	}
 	for i := 1; i < len(syms); i++ {
 		add(i-1, i)
 	}
-	for h.Len() > 0 {
-		bg := heap.Pop(h).(bigram)
+	for len(h) > 0 {
+		bg := h.pop()
 		l, r := &syms[bg.left], &syms[bg.right]
 		// Skip pairs made stale by an earlier merge.
-		if l.text == "" || r.text == "" || len(l.text)+len(r.text) != bg.size {
+		if l.end < 0 || r.end < 0 || l.end-l.start+r.end-r.start != bg.size {
 			continue
 		}
-		l.text += r.text
-		r.text = ""
+		l.end = r.end
+		r.end = -1
 		l.next = r.next
 		if r.next >= 0 {
 			syms[r.next].prev = bg.left
@@ -231,13 +262,13 @@ func (t *SPM) Encode(text string, bos bool) []int32 {
 		add(bg.left, l.next)
 	}
 	for i := 0; i >= 0; i = syms[i].next {
-		s := syms[i].text
+		s := text[syms[i].start:syms[i].end]
 		if id, ok := t.ids[s]; ok {
 			out = append(out, id)
 			continue
 		}
-		for _, b := range []byte(s) {
-			if id := t.bytes[b]; id >= 0 {
+		for j := 0; j < len(s); j++ {
+			if id := t.bytes[s[j]]; id >= 0 {
 				out = append(out, id)
 			} else {
 				out = append(out, t.unk)
