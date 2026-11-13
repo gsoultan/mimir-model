@@ -222,7 +222,11 @@ func testGenerate(t *testing.T, e *expected) {
 // to 8 bits, but not to the same values; on phi3, whose LongRoPE scales
 // queries and keys by 1.19 and so their scores by 1.42, mimir's land at
 // 0.59 against llama.cpp's 0.47, both within 4% of the largest logit.
-var a8Slack = map[string]float64{"llama": 1, "qwen2": 1, "qwen3": 1, "gemma2": 1, "gemma3": 1, "phi3": 1.3}
+// On qwen3, an activation that lands near the middle of two 8-bit steps
+// rounds the other way where the CPU fuses multiply-adds, as arm64 does:
+// mimir's lands at 0.49 there against llama.cpp's 0.43, and below it on
+// amd64.
+var a8Slack = map[string]float64{"llama": 1, "qwen2": 1, "qwen3": 1.2, "gemma2": 1, "gemma3": 1, "phi3": 1.3}
 
 // TestGenerateA8 runs the prompt and the oracle's continuation through a
 // graph whose matrix products allow 8-bit activations, as llama.cpp
