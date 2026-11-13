@@ -237,25 +237,47 @@ func TestBuildFamilies(t *testing.T) {
 	}
 }
 
-// TestPhi3RopeFactors checks that Phi 3 takes its short rope factors for a
-// cache no longer than its original context, and its long ones past it.
-func TestPhi3RopeFactors(t *testing.T) {
+// TestPhi3 checks how the builder puts Phi 3's weights in the others'
+// layout: its fused projections split into slices of their bytes, and of
+// its rope factors the short ones for a cache no longer than its original
+// context, the long ones past it, kept as rope_freqs.weight.
+func TestPhi3(t *testing.T) {
 	for _, c := range []struct {
 		context int
 		want    string
 	}{{32, "rope_factors_short.weight"}, {64, "rope_factors_long.weight"}} {
 		s := familyFixture(t, "phi3")
+		orig := map[string]Tensor{}
+		for _, tt := range s.Tensors {
+			orig[tt.Name] = tt
+		}
 		if _, err := BuildLlama(s, LlamaOptions{Context: c.context}); err != nil {
 			t.Fatal(err)
 		}
-		var used []string
-		for _, v := range s.Graph.Values {
-			if strings.HasPrefix(v.Name, "rope_factors") {
-				used = append(used, v.Name)
+		got := map[string]Tensor{}
+		for _, tt := range s.Tensors {
+			got[tt.Name] = tt
+		}
+		if f, ok := got["rope_freqs.weight"]; !ok || !bytes.Equal(f.Data, orig[c.want].Data) {
+			t.Errorf("context %d: rope_freqs.weight is not %s", c.context, c.want)
+		}
+		for _, name := range []string{"rope_factors_short.weight", "rope_factors_long.weight", "blk.0.attn_qkv.weight"} {
+			if _, ok := got[name]; ok {
+				t.Errorf("%s kept", name)
 			}
 		}
-		if len(used) != 1 || used[0] != c.want {
-			t.Errorf("context %d: graph reads %v, want %s", c.context, used, c.want)
+		qkv, up := orig["blk.1.attn_qkv.weight"].Data, orig["blk.1.ffn_up.weight"].Data
+		parts := got["blk.1.attn_q.weight"].Data
+		parts = append(append(parts[:len(parts):len(parts)], got["blk.1.attn_k.weight"].Data...), got["blk.1.attn_v.weight"].Data...)
+		if !bytes.Equal(parts, qkv) {
+			t.Error("attn_q, attn_k and attn_v are not the rows of attn_qkv")
+		}
+		gu := append(got["blk.1.ffn_gate.weight"].Data[:len(got["blk.1.ffn_gate.weight"].Data):len(got["blk.1.ffn_gate.weight"].Data)], got["blk.1.ffn_up.weight"].Data...)
+		if !bytes.Equal(gu, up) {
+			t.Error("ffn_gate and ffn_up are not the rows of the fused ffn_up")
+		}
+		if s := got["blk.1.ffn_up.weight"].Shape; s[0] != 256 {
+			t.Errorf("ffn_up of shape %v", s)
 		}
 	}
 }
@@ -270,6 +292,7 @@ func TestBuildFamiliesReject(t *testing.T) {
 		{"gemma2", "blk.0.post_ffw_norm.weight", "post_ffw_norm"},
 		{"gemma3", "blk.5.attn_q_norm.weight", "attn_q_norm"},
 		{"phi3", "blk.0.attn_qkv.weight", "attn_q.weight"},
+		{"phi3", "rope_factors_long.weight", "rope_factors_long"},
 	} {
 		s := familyFixture(t, c.arch)
 		for i, tt := range s.Tensors {

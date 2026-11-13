@@ -49,9 +49,10 @@ import (
 //     normalizes query and key heads as Qwen 3 does and gives its local
 //     layers their own rope base.
 //   - "phi3": Phi 3, 3.5 and 4, whose query, key and value projections may
-//     be one fused matrix, whose up projection holds the gate's rows ahead
-//     of its own, and whose LongRoPE divides each pair's frequency by a
-//     factor and scales the rotated features.
+//     be one fused matrix and whose up projection holds the gate's rows
+//     ahead of its own, which the builder splits apart (see splitPhi3),
+//     and whose LongRoPE divides each pair's frequency by a factor and
+//     scales the rotated features.
 //
 // llama.cpp's converter already adds 1 to Gemma's norm weights, which
 // Gemma multiplies by 1 + w, so every family's RMSNorm here is x/rms·w.
@@ -491,6 +492,11 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 	default:
 		return nil, fmt.Errorf("key-value cache dtype %s: want f32 or f16", o.Cache)
 	}
+	if c.Arch == "phi3" {
+		if err := splitPhi3(s, c); err != nil {
+			return nil, err
+		}
+	}
 	for i, t := range s.Tensors {
 		b.byName[t.Name] = i
 	}
@@ -594,26 +600,14 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 			errs = append(errs, err)
 			return id
 		}
-		has := func(name string) bool { _, ok := b.byName[p+name]; return ok }
 		attnNorm := w("attn_norm.weight", c.Embed)
-		var wq, wk, wv, wqkv uint32
-		fusedQKV := c.Arch == "phi3" && has("attn_qkv.weight")
-		if fusedQKV {
-			wqkv = w("attn_qkv.weight", int(QD+2*KD), c.Embed)
-		} else {
-			wq = w("attn_q.weight", int(QD), c.Embed)
-			wk = w("attn_k.weight", int(KD), c.Embed)
-			wv = w("attn_v.weight", int(KD), c.Embed)
-		}
+		wq := w("attn_q.weight", int(QD), c.Embed)
+		wk := w("attn_k.weight", int(KD), c.Embed)
+		wv := w("attn_v.weight", int(KD), c.Embed)
 		wo := w("attn_output.weight", c.Embed, int(QD))
 		ffnNorm := w("ffn_norm.weight", c.Embed)
-		var wg, wu uint32
-		if c.Arch == "phi3" {
-			wu = w("ffn_up.weight", 2*c.FFN, c.Embed)
-		} else {
-			wg = w("ffn_gate.weight", c.FFN, c.Embed)
-			wu = w("ffn_up.weight", c.FFN, c.Embed)
-		}
+		wg := w("ffn_gate.weight", c.FFN, c.Embed)
+		wu := w("ffn_up.weight", c.FFN, c.Embed)
 		wd := w("ffn_down.weight", c.Embed, c.FFN)
 		var qNorm, kNorm, postAttn, postFFN uint32
 		headNorms := c.Arch == "qwen3" || c.Arch == "gemma3"
@@ -644,19 +638,9 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		cacheV := b.zeros(p+"cache_v", b.cache, cacheShape...)
 
 		h := norm(p+"attn_in", x, attnNorm, 1, T, E)
-		var qf, kf, vf uint32 // [1, T, n*D]
-		if fusedQKV {
-			qkv := b.matmulOp(p+"qkv", h, wqkv, 1, T, QD+KD+KD)
-			part := func(name string, from, to mim.Dim) uint32 {
-				return b.op(mim.OpShrink, []uint32{qkv}, b.val(p+name, mim.F32, 1, T, to-from),
-					named("begin", ints(0, 0, int64(from))), named("end", ints(1, -1, int64(to))))
-			}
-			qf, kf, vf = part("q", 0, QD), part("k", QD, QD+KD), part("v", QD+KD, QD+2*KD)
-		} else {
-			qf = b.matmulBias(p+"q", h, wq, biases[0], 1, T, QD)
-			kf = b.matmulBias(p+"k", h, wk, biases[1], 1, T, KD)
-			vf = b.matmulBias(p+"v", h, wv, biases[2], 1, T, KD)
-		}
+		qf := b.matmulBias(p+"q", h, wq, biases[0], 1, T, QD) // [1, T, H*D]
+		kf := b.matmulBias(p+"k", h, wk, biases[1], 1, T, KD)
+		vf := b.matmulBias(p+"v", h, wv, biases[2], 1, T, KD)
 		heads := func(name string, y uint32, n mim.Dim, scale uint32, normed bool) uint32 {
 			y = b.op(mim.OpReshape, []uint32{y}, b.val(p+name+".heads", mim.F32, 1, T, n, D), named("shape", ints(1, sym, int64(n), int64(D))))
 			if normed {
@@ -705,22 +689,13 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		x = b.op(mim.OpAdd, []uint32{x, o}, b.val(p+"resid_attn", mim.F32, 1, T, E))
 
 		h = norm(p+"ffn_in", x, ffnNorm, 1, T, E)
+		gate := b.matmulOp(p+"gate", h, wg, 1, T, F)
+		up := b.matmulOp(p+"up", h, wu, 1, T, F)
 		var act uint32
-		switch {
-		case c.Arch == "phi3":
-			// The fused up projection holds the gate's rows first.
-			gu := b.matmulOp(p+"gate_up", h, wu, 1, T, 2*F)
-			gate := b.op(mim.OpShrink, []uint32{gu}, b.val(p+"gate", mim.F32, 1, T, F), named("begin", ints(0, 0, 0)), named("end", ints(1, -1, int64(F))))
-			up := b.op(mim.OpShrink, []uint32{gu}, b.val(p+"up", mim.F32, 1, T, F), named("begin", ints(0, 0, int64(F))), named("end", ints(1, -1, int64(2*F))))
-			act = b.call("swiglu", []uint32{gate, up}, b.val(p+"swiglu", mim.F32, 1, T, F))
-		case gemma:
-			gate := b.matmulOp(p+"gate", h, wg, 1, T, F)
-			up := b.matmulOp(p+"up", h, wu, 1, T, F)
+		if gemma {
 			act = b.call("geglu", []uint32{gate, up}, b.val(p+"geglu", mim.F32, 1, T, F),
 				mim.Attr{Key: "approximate", Type: mim.AttrString, String: "tanh"})
-		default:
-			gate := b.matmulOp(p+"gate", h, wg, 1, T, F)
-			up := b.matmulOp(p+"up", h, wu, 1, T, F)
+		} else {
 			act = b.call("swiglu", []uint32{gate, up}, b.val(p+"swiglu", mim.F32, 1, T, F))
 		}
 		down := b.matmulOp(p+"down", act, wd, 1, T, E)
@@ -777,10 +752,9 @@ type ropeSpec struct {
 // llama.cpp's NORM rope, the llama architecture's, rotates adjacent pairs;
 // the others use NEOX, which rotates the first half of each head against
 // the second. A global layer is linearly scaled by RopeScale and divides
-// its frequencies by rope_freqs.weight (Llama 3.1 and later) or by Phi 3's
-// rope_factors_short.weight, or rope_factors_long.weight when the cache is
-// longer than the context the model was first trained on; these call
-// rope.v2, and plain rotations rope.v1.
+// its frequencies by rope_freqs.weight (Llama 3.1 and later, and Phi 3's
+// factors, see splitPhi3); these call rope.v2, and plain rotations
+// rope.v1.
 func (b *llamaBuilder) ropes(c *LlamaConfig) (global, local ropeSpec, err error) {
 	interleaved := int64(0)
 	if c.Arch == "llama" {
@@ -806,17 +780,7 @@ func (b *llamaBuilder) ropes(c *LlamaConfig) (global, local ropeSpec, err error)
 		global.v2 = true
 		global.attrs = append(global.attrs, mim.Attr{Key: "attn_factor", Type: mim.AttrFloat, Float: c.RopeAttnFactor})
 	}
-	name := "rope_freqs.weight"
-	if c.Arch == "phi3" {
-		name = "rope_factors_short.weight"
-		orig := c.MaxContext
-		if v, ok := metaInt(b.s.Metadata, c.Arch+".rope.scaling.original_context_length"); ok && v > 0 && v < math.MaxInt32 {
-			orig = int(v)
-		}
-		if c.Context > orig {
-			name = "rope_factors_long.weight"
-		}
-	}
+	const name = "rope_freqs.weight"
 	if _, ok := b.byName[name]; ok {
 		f, err := b.weight(name, c.RopeDims/2)
 		if err != nil {
@@ -840,4 +804,91 @@ func (b *llamaBuilder) rope(name string, x, positions uint32, r ropeSpec, shape 
 		in = append(in, *r.factors)
 	}
 	return b.callVersion("rope", 2, in, b.val(name, mim.F32, shape...), r.attrs...)
+}
+
+// splitPhi3 puts Phi 3's weights in the layout of the other families, so
+// that the graph, runtimes that load the weights by name and LoRA
+// adapters see the same projections: each block's fused attn_qkv.weight
+// becomes attn_q, attn_k and attn_v, and its ffn_up.weight, which holds
+// the gate's rows ahead of the up projection's, becomes ffn_gate and
+// ffn_up. A row of a block-quantized tensor is whole blocks, so each part
+// is a slice of the fused tensor's bytes. Of the LongRoPE factors, it
+// keeps those llama.cpp uses for c's cache length as rope_freqs.weight:
+// rope_factors_long.weight past the context the model was first trained
+// on, rope_factors_short.weight within it.
+func splitPhi3(s *Source, c *LlamaConfig) error {
+	qd, kd := c.Heads*c.HeadDim, c.KVHeads*c.HeadDim
+	split := func(t Tensor, names []string, rows []int) ([]Tensor, error) {
+		total := 0
+		for _, r := range rows {
+			total += r
+		}
+		if len(t.Shape) != 2 || t.Shape[0] != uint64(total) || t.Shape[1] != uint64(c.Embed) {
+			return nil, fmt.Errorf("tensor %q is %v, want [%d %d]", t.Name, t.Shape, total, c.Embed)
+		}
+		rowBytes, err := mim.ByteSize(t.DType, []uint64{t.Shape[1]})
+		if err != nil {
+			return nil, fmt.Errorf("tensor %q: %w", t.Name, err)
+		}
+		var out []Tensor
+		at := uint64(0)
+		for i, r := range rows {
+			n := uint64(r) * rowBytes
+			out = append(out, Tensor{Name: names[i], DType: t.DType, Shape: []uint64{uint64(r), t.Shape[1]}, Data: t.Data[at : at+n : at+n]})
+			at += n
+		}
+		return out, nil
+	}
+	orig := c.MaxContext
+	if v, ok := metaInt(s.Metadata, c.Arch+".rope.scaling.original_context_length"); ok && v > 0 && v < math.MaxInt32 {
+		orig = int(v)
+	}
+	keep, drop := "rope_factors_short.weight", "rope_factors_long.weight"
+	if c.Context > orig {
+		keep, drop = drop, keep
+	}
+	names := map[string]bool{}
+	for _, t := range s.Tensors {
+		names[t.Name] = true
+	}
+	if names[drop] && !names[keep] {
+		return fmt.Errorf("tensor %q is missing: the cache of %d positions needs it, next to %s", keep, c.Context, drop)
+	}
+	var out []Tensor
+	for _, t := range s.Tensors {
+		var p string
+		var l int
+		if _, err := fmt.Sscanf(t.Name, "blk.%d.", &l); err == nil {
+			p = fmt.Sprintf("blk.%d.", l)
+		}
+		switch {
+		case p != "" && t.Name == p+"attn_qkv.weight":
+			parts, err := split(t, []string{p + "attn_q.weight", p + "attn_k.weight", p + "attn_v.weight"}, []int{qd, kd, kd})
+			if err != nil {
+				return err
+			}
+			out = append(out, parts...)
+		case p != "" && t.Name == p+"ffn_up.weight" && !names[p+"ffn_gate.weight"]:
+			parts, err := split(t, []string{p + "ffn_gate.weight", p + "ffn_up.weight"}, []int{c.FFN, c.FFN})
+			if err != nil {
+				return err
+			}
+			out = append(out, parts...)
+		case t.Name == keep && !names["rope_freqs.weight"]:
+			t.Name = "rope_freqs.weight"
+			out = append(out, t)
+		case t.Name == keep || t.Name == drop:
+		default:
+			out = append(out, t)
+		}
+	}
+	seen := map[string]bool{}
+	for _, t := range out {
+		if seen[t.Name] {
+			return fmt.Errorf("tensor %q is both fused and apart", t.Name)
+		}
+		seen[t.Name] = true
+	}
+	s.Tensors = out
+	return nil
 }
