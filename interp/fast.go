@@ -47,6 +47,7 @@ var fastPaths = map[string]fastFunc{
 	"rms_norm.v1":          fastRMSNorm,
 	"swiglu.v1":            fastSwiglu,
 	"rope.v1":              fastRope,
+	"rope.v2":              fastRopeV2,
 	"attention.v1":         fastAttention,
 	"attention.v2":         fastAttentionV2,
 	"embedding.v1":         fastEmbedding,
@@ -505,7 +506,16 @@ func position(t *ref.Tensor, i int) float64 {
 }
 
 func fastRope(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
-	if err := checkRope(in); err != nil {
+	return ropeFast(list, in, false)
+}
+
+func fastRopeV2(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*ref.Tensor, bool, error) {
+	return ropeFast(list, in, true)
+}
+
+// ropeFast computes rope.v1, or rope.v2 if v2 is set, for f32 x.
+func ropeFast(list []mim.Attr, in []*ref.Tensor, v2 bool) ([]*ref.Tensor, bool, error) {
+	if err := checkRope(in, v2); err != nil {
 		return nil, false, err
 	}
 	x, pos := in[0], in[1]
@@ -513,7 +523,11 @@ func fastRope(list []mim.Attr, in []*ref.Tensor, _ []mim.DType, _ [][]int) ([]*r
 		return nil, false, nil
 	}
 	B, H, T, D := x.Shape[0], x.Shape[1], x.Shape[2], x.Shape[3]
-	p, err := readRope(list, D)
+	var v2in []*ref.Tensor
+	if v2 {
+		v2in = in
+	}
+	p, err := readRope(list, D, v2in)
 	if err != nil {
 		return nil, false, err
 	}

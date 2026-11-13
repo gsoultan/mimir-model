@@ -23,7 +23,7 @@ import (
 
 // This file holds the canonical bodies of the composites a decoder-only
 // transformer needs beyond the basic ones in stdlib.go: dequant_matmul.v1
-// and dequant_matmul_a8.v1 and v2, swiglu.v1, cos.v1, tanh.v1, rope.v1 and attention.v1 and v2 (spec/stdlib.md
+// and dequant_matmul_a8.v1 and v2, swiglu.v1, geglu.v1, cos.v1, tanh.v1, rope.v1 and v2 and attention.v1 and v2 (spec/stdlib.md
 // sections 3.3, 4 and 6). Like the rest of the executor's standard library
 // they evaluate the body on the primitive kernels, so their results are the
 // body's results.
@@ -34,9 +34,11 @@ func init() {
 	stdlib["dequant_matmul_a8.v1"] = dequantMatmulV1
 	stdlib["dequant_matmul_a8.v2"] = dequantMatmulA8V2
 	stdlib["swiglu.v1"] = swigluV1
+	stdlib["geglu.v1"] = gegluV1
 	stdlib["cos.v1"] = unaryComposite(cosBody)
 	stdlib["tanh.v1"] = unaryComposite(tanhBody)
 	stdlib["rope.v1"] = ropeV1
+	stdlib["rope.v2"] = ropeV2
 	stdlib["attention.v1"] = attentionBody("attention.v1")
 	stdlib["attention.v2"] = attentionBody("attention.v2")
 }
@@ -246,7 +248,32 @@ func swigluV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]
 	return []*ref.Tensor{b.cast(y, in[0].DType)}, b.err
 }
 
-// ropeParams are the attributes of rope.v1 and the frequencies they give.
+func gegluV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
+	a, err := readAttrs(list, "approximate")
+	if err != nil {
+		return nil, err
+	}
+	if len(in) != 2 || len(dts) != 1 || !isFloat(in[0].DType) || in[0].DType != in[1].DType {
+		return nil, fmt.Errorf("geglu.v1 takes two float inputs of one dtype")
+	}
+	gelu := geluErfBody
+	if v := a["approximate"]; v != nil {
+		switch {
+		case v.Type == mim.AttrString && v.String == "tanh":
+			gelu = geluTanhBody
+		case v.Type == mim.AttrString && v.String == "none":
+		default:
+			return nil, fmt.Errorf("geglu.v1: approximate must be \"none\" or \"tanh\"")
+		}
+	}
+	cd := computeDType(in[0].DType)
+	b := &body{}
+	y := b.bin(mim.OpMul, gelu(b, b.cast(in[0], cd)), b.cast(in[1], cd))
+	return []*ref.Tensor{b.cast(y, in[0].DType)}, b.err
+}
+
+// ropeParams are the attributes of rope.v1 and v2 and the frequencies they
+// give.
 type ropeParams struct {
 	rotary      int
 	interleaved bool
@@ -254,9 +281,17 @@ type ropeParams struct {
 	ms          float64
 }
 
-func readRope(list []mim.Attr, d int) (*ropeParams, error) {
-	a, err := readAttrs(list, "theta", "rotary_dims", "interleaved", "yarn_factor",
-		"yarn_original_context", "yarn_beta_fast", "yarn_beta_slow", "yarn_attn_factor")
+// readRope reads the attributes of rope.v1, or of rope.v2 when in holds
+// its inputs (nil for v1): v2 scales every frequency by freq_scale and
+// divides each by its entry of the optional freq_factors input, and scales
+// cos and sin by attn_factor too.
+func readRope(list []mim.Attr, d int, in []*ref.Tensor) (*ropeParams, error) {
+	known := []string{"theta", "rotary_dims", "interleaved", "yarn_factor",
+		"yarn_original_context", "yarn_beta_fast", "yarn_beta_slow", "yarn_attn_factor"}
+	if in != nil {
+		known = append(known, "freq_scale", "attn_factor")
+	}
+	a, err := readAttrs(list, known...)
 	if err != nil {
 		return nil, err
 	}
@@ -322,12 +357,43 @@ func readRope(list []mim.Attr, d int) (*ropeParams, error) {
 		ramp := math.Min(math.Max((float64(i)-lo)/(hi-lo), 0), 1)
 		p.invFreq[i] = (f/factor)*ramp + f*(1-ramp)
 	}
+	if in == nil {
+		return p, nil
+	}
+	scale, err := a.float("freq_scale", 1)
+	if err != nil {
+		return nil, err
+	}
+	af, err := a.float("attn_factor", 1)
+	if err != nil {
+		return nil, err
+	}
+	if !(scale > 0) || math.IsInf(scale, 0) || math.IsNaN(af) || math.IsInf(af, 0) {
+		return nil, fmt.Errorf("rope.v2: freq_scale %g, attn_factor %g", scale, af)
+	}
+	if scale != 1 && factor != 1 {
+		return nil, fmt.Errorf("rope.v2: freq_scale and yarn_factor are both set")
+	}
+	p.ms *= af
+	var ff *ref.Tensor
+	if len(in) == 3 {
+		ff = in[2]
+		if !isFloat(ff.DType) || len(ff.Shape) != 1 || ff.Shape[0] != h {
+			return nil, fmt.Errorf("rope.v2: freq_factors must be a float [%d], got %s%v", h, ff.DType, ff.Shape)
+		}
+	}
+	for i := range p.invFreq {
+		p.invFreq[i] *= scale
+		if ff != nil {
+			p.invFreq[i] /= ref.DecodeFloat(ff.DType, ff.Bits(i))
+		}
+	}
 	return p, nil
 }
 
-func checkRope(in []*ref.Tensor) error {
-	if len(in) != 2 {
-		return fmt.Errorf("rope.v1 takes x and positions")
+func checkRope(in []*ref.Tensor, v2 bool) error {
+	if len(in) != 2 && !(v2 && len(in) == 3) {
+		return fmt.Errorf("rope takes x and positions, and for v2 optional freq_factors")
 	}
 	x, pos := in[0], in[1]
 	if len(x.Shape) != 4 || !isFloat(x.DType) {
@@ -340,13 +406,28 @@ func checkRope(in []*ref.Tensor) error {
 	return nil
 }
 
-func ropeV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, _ [][]int) ([]*ref.Tensor, error) {
-	if err := checkRope(in); err != nil {
+func ropeV1(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, shapes [][]int) ([]*ref.Tensor, error) {
+	return ropeBody(list, in, false)
+}
+
+func ropeV2(list []mim.Attr, in []*ref.Tensor, dts []mim.DType, shapes [][]int) ([]*ref.Tensor, error) {
+	return ropeBody(list, in, true)
+}
+
+// ropeBody is the canonical body of rope.v1, or of rope.v2 if v2 is set.
+// v2's frequencies, its freq_factors included, are folded into the
+// constant table in float64, as the reference evaluation computes them.
+func ropeBody(list []mim.Attr, in []*ref.Tensor, v2 bool) ([]*ref.Tensor, error) {
+	if err := checkRope(in, v2); err != nil {
 		return nil, err
 	}
 	x0, pos := in[0], in[1]
 	B, H, T, D := x0.Shape[0], x0.Shape[1], x0.Shape[2], x0.Shape[3]
-	p, err := readRope(list, D)
+	var v2in []*ref.Tensor
+	if v2 {
+		v2in = in
+	}
+	p, err := readRope(list, D, v2in)
 	if err != nil {
 		return nil, err
 	}

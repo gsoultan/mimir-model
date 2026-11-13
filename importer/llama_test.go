@@ -15,6 +15,8 @@ package importer
 
 import (
 	"bytes"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,7 +109,7 @@ func TestBuildLlamaRejects(t *testing.T) {
 			}
 		}, "missing"},
 		{"heads", func(s *Source) { s.Metadata["llama.attention.head_count_kv"] = uint64(3) }, "divide"},
-		{"rope scaling", func(s *Source) { s.Metadata["llama.rope.scaling.type"] = "linear" }, "rope scaling"},
+		{"rope scaling", func(s *Source) { s.Metadata["llama.rope.scaling.type"] = "yarn" }, "rope scaling"},
 		{"epsilon", func(s *Source) { delete(s.Metadata, "llama.attention.layer_norm_rms_epsilon") }, "epsilon"},
 	} {
 		s := llamaFixture(t)
@@ -158,5 +160,131 @@ func TestBuildQwen2(t *testing.T) {
 	}
 	if _, err := BuildLlama(s, LlamaOptions{}); err == nil || !strings.Contains(err.Error(), "attn_k.bias") {
 		t.Errorf("without a bias: error %v", err)
+	}
+}
+
+func familyFixture(t *testing.T, arch string) *Source {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "testdata", arch, "tiny-q4km.gguf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := ParseGGUF(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestBuildFamilies checks the hyperparameters read for each family the
+// graph builder knows beyond llama and qwen2, and the parts of the graph
+// that set the family apart. cmd/mim-run's tests run the graphs against
+// float64 oracles that llama.cpp agrees with.
+func TestBuildFamilies(t *testing.T) {
+	for _, c := range []struct {
+		arch  string
+		want  LlamaConfig
+		calls map[string]int // composite calls the graph must make, by name.version
+	}{
+		{"qwen3", LlamaConfig{Arch: "qwen3", Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 96, RopeDims: 96,
+			RopeTheta: 1e6, NormEps: float64(float32(1e-6)), Vocab: 406, Context: 32, MaxContext: 64, Slots: 1},
+			map[string]int{"rms_norm.v1": 4*2 + 1, "rope.v1": 4, "swiglu.v1": 2}},
+		{"gemma2", LlamaConfig{Arch: "gemma2", Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 128, RopeDims: 128,
+			RopeTheta: 10000, NormEps: float64(float32(1e-6)), Vocab: 444, Context: 32, MaxContext: 64, Slots: 1,
+			Window: 8, LocalEvery: 2, LocalTheta: 10000, AttnScale: 1 / math.Sqrt(128), AttnSoftcap: 5, FinalSoftcap: 10},
+			map[string]int{"rms_norm.v1": 4*2 + 1, "geglu.v1": 2, "tanh.v1": 1, "rope.v1": 4}},
+		{"gemma3", LlamaConfig{Arch: "gemma3", Layers: 6, Embed: 256, FFN: 256, Heads: 4, KVHeads: 1, HeadDim: 128, RopeDims: 128,
+			RopeTheta: 1e6, NormEps: float64(float32(1e-6)), Vocab: 444, Context: 32, MaxContext: 64, Slots: 1,
+			RopeScale: 8, Window: 8, LocalEvery: 6, LocalTheta: 10000, AttnScale: 1 / math.Sqrt(128)},
+			map[string]int{"rms_norm.v1": 6*6 + 1, "geglu.v1": 6, "rope.v1": 10, "rope.v2": 2}},
+		{"phi3", LlamaConfig{Arch: "phi3", Layers: 2, Embed: 256, FFN: 256, Heads: 4, KVHeads: 2, HeadDim: 64, RopeDims: 48,
+			RopeTheta: 10000, NormEps: float64(float32(1e-5)), Vocab: 406, Context: 32, MaxContext: 64, Slots: 1,
+			RopeAttnFactor: float64(float32(1.19))},
+			map[string]int{"rms_norm.v1": 2*2 + 1, "swiglu.v1": 2, "rope.v2": 4}},
+	} {
+		t.Run(c.arch, func(t *testing.T) {
+			s := familyFixture(t, c.arch)
+			got, err := BuildLlama(s, LlamaOptions{Context: 32})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if *got != c.want {
+				t.Fatalf("config %+v, want %+v", *got, c.want)
+			}
+			calls := map[string]int{}
+			for _, op := range s.Graph.Subgraphs[0].Ops {
+				if op.Opcode != mim.OpCall {
+					continue
+				}
+				var name string
+				var v int64
+				for _, a := range op.Attrs {
+					switch a.Key {
+					case "name":
+						name = a.String
+					case "version":
+						v = a.Int
+					}
+				}
+				calls[fmt.Sprintf("%s.v%d", name, v)]++
+			}
+			for k, n := range c.calls {
+				if calls[k] != n {
+					t.Errorf("%d calls of %s, want %d (all: %v)", calls[k], k, n, calls)
+				}
+			}
+		})
+	}
+}
+
+// TestPhi3RopeFactors checks that Phi 3 takes its short rope factors for a
+// cache no longer than its original context, and its long ones past it.
+func TestPhi3RopeFactors(t *testing.T) {
+	for _, c := range []struct {
+		context int
+		want    string
+	}{{32, "rope_factors_short.weight"}, {64, "rope_factors_long.weight"}} {
+		s := familyFixture(t, "phi3")
+		if _, err := BuildLlama(s, LlamaOptions{Context: c.context}); err != nil {
+			t.Fatal(err)
+		}
+		var used []string
+		for _, v := range s.Graph.Values {
+			if strings.HasPrefix(v.Name, "rope_factors") {
+				used = append(used, v.Name)
+			}
+		}
+		if len(used) != 1 || used[0] != c.want {
+			t.Errorf("context %d: graph reads %v, want %s", c.context, used, c.want)
+		}
+	}
+}
+
+// TestBuildFamiliesReject checks what a family's graph cannot be built
+// without.
+func TestBuildFamiliesReject(t *testing.T) {
+	for _, c := range []struct {
+		arch, drop, error string
+	}{
+		{"qwen3", "blk.1.attn_k_norm.weight", "attn_k_norm"},
+		{"gemma2", "blk.0.post_ffw_norm.weight", "post_ffw_norm"},
+		{"gemma3", "blk.5.attn_q_norm.weight", "attn_q_norm"},
+		{"phi3", "blk.0.attn_qkv.weight", "attn_q.weight"},
+	} {
+		s := familyFixture(t, c.arch)
+		for i, tt := range s.Tensors {
+			if tt.Name == c.drop {
+				s.Tensors = append(s.Tensors[:i], s.Tensors[i+1:]...)
+				break
+			}
+		}
+		if _, err := BuildLlama(s, LlamaOptions{}); err == nil || !strings.Contains(err.Error(), c.error) {
+			t.Errorf("%s without %s: error %v, want one mentioning %q", c.arch, c.drop, err, c.error)
+		}
+	}
+	s := familyFixture(t, "gemma3")
+	s.Metadata["gemma3.rope.scaling.type"] = "yarn"
+	if _, err := BuildLlama(s, LlamaOptions{}); err == nil || !strings.Contains(err.Error(), "yarn") {
+		t.Errorf("gemma3 with yarn scaling: error %v", err)
 	}
 }

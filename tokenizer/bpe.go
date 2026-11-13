@@ -96,6 +96,11 @@ func BPEFromMetadata(md mim.Metadata) (*BPE, error) {
 	case "llama3", "llama-v3", "llama-bpe":
 		t.pre, t.ignoreMerges = preLlama3, true
 		t.addBOS = mdBool(md, "tokenizer.ggml.add_bos_token", true)
+	case "dbrx", "smaug-bpe":
+		// Llama 3's expression, which Phi 4 and others name so, without
+		// its rule that a word which is a token is not split.
+		t.pre = preLlama3
+		t.addBOS = mdBool(md, "tokenizer.ggml.add_bos_token", true)
 	case "qwen2":
 		t.pre = preQwen2
 		t.addBOS = mdBool(md, "tokenizer.ggml.add_bos_token", false)
