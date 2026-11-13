@@ -211,6 +211,9 @@ func TestBuildFamilies(t *testing.T) {
 			if *got != c.want {
 				t.Fatalf("config %+v, want %+v", *got, c.want)
 			}
+			if outs := s.Graph.Subgraphs[0].Outputs; len(outs) != 1 || s.Graph.Values[outs[0]].Name != "logits" {
+				t.Errorf("outputs %v, want one named logits", outs)
+			}
 			calls := map[string]int{}
 			for _, op := range s.Graph.Subgraphs[0].Ops {
 				if op.Opcode != mim.OpCall {

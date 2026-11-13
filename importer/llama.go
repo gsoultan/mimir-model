@@ -715,11 +715,15 @@ func BuildLlama(s *Source, o LlamaOptions) (*LlamaConfig, error) {
 		}
 	}
 	x = norm("final_norm", x, outNorm, 1, T, E)
-	logits := b.matmulOp("logits", x, head, 1, T, V)
+	var logits uint32
 	if c.FinalSoftcap > 0 {
-		capped := b.op(mim.OpMul, []uint32{logits, b.scalar("logit_softcap.inv", 1/c.FinalSoftcap)}, b.val("logits.scaled", mim.F32, 1, T, V))
+		// The output keeps the name "logits" that runners look it up by.
+		raw := b.matmulOp("logits.raw", x, head, 1, T, V)
+		capped := b.op(mim.OpMul, []uint32{raw, b.scalar("logit_softcap.inv", 1/c.FinalSoftcap)}, b.val("logits.scaled", mim.F32, 1, T, V))
 		capped = b.call("tanh", []uint32{capped}, b.val("logits.tanh", mim.F32, 1, T, V))
-		logits = b.op(mim.OpMul, []uint32{capped, b.scalar("logit_softcap", c.FinalSoftcap)}, b.val("logits.capped", mim.F32, 1, T, V))
+		logits = b.op(mim.OpMul, []uint32{capped, b.scalar("logit_softcap", c.FinalSoftcap)}, b.val("logits", mim.F32, 1, T, V))
+	} else {
+		logits = b.matmulOp("logits", x, head, 1, T, V)
 	}
 	b.g.Values[logits].Kind = mim.KindOutput
 	main.Outputs = []uint32{logits}
