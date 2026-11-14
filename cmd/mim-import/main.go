@@ -26,7 +26,8 @@
 // one importer.FromHuggingFace knows (Whisper speech to text, CLIP images
 // and text), so the output runs as it is. Tensors are copied
 // byte for byte. By default the output holds weights and metadata only;
-// with -graph, a GGUF file of the llama or qwen2 architecture also gets a
+// with -graph, a GGUF file of the llama, qwen2, qwen3, gemma2, gemma3 or
+// phi3 architecture (importer.LlamaArchitectures) also gets a
 // runnable forward-pass graph with a key-value cache of -ctx positions
 // (default: the model's context length), which mim-run can generate text
 // with. Its
@@ -64,7 +65,7 @@ func main() {
 	out := flag.String("o", "", "output file (default: first input with the extension replaced by .mim)")
 	bench := flag.Bool("bench", false, "report sizes and load times of the input and the output")
 	nohash := flag.Bool("nohash", false, "do not write section hashes")
-	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama or qwen2 architecture)")
+	graph := flag.Bool("graph", false, "build a runnable graph (GGUF llama, qwen2, qwen3, gemma2, gemma3 or phi3 architecture)")
 	ctx := flag.Int("ctx", 0, "with -graph, the key-value cache length (default: the model's context length)")
 	a8 := flag.Bool("a8", true, "with -graph, let runtimes round activations to 8 bits in quantized matrix products (dequant_matmul_a8), as llama.cpp does")
 	kv := flag.String("kv", "f16", "with -graph, the key-value cache dtype: f16 or f32")

@@ -124,6 +124,30 @@ func TestFastPathsMatchBodies(t *testing.T) {
 		}
 		yarn := []mim.Attr{iAttr("yarn_original_context", 64), fAttr("yarn_factor", 4)}
 		checkFast(t, "rope.v1", yarn, []*ref.Tensor{x, pos}, 1e-4)
+		factors := f32t([]int{2}, 1.5, 4)
+		v2 := []mim.Attr{iAttr("rotary_dims", 4), fAttr("freq_scale", 0.125), fAttr("attn_factor", 1.2)}
+		checkFast(t, "rope.v2", v2, []*ref.Tensor{x, pos}, 1e-4)
+		checkFast(t, "rope.v2", v2, []*ref.Tensor{x, pos, factors}, 1e-4)
+	})
+	t.Run("geglu", func(t *testing.T) {
+		a, b := randF32(rng, []int{2, 9}, 3), randF32(rng, []int{2, 9}, 1)
+		for _, approx := range []string{"none", "tanh"} {
+			out, err := gegluV1([]mim.Attr{{Key: "approximate", Type: mim.AttrString, String: approx}}, []*ref.Tensor{a, b}, []mim.DType{mim.F32}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			av, bv, ov := f32Values(a), f32Values(b), f32Values(out[0])
+			for i := range ov {
+				x := float64(av[i])
+				g := 0.5 * x * (1 + math.Erf(x/math.Sqrt2))
+				if approx == "tanh" {
+					g = 0.5 * x * (1 + math.Tanh(0.7978845608028654*(x+0.044715*x*x*x)))
+				}
+				if want := g * float64(bv[i]); math.Abs(float64(ov[i])-want) > 1e-5*math.Max(1, math.Abs(want)) {
+					t.Fatalf("%s: element %d is %g, want %g", approx, i, ov[i], want)
+				}
+			}
+		}
 	})
 	t.Run("attention", func(t *testing.T) {
 		q := randF32(rng, []int{1, 4, 3, 8}, 1)
@@ -231,6 +255,39 @@ func TestRopeDefinition(t *testing.T) {
 				t.Errorf("interleaved=%d element %d: %g, want %g", c.inter, i, g, c.want[i])
 			}
 		}
+	}
+}
+
+// TestRopeV2Definition checks rope.v2's scaled frequencies against the
+// rotation they define: pair i of a head turns by position·theta^(-2i/D)
+// ·freq_scale/freq_factors[i], and its features grow by attn_factor.
+func TestRopeV2Definition(t *testing.T) {
+	x := f32t([]int{1, 1, 1, 4}, 1, 2, 3, 4)
+	pos := i64t([]int{1, 1}, 3)
+	theta, scale, af := 100.0, 0.5, 1.5
+	factors := f32t([]int{2}, 2, 4)
+	f0, f1 := 3*scale/2, 3*math.Pow(theta, -0.5)*scale/4
+	rot := func(a, b, ang float64) (float64, float64) {
+		return af * (a*math.Cos(ang) - b*math.Sin(ang)), af * (b*math.Cos(ang) + a*math.Sin(ang))
+	}
+	var want [4]float64
+	want[0], want[2] = rot(1, 3, f0)
+	want[1], want[3] = rot(2, 4, f1)
+	attrs := []mim.Attr{fAttr("theta", theta), fAttr("freq_scale", scale), fAttr("attn_factor", af)}
+	out, err := ropeV2(attrs, []*ref.Tensor{x, pos, factors}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, g := range f32Values(out[0]) {
+		if math.Abs(float64(g)-want[i]) > 1e-5 {
+			t.Errorf("element %d: %g, want %g", i, g, want[i])
+		}
+	}
+	if _, err := ropeV1(attrs, []*ref.Tensor{x, pos}, nil, nil); err == nil {
+		t.Error("rope.v1 took v2's attributes")
+	}
+	if _, err := ropeV2(attrs, []*ref.Tensor{x, pos, f32t([]int{3}, 1, 1, 1)}, nil, nil); err == nil {
+		t.Error("rope.v2 took three factors for two pairs")
 	}
 }
 
