@@ -63,6 +63,42 @@ func TestRun(t *testing.T) {
 	}
 }
 
+// TestRunHuggingFace converts the tiny Whisper and CLIP checkpoints of
+// testdata/import, whose config.json and other side files sit beside
+// their weights.
+func TestRunHuggingFace(t *testing.T) {
+	for _, tc := range []struct{ dir, arch string }{{"hf-whisper", "whisper"}, {"hf-clip", "clip"}} {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, tc.dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := os.ReadDir(filepath.Join("..", "..", "testdata", "import", tc.dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			copyFixture(t, dir, filepath.Join(tc.dir, e.Name()))
+		}
+		in := filepath.Join(dir, tc.dir, "model.safetensors")
+		var out bytes.Buffer
+		if err := run(&out, []string{in}, options{hash: true}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "a "+tc.arch+" model") {
+			t.Errorf("%s", out.String())
+		}
+		f, err := mim.Open(defaultOutput(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		md, err := f.Metadata()
+		if err != nil || md["general.architecture"] != tc.arch {
+			t.Errorf("architecture %v, %v", md["general.architecture"], err)
+		}
+		f.Close()
+	}
+}
+
 func TestRunRejects(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "x.bin")
