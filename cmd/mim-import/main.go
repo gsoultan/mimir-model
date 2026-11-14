@@ -17,8 +17,14 @@
 //	mim-import model.onnx
 //	mim-import -graph [-ctx 2048] [-a8=false] [-kv f32] [-slots 1] tinyllama.gguf
 //	mim-import -o model.mim model-00001-of-00002.safetensors model-00002-of-00002.safetensors
+//	mim-import whisper-small/model.safetensors
 //
-// Several safetensors shards are merged into one file. Tensors are copied
+// Several safetensors shards are merged into one file. A safetensors
+// checkpoint of Hugging Face Transformers whose folder holds its
+// config.json is described with it, and with the generation_config.json,
+// preprocessor_config.json and tokenizer.json beside it, when the model is
+// one importer.FromHuggingFace knows (Whisper speech to text, CLIP images
+// and text), so the output runs as it is. Tensors are copied
 // byte for byte. By default the output holds weights and metadata only;
 // with -graph, a GGUF file of the llama, qwen2, qwen3, gemma2, gemma3 or
 // phi3 architecture (importer.LlamaArchitectures) also gets a
@@ -47,6 +53,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -143,6 +150,15 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 		}
 	}
 	graphNote := ""
+	if src.Format == "safetensors" {
+		arch, err := huggingFace(src, filepath.Dir(inputs[0]))
+		if err != nil {
+			return err
+		}
+		if arch != "" {
+			graphNote = fmt.Sprintf(", a %s model described by its config.json", arch)
+		}
+	}
 	if o.graph {
 		if src.Format != "gguf" {
 			return fmt.Errorf("-graph needs a GGUF input")
@@ -187,6 +203,39 @@ func run(w io.Writer, inputs []string, o options) (err error) {
 	fmt.Fprintf(w, "%-12s %14d %14s\n", src.Format, inBytes, srcLoad.Round(time.Microsecond))
 	fmt.Fprintf(w, "%-12s %14d %14s\n", "mim", st.Size(), dstLoad.Round(time.Microsecond))
 	return nil
+}
+
+// huggingFace describes src with the Hugging Face side files in dir, if
+// it holds a config.json, and returns the architecture, or "" when there
+// is no config.json.
+func huggingFace(src *importer.Source, dir string) (string, error) {
+	read := func(name string) ([]byte, error) {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return b, err
+	}
+	var files importer.HFFiles
+	for _, f := range []struct {
+		name string
+		dst  *[]byte
+	}{
+		{"config.json", &files.Config},
+		{"generation_config.json", &files.GenerationConfig},
+		{"preprocessor_config.json", &files.Preprocessor},
+		{"tokenizer.json", &files.Tokenizer},
+	} {
+		b, err := read(f.name)
+		if err != nil {
+			return "", err
+		}
+		*f.dst = b
+	}
+	if files.Config == nil {
+		return "", nil
+	}
+	return importer.FromHuggingFace(src, files)
 }
 
 // touch reads one byte per cache line of b so that a mapped file is paged
