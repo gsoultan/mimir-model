@@ -46,7 +46,7 @@ in this document; fast paths change speed, never meaning.
 | mean.v1 | arithmetic mean over axes | abs (N + 4) u mean(abs(x)) |
 | variance.v1 | variance over axes | abs (3N + 16) u mean(x^2) |
 | cumsum.v1 | inclusive or exclusive prefix sum | abs L u sum_prefix abs(x) |
-| rope.v1 | rotary position embedding, with YaRN | section 6.1 |
+| rope.v1, v2 | rotary position embedding, with YaRN; v2 adds linear scaling and per-pair frequency factors | section 6.1 |
 | attention.v1 | scaled dot-product attention, GQA | section 6.2 |
 | attention.v2 | attention.v1 with keys and values of any float dtype | section 6.2 |
 | embedding.v1 | table lookup | exact |
@@ -577,7 +577,7 @@ Tolerance: float, `abs L u sum_{j in prefix} |x_j|`; integer, exact.
 
 ## 6. Transformer building blocks
 
-### 6.1 rope.v1
+### 6.1 rope.v1 and v2
 
 Rotary position embedding. Signature: inputs `x: [B, H, T, D]` (float),
 `positions: [B, T]` or `[1, T]` (i32 or i64); attributes:
@@ -643,6 +643,27 @@ exactly representable in f32.
 Tolerance: let A be the largest `|positions| * inv_freq_0` in the call. For
 each rotated pair, `abs (16 + 4A) u ms max(|x1|, |x2|)`; pass-through
 elements are exact. A fast path MAY compute angles in higher precision.
+
+rope.v2 extends v1 for the frequency schemes of linear position
+interpolation (Gemma 3's global layers), Llama 3.1's per-pair frequency
+divisors and Phi 3's LongRoPE. It takes an optional third input
+`freq_factors: [R/2]` (float) and two more attributes:
+
+| attribute | type | default | meaning |
+|---|---|---|---|
+| freq_scale | float | 1.0 | multiplies every inverse frequency; linear interpolation by a factor s is freq_scale 1/s. MUST be 1 when yarn_factor != 1 |
+| attn_factor | float | 1.0 | further scale applied to cos and sin, with ms |
+
+Everything else is as in v1, with the frequencies and the scale
+
+```
+inv_freq2_i = inv_freq_i * freq_scale / freq_factors_i     # / 1 without the input
+ms2         = ms * attn_factor
+```
+
+computed by the inliner in float64 from the attributes and the values of
+`freq_factors`, and used for `F` and `ms` in v1's body. The tolerance is
+v1's, with A taken over inv_freq2 and ms2 for ms.
 
 ### 6.2 attention.v1
 

@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -374,4 +375,38 @@ func FuzzParseSafetensors(f *testing.F) {
 			}
 		}
 	})
+}
+
+// TestQ5_0ToQ8_0 checks the conversion of ggml's Q5_0 blocks against the
+// values they hold: value j is d·(x_j - 16), whose low four bits are a
+// nibble of qs (low nibbles for j < 16, high ones after) and whose fifth
+// is bit j of qh.
+func TestQ5_0ToQ8_0(t *testing.T) {
+	b := make([]byte, 2*q5_0Block)
+	rng := rand.New(rand.NewSource(5))
+	rng.Read(b)
+	for blk := range 2 {
+		b[blk*q5_0Block], b[blk*q5_0Block+1] = 0x00, 0x3C // d = 1.0 in f16
+	}
+	out := q5_0ToQ8_0(b)
+	if len(out) != 2*q8_0Block {
+		t.Fatalf("%d bytes", len(out))
+	}
+	for blk := range 2 {
+		src, dst := b[blk*q5_0Block:], out[blk*q8_0Block:]
+		if dst[0] != 0x00 || dst[1] != 0x3C {
+			t.Fatalf("block %d: scale %x %x", blk, dst[0], dst[1])
+		}
+		qh := uint32(src[2]) | uint32(src[3])<<8 | uint32(src[4])<<16 | uint32(src[5])<<24
+		for j := range 32 {
+			nib := src[6+j%16] & 0x0F
+			if j >= 16 {
+				nib = src[6+j%16] >> 4
+			}
+			want := int(nib) | int(qh>>j&1)<<4 - 16
+			if got := int(int8(dst[2+j])); got != want {
+				t.Errorf("block %d value %d: %d, want %d", blk, j, got, want)
+			}
+		}
+	}
 }

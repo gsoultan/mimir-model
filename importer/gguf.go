@@ -40,9 +40,16 @@ var ggmlTypes = map[uint32]mim.DType{
 	39: mim.MXFP4,
 }
 
+// ggmlQ5_0 is ggml's Q5_0, which mim does not define but which converts to
+// Q8_0 without loss: both are blocks of 32 values with one f16 scale, and
+// Q5_0's 5-bit values, less 16, fit Q8_0's 8-bit ones. llama.cpp's
+// K-quant mixes fall back to it for layers whose width is no multiple of
+// 256, such as Gemma 3 1B's 1152.
+const ggmlQ5_0 = 6
+
 // ggmlNames names the ggml types mim does not (yet) define, for errors.
 var ggmlNames = map[uint32]string{
-	3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 9: "Q8_1", 10: "Q2_K", 11: "Q3_K",
+	3: "Q4_1", 7: "Q5_1", 9: "Q8_1", 10: "Q2_K", 11: "Q3_K",
 	13: "Q5_K", 15: "Q8_K", 16: "IQ2_XXS", 17: "IQ2_XS", 18: "IQ3_XXS",
 	19: "IQ1_S", 20: "IQ4_NL", 21: "IQ3_S", 22: "IQ2_S", 23: "IQ4_XS",
 	29: "IQ1_M", 34: "TQ1_0", 35: "TQ2_0",
@@ -363,7 +370,8 @@ func ParseGGUF(b []byte) (*Source, error) {
 	type info struct {
 		t      Tensor
 		offset uint64
-		size   uint64
+		size   uint64 // in the file
+		q5     bool   // Q5_0 in the file, Q8_0 in t
 	}
 	infos := make([]info, 0, nt)
 	names := map[string]bool{}
@@ -390,6 +398,10 @@ func ParseGGUF(b []byte) (*Source, error) {
 		}
 		names[name] = true
 		dt, known := ggmlTypes[gt]
+		q5 := gt == ggmlQ5_0
+		if q5 {
+			dt, known = mim.Q8_0, true
+		}
 		if !known {
 			if n, ok := ggmlNames[gt]; ok {
 				return nil, fmt.Errorf("gguf: tensor %q has type %s, which mim does not define", name, n)
@@ -400,10 +412,13 @@ func ParseGGUF(b []byte) (*Source, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gguf: tensor %q: %w", name, err)
 		}
+		if q5 {
+			size = size / q8_0Block * q5_0Block
+		}
 		if off%alignment != 0 {
 			return nil, fmt.Errorf("gguf: tensor %q offset %d is not aligned to %d", name, off, alignment)
 		}
-		infos = append(infos, info{Tensor{Name: name, DType: dt, Shape: shape}, off, size})
+		infos = append(infos, info{Tensor{Name: name, DType: dt, Shape: shape}, off, size, q5})
 	}
 	if r.err != nil {
 		return nil, r.err
@@ -419,10 +434,40 @@ func ParseGGUF(b []byte) (*Source, error) {
 			return nil, fmt.Errorf("gguf: tensor %q data [%d, +%d) is outside the file", in.t.Name, in.offset, in.size)
 		}
 		in.t.Data = data[in.offset : in.offset+in.size]
+		if in.q5 {
+			in.t.Data = q5_0ToQ8_0(in.t.Data)
+		}
 		if err := checkTensor(in.t); err != nil {
 			return nil, fmt.Errorf("gguf: %w", err)
 		}
 		src.Tensors = append(src.Tensors, in.t)
 	}
 	return src, nil
+}
+
+// Bytes of a block of 32 values in Q5_0 (an f16 scale, 32 high bits and 16
+// bytes of low nibbles) and in Q8_0 (an f16 scale and 32 bytes).
+const (
+	q5_0Block = 22
+	q8_0Block = 34
+)
+
+// q5_0ToQ8_0 converts blocks of Q5_0 to the Q8_0 blocks of the same values:
+// value j of a block is d·(x_j - 16), x_j of five bits, in both.
+func q5_0ToQ8_0(b []byte) []byte {
+	n := len(b) / q5_0Block
+	out := make([]byte, n*q8_0Block)
+	for i := range n {
+		src, dst := b[i*q5_0Block:], out[i*q8_0Block:]
+		dst[0], dst[1] = src[0], src[1]
+		qh := binary.LittleEndian.Uint32(src[2:])
+		qs := src[6:22]
+		for j := range 16 {
+			lo := qs[j]&0x0F | byte(qh>>j<<4)&0x10
+			hi := qs[j]>>4 | byte(qh>>(j+12))&0x10
+			dst[2+j] = byte(int8(lo) - 16)
+			dst[2+j+16] = byte(int8(hi) - 16)
+		}
+	}
+	return out
 }
